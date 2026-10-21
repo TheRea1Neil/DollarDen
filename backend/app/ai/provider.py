@@ -1,0 +1,192 @@
+"""AI provider abstraction.
+
+Three implementations behind one interface. NullProvider is a first-class
+configuration: the app must be fully usable with AI disabled (ADR 0003).
+"""
+from __future__ import annotations
+
+import abc
+import asyncio
+import logging
+import socket
+from dataclasses import dataclass
+from typing import Any
+
+import httpx
+
+from app.core.config import Settings
+
+log = logging.getLogger("nnf.ai")
+
+
+class AIUnavailable(RuntimeError):
+    """The provider could not be reached. Callers fall back to the review queue."""
+
+
+@dataclass
+class ChatResult:
+    content: str
+    model: str
+    total_duration_ns: int | None = None
+    eval_count: int | None = None
+
+    @property
+    def tokens_per_second(self) -> float | None:
+        if not self.eval_count or not self.total_duration_ns:
+            return None
+        return self.eval_count / (self.total_duration_ns / 1e9)
+
+
+class AIProvider(abc.ABC):
+    @abc.abstractmethod
+    async def chat(
+        self,
+        prompt: str,
+        *,
+        images: list[str] | None = None,
+        schema: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> ChatResult: ...
+
+    @abc.abstractmethod
+    async def available(self) -> bool: ...
+
+
+class NullProvider(AIProvider):
+    """AI disabled. Everything routes to deterministic rules and the review queue."""
+
+    async def chat(self, prompt: str, **_: Any) -> ChatResult:
+        raise AIUnavailable("AI is disabled (ai_provider=none)")
+
+    async def available(self) -> bool:
+        return False
+
+
+class OllamaProvider(AIProvider):
+    """Talks to an Ollama server. Base for both the deck and user-supplied hosts."""
+
+    def __init__(self, base_url: str, settings: Settings, timeout: float = 300.0) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.settings = settings
+        self.timeout = timeout
+
+    async def available(self) -> bool:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as c:
+                r = await c.get(f"{self.base_url}/api/version")
+                return r.status_code == 200
+        except Exception:
+            return False
+
+    async def chat(
+        self,
+        prompt: str,
+        *,
+        images: list[str] | None = None,
+        schema: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> ChatResult:
+        chosen = model or (
+            self.settings.ai_model_vision if images else self.settings.ai_model_text
+        )
+        message: dict[str, Any] = {"role": "user", "content": prompt}
+        if images:
+            # Ollama takes base64-encoded images on the message.
+            message["images"] = images
+
+        payload: dict[str, Any] = {
+            "model": chosen,
+            "messages": [message],
+            "stream": False,
+        }
+        if schema is not None:
+            # Constrain the output shape. More reliable than tool calling for
+            # this workload, and vision-model tool support is less proven.
+            payload["format"] = schema
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as c:
+                r = await c.post(f"{self.base_url}/api/chat", json=payload)
+                r.raise_for_status()
+                data = r.json()
+        except Exception as exc:
+            raise AIUnavailable(f"Ollama call failed: {exc}") from exc
+
+        return ChatResult(
+            content=data.get("message", {}).get("content", ""),
+            model=chosen,
+            total_duration_ns=data.get("total_duration"),
+            eval_count=data.get("eval_count"),
+        )
+
+
+class DeckProvider(OllamaProvider):
+    """Ollama on the gaming PC, which is asleep by default.
+
+    Wakes it via the already-deployed Wake-on-LAN API, then waits for the
+    Ollama port to answer. Cold start is roughly 10s wake plus model load.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(settings.ai_deck_url, settings)
+
+    @staticmethod
+    def _port_open(host: str, port: int, timeout: float = 2.0) -> bool:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
+    def _host_port(self) -> tuple[str, int]:
+        hostport = self.base_url.split("//", 1)[-1]
+        host, _, port = hostport.partition(":")
+        return host, int(port or 11434)
+
+    async def ensure_awake(self) -> None:
+        host, port = self._host_port()
+        if self._port_open(host, port):
+            return
+
+        s = self.settings
+        if not s.wol_api_url or not s.wol_api_token:
+            raise AIUnavailable("AI host is asleep and no Wake-on-LAN API is configured")
+
+        log.info("AI host asleep; sending wake request")
+        try:
+            async with httpx.AsyncClient(timeout=s.ai_wake_timeout_seconds + 30) as c:
+                r = await c.post(
+                    f"{s.wol_api_url.rstrip('/')}/wake",
+                    params={"wait": s.ai_wake_timeout_seconds},
+                    headers={"Authorization": f"Bearer {s.wol_api_token}"},
+                )
+                r.raise_for_status()
+        except Exception as exc:
+            raise AIUnavailable(f"wake request failed: {exc}") from exc
+
+        # The host answers ICMP/SSH before Ollama is listening; poll the port.
+        deadline = s.ai_wake_timeout_seconds
+        waited = 0.0
+        while waited < deadline:
+            if self._port_open(host, port):
+                log.info("AI host awake after ~%.0fs", waited)
+                return
+            await asyncio.sleep(2)
+            waited += 2
+        raise AIUnavailable(f"AI host did not expose Ollama within {deadline}s")
+
+    async def chat(self, prompt: str, **kwargs: Any) -> ChatResult:
+        await self.ensure_awake()
+        return await super().chat(prompt, **kwargs)
+
+
+def build_provider(settings: Settings, custom_url: str | None = None) -> AIProvider:
+    if custom_url:
+        return OllamaProvider(custom_url, settings)
+    match settings.ai_provider:
+        case "deck":
+            return DeckProvider(settings)
+        case "custom":
+            return OllamaProvider(settings.ai_deck_url, settings)
+        case _:
+            return NullProvider()

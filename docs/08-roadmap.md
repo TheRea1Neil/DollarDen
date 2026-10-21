@@ -9,7 +9,10 @@ Each phase ends in something demonstrable.
 
 Two unknowns can change the architecture. Resolve them before building on top.
 
-- [ ] **GPU inference spike.** Install Ollama in a `podman` container on the
+- [x] **GPU inference spike — DONE, ROCm works.** See ADR 0005. Ollama 0.40.7
+      in a rootless podman container reports `library=ROCm compute=gfx1200`,
+      15.8 GiB usable. No Vulkan or CPU fallback needed.
+- [ ] ~~Install Ollama in a `podman` container on the~~
       deck (rootfs is immutable — do **not** install to `/usr`; models under
       `/home`). Try the ROCm image first; if RDNA4/gfx1200 is unsupported, try
       a Vulkan build (Vulkan is confirmed present); if both fail, measure

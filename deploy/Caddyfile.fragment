@@ -1,0 +1,23 @@
+# Add inside the existing example.org block in
+# /home/neil/wireguard/Caddyfile, BEFORE the catch-all `handle` that
+# proxies to wg-easy. Order matters: first matching handle wins.
+
+	# ---- no-nonsense-finance API ----
+	handle /api/* {
+		reverse_proxy nnf-api:8081 {
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	# ---- Plaid webhook (public, JWT-verified in the app) ----
+	handle /plaid/webhook {
+		reverse_proxy nnf-api:8081 {
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+# NOTE: wg-easy also serves /api/* for its own admin UI. Adding the block
+# above will shadow it. Before deploying, either:
+#   (a) move the finance API to a distinct prefix such as /nnf/*, or
+#   (b) move wg-easy to its own subdomain.
+# Option (a) is less disruptive -- the wg-easy UI is already in use.

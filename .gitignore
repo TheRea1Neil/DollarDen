@@ -1,0 +1,47 @@
+# ---- secrets: never commit ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+**/plaid_credentials*
+**/access_tokens*
+
+# ---- backend ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+dist/
+build/
+
+# ---- flutter / dart ----
+.dart_tool/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+app/build/
+app/.dart_tool/
+*.iml
+.idea/
+ios/Pods/
+ios/.symlinks/
+android/.gradle/
+android/local.properties
+
+# ---- db / local data ----
+*.sqlite
+*.sqlite3
+*.db
+pgdata/
+backups/*.sql
+backups/*.dump
+!backups/.gitkeep
+
+# ---- os / editor ----
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/

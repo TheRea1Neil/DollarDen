@@ -94,3 +94,73 @@ anyway so re-enabling that service later cannot collide.
 - `TOKEN_ENCRYPTION_KEY` backed up **separately**, in a password manager —
   the dump is useless without it.
 - **Test a restore before linking a production bank** (docs/04).
+
+---
+
+## Deployment (as of 2026-10-21)
+
+The backend is live at **`https://budget.example.org`**.
+
+### Layout on the Pi
+
+```
+/home/neil/nnf/
+├── backend/     rsynced from the repo
+├── deploy/      docker-compose.yml
+└── .env         mode 600, never in git
+```
+
+Caddy config lives with the existing stack at `/home/neil/wireguard/Caddyfile`;
+the `finance.` site block was appended there. Backups: `Caddyfile.bak-*`.
+
+### Containers
+
+| Container | Purpose | Exposure |
+|---|---|---|
+| `nnf-postgres` | Postgres 16.15 (aarch64) | `127.0.0.1:5433` only |
+| `nnf-api` | FastAPI on 8081 | via Caddy only, never published |
+
+Both on the `nnf` network; `nnf-api` also joins `wg` so Caddy can reach it.
+
+### Deploying a change
+
+```bash
+# from the repo root on the Mac
+rsync -az --delete --exclude .venv --exclude __pycache__ \
+  backend deploy .env nando:/home/neil/nnf/
+
+ssh nando
+cd /home/neil/nnf/deploy
+sudo docker compose -f /home/neil/nnf/deploy/docker-compose.yml \
+  --env-file /home/neil/nnf/.env build nnf-api
+sudo docker compose -f /home/neil/nnf/deploy/docker-compose.yml \
+  --env-file /home/neil/nnf/.env run --rm nnf-api alembic upgrade head
+sudo docker compose -f /home/neil/nnf/deploy/docker-compose.yml \
+  --env-file /home/neil/nnf/.env up -d --force-recreate nnf-api
+```
+
+**Use absolute paths for `-f` and `--env-file`.** Relative paths break when
+the command runs from anywhere other than `deploy/`.
+
+**Build in the foreground.** A `systemd-run --user` wrapper around
+`sudo docker compose build` reported `Result=success` while producing an image
+that still contained the previous `pyproject.toml`. The cause was not
+identified; running the build directly and watching `--progress plain` output
+is reliable. Verify what actually landed rather than trusting the exit code:
+
+```bash
+sudo docker run --rm --entrypoint sh nnf-nnf-api:latest -c "pip list | grep -i <pkg>"
+```
+
+### Smoke test after deploying
+
+```bash
+curl https://budget.example.org/api/health   # {"status":"ok"}
+curl https://budget.example.org/api/ready    # database:true
+curl -o /dev/null -w '%{http_code}\n' \
+  https://budget.example.org/wp-json/        # 404 at the edge
+```
+
+Verified working end to end over the public internet: register → 201,
+`/me` with token → 200, `/me` without → 401, refresh → 200 and rotates,
+replaying a used refresh token → 401.

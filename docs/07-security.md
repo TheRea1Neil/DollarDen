@@ -70,12 +70,25 @@ With two users who know each other, the temptation is to be casual. Don't:
 
 ## Public surface
 
-| Route | Auth |
+| Host / route | Auth |
 |---|---|
-| `/api/*` | JWT required |
-| `/plaid/webhook` | **JWT signature verification from Plaid** (docs/04), rate-limited |
-| `/wol/*` | Bearer token (existing service) |
-| `/health` | none; returns nothing sensitive |
+| `finance.…/api/*` | JWT required |
+| `finance.…/plaid/webhook` | **JWT signature verification from Plaid** (docs/04), rate-limited |
+| `finance.…/api/health` | none; returns nothing sensitive |
+| `example.…/wol/*` | Bearer token (existing service) |
+| `example.…/` | wg-easy admin UI |
+
+The finance API is deliberately reachable **without** the VPN, so the phone
+works on cellular. That makes the API itself the security boundary rather than
+the network, which raises the stakes on three things:
+
+1. **Login rate limiting is required, not optional.** The login endpoint is
+   internet-facing. Brute-force protection belongs in the app (Caddy here has
+   no rate-limit module).
+2. **Every endpoint must assume a hostile caller.** `UserScopedRepository`
+   exists so that user isolation does not depend on each handler remembering
+   a filter.
+3. **HSTS and security headers** are set at the Caddy edge for this host.
 
 Not exposed publicly, ever: Postgres, Ollama (11434), the Pi's SSH.
 

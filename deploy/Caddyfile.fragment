@@ -1,23 +1,71 @@
-# Add inside the existing example.org block in
-# /home/neil/wireguard/Caddyfile, BEFORE the catch-all `handle` that
-# proxies to wg-easy. Order matters: first matching handle wins.
+# ---------------------------------------------------------------------------
+# Add this as a NEW top-level site block in /home/neil/wireguard/Caddyfile,
+# alongside (not inside) the existing example.org block.
+#
+# Why a subdomain:
+#   * wg-easy already owns /api/* on the apex domain. A separate hostname
+#     removes the collision entirely instead of renaming the finance API.
+#   * DuckDNS wildcards every subdomain to the same IP (verified:
+#     budget.example.org -> 136.36.34.173), so there is no DNS
+#     setup to do.
+#   * Caddy routes by Host header, so port 443 — already forwarded — serves
+#     both hostnames. NO new port forwarding is required.
+#   * ACME DNS-01 works for the subdomain: DuckDNS answers
+#     _acme-challenge.budget.example.org with the account-level
+#     TXT record (verified against ns3.duckdns.org).
+#
+# NOTE: DuckDNS has only ONE TXT slot for the whole account. Certificates for
+# different subdomains must therefore be issued one at a time. Caddy does this
+# sequentially, but if you ever add several subdomains at once and see
+# challenge failures, that single slot is the reason.
+# ---------------------------------------------------------------------------
 
-	# ---- no-nonsense-finance API ----
-	handle /api/* {
-		reverse_proxy nnf-api:8081 {
-			header_up X-Forwarded-Proto https
-		}
+budget.example.org {
+	tls {
+		dns duckdns {$DUCKDNS_TOKEN}
+		resolvers 1.1.1.1 8.8.8.8
 	}
 
-	# ---- Plaid webhook (public, JWT-verified in the app) ----
+	encode zstd gzip
+
+	# Security headers. This host is public and unauthenticated at the edge;
+	# authentication is enforced by the API itself.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# Plaid webhook. Public by necessity; the handler verifies Plaid's JWT
+	# signature, so an unverified request is rejected inside the app.
 	handle /plaid/webhook {
 		reverse_proxy nnf-api:8081 {
 			header_up X-Forwarded-Proto https
 		}
 	}
 
-# NOTE: wg-easy also serves /api/* for its own admin UI. Adding the block
-# above will shadow it. Before deploying, either:
-#   (a) move the finance API to a distinct prefix such as /nnf/*, or
-#   (b) move wg-easy to its own subdomain.
-# Option (a) is less disruptive -- the wg-easy UI is already in use.
+	# Everything else is the app API.
+	handle {
+		reverse_proxy nnf-api:8081 {
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	log {
+		output file /data/finance-access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format filter {
+			wrap json
+			fields {
+				request>headers>Authorization delete
+				request>uri query {
+					replace token REDACTED
+				}
+			}
+		}
+	}
+}

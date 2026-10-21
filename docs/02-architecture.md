@@ -182,10 +182,33 @@ plus model load; the UI must never block on it.
 
 ## Network access model
 
+### Hostname split
+
+Two hostnames on one IP and one forwarded port. Caddy routes by `Host`.
+
+| Hostname | Serves |
+|---|---|
+| `example.org` | wg-easy admin UI, `/wol/*` Wake-on-LAN API |
+| **`budget.example.org`** | **this app's API and the Plaid webhook** |
+
+This exists because wg-easy already owns `/api/*` on the apex domain; a second
+hostname removes the collision rather than renaming the finance API around it.
+
+Three things make it nearly free, all verified:
+
+* **DNS:** DuckDNS wildcards every subdomain to the account IP. No records to
+  create — `budget.example.org` already resolves.
+* **Port forwarding:** none needed. TCP 443 is already forwarded, and Caddy
+  serves unlimited hostnames on it via SNI.
+* **Certificates:** DuckDNS answers `_acme-challenge.<sub>.example.org`
+  with the account-level TXT, so DNS-01 issues a normal per-subdomain cert.
+  Caveat: DuckDNS has a single TXT slot, so certificates for different
+  subdomains must be issued sequentially.
+
 | Path | Exposure | Used for |
 |---|---|---|
-| `https://example.org/plaid/webhook` | public | Plaid only; JWT-verified |
-| `https://example.org/api/*` | public | the mobile app |
+| `https://budget.example.org/plaid/webhook` | public | Plaid only; JWT-verified |
+| `https://budget.example.org/*` | public | the mobile app API (JWT-authenticated) |
 | `https://example.org/wol/*` | public | existing WoL API, token-auth |
 | `192.168.86.196:11434` | **LAN only** | Ollama. Never exposed publicly |
 | Postgres | **container network only** | never published to the LAN |

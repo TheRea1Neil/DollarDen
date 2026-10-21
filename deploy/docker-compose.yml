@@ -48,7 +48,7 @@ services:
       - nnf_receipts:/data/receipts
     expose:
       - "8081"
-    networks: [nnf, wg]
+    networks: [nnf, wg]   # wg = the existing Caddy network
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8081/api/health')\""]
       interval: 30s

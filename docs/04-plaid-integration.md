@@ -77,6 +77,59 @@ These are requirements, not suggestions.
    the same Postgres instance. A sandbox token in a production row, or vice
    versa, produces confusing failures at the worst time.
 
+## Three-copy token redundancy
+
+The `access_token` is the asset whose loss costs a connection credit, so it
+lives in more than one place.
+
+| Copy | Where | Form | Status |
+|---|---|---|---|
+| 1 | Postgres on the Pi | encrypted (`access_token_encrypted`) | live |
+| 2 | Phone, OS keychain | **encrypted blob, identical ciphertext** | live |
+| 3 | Off-site | encrypted blob | *planned, not implemented* |
+
+### The phone copy is ciphertext, never a usable token
+
+`GET /api/backup/tokens` returns the exact `access_token_encrypted` bytes,
+base64-encoded, still sealed with `TOKEN_ENCRYPTION_KEY` — which never leaves
+the server. The phone stores an opaque string it cannot open.
+
+This preserves the rule in docs/07 that the app never holds a usable Plaid
+token, while still giving a real second copy. Recovery needs both halves:
+
+```
+phone blob  +  TOKEN_ENCRYPTION_KEY (password manager)  =  restore
+```
+
+Either alone is useless. A lost or compromised handset does not leak bank
+access; a stolen database dump does not either.
+
+**The key is now the single point of failure.** Both the database column and
+the phone blob are sealed with it. It must be backed up somewhere that is not
+the Pi and not the phone — a password manager is the intended home.
+
+### Restoring after losing the Pi
+
+`POST /api/backup/tokens` with the stored blobs. Each one is:
+
+1. checked against the server's current key fingerprint — a mismatch reports
+   `wrong_key` rather than a confusing decryption failure;
+2. decrypted;
+3. **verified against Plaid with `/item/get` before anything is written**, so
+   a restore cannot quietly populate the database with dead tokens;
+4. written with a **null `sync_cursor`**, deliberately. A fresh cursor re-pulls
+   full history, which is the safe direction. Restoring a stale cursor would
+   silently skip every transaction that happened in between.
+
+Overwriting an existing healthy Item requires `overwrite_existing=true`.
+
+### Why this does not weaken the security model
+
+The phone already holds transaction history in its local SQLite mirror. Adding
+an *encrypted* blob it cannot read does not widen what an attacker gains from
+the device. Storing a *usable* token there would have — which is why this
+design stores ciphertext instead.
+
 ## Token lifecycle
 
 ```

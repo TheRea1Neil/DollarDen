@@ -98,7 +98,9 @@ Not exposed publicly, ever: Postgres, Ollama (11434), the Pi's SSH.
 - SQLite mirror holds transaction history; enable SQLCipher or rely on
   OS-level encryption with `FileProtection`. Decide before shipping.
 - Certificate pinning is reasonable later given a fixed domain; not v1.
-- The app never holds a Plaid `access_token`. Only the backend does.
+- The app never holds a **usable** Plaid `access_token`. It stores an
+  encrypted blob (docs/04) that only the server's key can open, for
+  redundancy. Keep it in the OS keychain, never `SharedPreferences`.
 
 ## The public hostname is scanned immediately
 

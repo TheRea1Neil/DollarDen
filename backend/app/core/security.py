@@ -86,6 +86,19 @@ def _fernet() -> Fernet:
     return Fernet(key.encode())
 
 
+def key_fingerprint() -> str:
+    """Short, non-reversible identifier for the active encryption key.
+
+    Travels with every exported blob so a restore can tell "wrong key" from
+    "corrupt data" before it starts guessing. Derived through SHA-256, so it
+    reveals nothing useful about the key itself.
+    """
+    key = get_settings().token_encryption_key
+    if not key:
+        raise RuntimeError("TOKEN_ENCRYPTION_KEY is not set")
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
 def encrypt_token(plaintext: str) -> bytes:
     return _fernet().encrypt(plaintext.encode())
 

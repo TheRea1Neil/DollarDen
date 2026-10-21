@@ -16,7 +16,7 @@ from app.core.security import decrypt_token, encrypt_token
 from app.db.models import Account, PlaidItem, User
 from app.db.session import SessionLocal, get_db
 from app.plaid.client import PlaidClient, PlaidError
-from app.plaid.sync import sync_item, to_cents
+from app.plaid.sync import SyncIncomplete, refresh_accounts, sync_item
 from app.plaid.webhook import WebhookVerificationError, verify
 
 log = logging.getLogger("nnf.api.plaid")
@@ -134,7 +134,7 @@ async def exchange(
     except Exception as exc:
         log.warning("could not resolve institution: %s", exc)
 
-    count = await _refresh_accounts(db, client, item, access_token)
+    count = await refresh_accounts(db, client, item, access_token)
     db.commit()
 
     return ItemOut(
@@ -145,37 +145,6 @@ async def exchange(
     )
 
 
-async def _refresh_accounts(
-    db: Session, client: PlaidClient, item: PlaidItem, access_token: str
-) -> int:
-    resp = await client.get_accounts(access_token)
-    now = datetime.now(UTC)
-    n = 0
-    for a in resp.get("accounts", []):
-        acct = db.scalars(
-            select(Account).where(Account.plaid_account_id == a["account_id"])
-        ).first()
-        if acct is None:
-            acct = Account(
-                user_id=item.user_id,
-                item_id=item.id,
-                plaid_account_id=a["account_id"],
-            )
-            db.add(acct)
-        bal = a.get("balances") or {}
-        acct.name = a.get("name")
-        acct.official_name = a.get("official_name")
-        acct.mask = a.get("mask")
-        acct.type = str(a.get("type") or "")
-        acct.subtype = str(a.get("subtype") or "")
-        acct.current_cents = to_cents(bal["current"]) if bal.get("current") is not None else None
-        acct.available_cents = (
-            to_cents(bal["available"]) if bal.get("available") is not None else None
-        )
-        acct.balance_as_of = now
-        n += 1
-    db.flush()
-    return n
 
 
 # --------------------------------------------------------------------------- #
@@ -209,6 +178,8 @@ async def sync_now(
     access_token = decrypt_token(item.access_token_encrypted)
     try:
         stats = await sync_item(db, client, item, access_token)
+    except SyncIncomplete as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except PlaidError as exc:
         if exc.needs_reauth:
             item.status = "login_required"

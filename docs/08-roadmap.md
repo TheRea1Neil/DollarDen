@@ -70,6 +70,32 @@ deployment. Verified against the real database afterwards:
 | Unsigned webhook | rejected 401 |
 | Unauthenticated access | rejected 401 |
 
+## Phase 2.5 — Token redundancy  ✅ DONE 2026-10-21
+
+- [x] `GET /api/backup/tokens` exports encrypted blobs for on-device storage
+- [x] `POST /api/backup/tokens` restores them, verifying against Plaid first
+- [x] Key fingerprint travels with each blob; mismatch reports `wrong_key`
+- [x] Restore repopulates accounts (see the bug below)
+- [x] Sync refuses to advance the cursor past unstorable transactions
+- [x] `scripts/token_backup_e2e.py` — 18/18, including a simulated total
+      database loss recovered from blobs alone
+
+Third off-site copy is **planned, not implemented**.
+
+### Bug this phase caught
+
+Deleting a `plaid_items` row cascades to its `accounts`. The restore did not
+repopulate them, so every synced transaction hit the "unknown account" branch
+and was **silently skipped while the cursor advanced** — permanent data loss,
+since Plaid does not redeliver consumed transactions.
+
+It was not restore-specific. The same path would fire in normal operation
+whenever a new account appears at the bank.
+
+Fixed in two places: restore refreshes accounts, and `sync_item` now refreshes
+and reprocesses the page on an unknown account, raising `SyncIncomplete`
+rather than advancing the cursor if the data still cannot be stored.
+
 ## Phase 3 — Budget engine
 
 - [ ] Categories CRUD with archive-not-delete

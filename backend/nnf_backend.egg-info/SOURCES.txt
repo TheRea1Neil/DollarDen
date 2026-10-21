@@ -7,6 +7,7 @@ app/api/__init__.py
 app/api/deps.py
 app/api/routes/__init__.py
 app/api/routes/auth.py
+app/api/routes/backup.py
 app/api/routes/health.py
 app/api/routes/plaid.py
 app/budget/__init__.py
@@ -34,3 +35,4 @@ tests/test_plaid_sync.py
 tests/test_plaid_webhook.py
 tests/test_ratelimit.py
 tests/test_split_engine.py
+tests/test_token_backup.py

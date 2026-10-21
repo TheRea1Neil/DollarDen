@@ -28,6 +28,10 @@ from app.db.models import Account, PlaidItem, Transaction
 log = logging.getLogger("nnf.plaid.sync")
 
 
+class SyncIncomplete(RuntimeError):
+    """Raised instead of advancing the cursor past data we could not store."""
+
+
 def to_cents(amount: float | int | str | Decimal) -> int:
     """Convert a Plaid decimal amount to integer cents.
 
@@ -61,6 +65,41 @@ class SyncStats:
             f"added={self.added} modified={self.modified} removed={self.removed} "
             f"pending_resolved={self.pending_resolved}"
         )
+
+
+async def refresh_accounts(db: Session, client: Any, item: PlaidItem,
+                           access_token: str) -> int:
+    """Fetch this Item's accounts from Plaid and upsert them.
+
+    Lives here rather than in the route layer because sync depends on it: a
+    transaction whose account is unknown cannot be stored.
+    """
+    resp = await client.get_accounts(access_token)
+    now = datetime.now(UTC)
+    n = 0
+    for a in resp.get("accounts", []):
+        acct = db.scalars(
+            select(Account).where(Account.plaid_account_id == a["account_id"])
+        ).first()
+        if acct is None:
+            acct = Account(
+                user_id=item.user_id, item_id=item.id, plaid_account_id=a["account_id"]
+            )
+            db.add(acct)
+        bal = a.get("balances") or {}
+        acct.name = a.get("name")
+        acct.official_name = a.get("official_name")
+        acct.mask = a.get("mask")
+        acct.type = str(a.get("type") or "")
+        acct.subtype = str(a.get("subtype") or "")
+        acct.current_cents = to_cents(bal["current"]) if bal.get("current") is not None else None
+        acct.available_cents = (
+            to_cents(bal["available"]) if bal.get("available") is not None else None
+        )
+        acct.balance_as_of = now
+        n += 1
+    db.flush()
+    return n
 
 
 def _account_map(db: Session, item: PlaidItem) -> dict[str, Account]:
@@ -171,15 +210,49 @@ async def sync_item(db: Session, client: Any, item: PlaidItem,
     cursor = item.sync_cursor
     accounts = _account_map(db, item)
     pages = 0
+    refreshed = False
+
+    # An Item with no accounts stores nothing: every transaction would be
+    # skipped as "unknown account" while the cursor advanced past it, losing
+    # the data permanently. Happens after a restore, since deleting an Item
+    # cascades to its accounts.
+    if not accounts:
+        log.info("no accounts for %s; fetching before sync", item.plaid_item_id)
+        await refresh_accounts(db, client, item, access_token)
+        accounts = _account_map(db, item)
+        refreshed = True
 
     while pages < max_pages:
         pages += 1
         page = await client.transactions_sync(access_token, cursor)
 
+        before = stats.skipped_unknown_account
         for raw in page.get("added", []):
             _upsert(db, item, accounts, raw, stats)
         for raw in page.get("modified", []):
             _upsert(db, item, accounts, raw, stats)
+
+        if stats.skipped_unknown_account > before and not refreshed:
+            # A new account appeared at the bank mid-sync. Fetch it and
+            # reprocess this page rather than dropping the transactions.
+            log.info("unknown account during sync; refreshing and retrying page")
+            await refresh_accounts(db, client, item, access_token)
+            accounts = _account_map(db, item)
+            refreshed = True
+            stats.skipped_unknown_account = before
+            for raw in page.get("added", []):
+                _upsert(db, item, accounts, raw, stats)
+            for raw in page.get("modified", []):
+                _upsert(db, item, accounts, raw, stats)
+
+        if stats.skipped_unknown_account > before:
+            # Still unstorable after a refresh. Advancing the cursor here
+            # would discard these transactions for good, so stop instead.
+            db.rollback()
+            raise SyncIncomplete(
+                f"{stats.skipped_unknown_account - before} transactions reference "
+                f"accounts Plaid did not return; refusing to advance the cursor"
+            )
 
         for rem in page.get("removed", []):
             txn = db.scalars(

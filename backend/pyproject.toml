@@ -49,5 +49,5 @@ plugins = []
 warn_unreachable = true
 
 [tool.pytest.ini_options]
-# asyncio_mode needs pytest-asyncio; enable when async tests arrive
+asyncio_mode = "auto"
 testpaths = ["tests"]

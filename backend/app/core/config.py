@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     postgres_user: str = "nnf"
     postgres_password: str = ""
 
+    # Reverse proxies whose X-Forwarded-For we trust. Caddy's IP on the wg
+    # bridge. Anything else could spoof the header and dodge rate limits.
+    trusted_proxies: str = "10.42.42.43,127.0.0.1"
+
     # ---- crypto ----
     token_encryption_key: str = ""
     jwt_signing_key: str = ""

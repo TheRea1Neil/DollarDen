@@ -39,6 +39,21 @@ def client() -> TestClient:
 
 
 @pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """The limiter is process-global in-memory state.
+
+    Without this, the register/login limits leak across tests and whichever
+    test runs fourth fails with 429 -- a real effect of a correct limiter,
+    but not what those tests are asserting.
+    """
+    from app.core.ratelimit import limiter
+
+    limiter.reset()
+    yield
+    limiter.reset()
+
+
+@pytest.fixture(autouse=True)
 def _clean_tables():
     """Truncate between tests so ordering never matters."""
     if not _db_available():

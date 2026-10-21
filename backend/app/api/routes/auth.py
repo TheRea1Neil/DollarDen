@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import current_user
 from app.core.config import get_settings
+from app.core.ratelimit import Limit, enforce
 from app.core.security import (
     create_access_token,
     hash_password,
@@ -22,6 +23,17 @@ from app.db.models import User
 from app.db.session import get_db
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Deliberately tight. These endpoints are internet-facing and a human needs
+# only a handful of attempts; anything more is a script.
+LOGIN_LIMIT = Limit(max_hits=8, window_seconds=300)       # 8 per 5 min per IP
+REGISTER_LIMIT = Limit(max_hits=3, window_seconds=3600)   # 3 per hour per IP
+REFRESH_LIMIT = Limit(max_hits=30, window_seconds=300)
+
+
+def _proxies() -> set[str]:
+    s = get_settings()
+    return {p.strip() for p in s.trusted_proxies.split(",") if p.strip()}
 
 
 class RegisterIn(BaseModel):
@@ -66,6 +78,7 @@ def _issue(db: Session, user: User, user_agent: str | None) -> TokenOut:
 
 @router.post("/register", response_model=TokenOut, status_code=status.HTTP_201_CREATED)
 def register(body: RegisterIn, request: Request, db: Session = Depends(get_db)) -> TokenOut:
+    enforce(request, REGISTER_LIMIT, "register", _proxies())
     existing = db.scalars(select(User).where(User.email == body.email.lower())).first()
     if existing:
         raise HTTPException(status.HTTP_409_CONFLICT, "An account with that email already exists")
@@ -83,6 +96,7 @@ def register(body: RegisterIn, request: Request, db: Session = Depends(get_db)) 
 
 @router.post("/login", response_model=TokenOut)
 def login(body: LoginIn, request: Request, db: Session = Depends(get_db)) -> TokenOut:
+    enforce(request, LOGIN_LIMIT, "login", _proxies())
     user = db.scalars(select(User).where(User.email == body.email.lower())).first()
 
     # Same error and comparable work either way, so the response does not
@@ -99,6 +113,7 @@ class RefreshIn(BaseModel):
 
 @router.post("/refresh", response_model=TokenOut)
 def refresh(body: RefreshIn, request: Request, db: Session = Depends(get_db)) -> TokenOut:
+    enforce(request, REFRESH_LIMIT, "refresh", _proxies())
     hashed = hash_refresh_token(body.refresh_token)
     row = db.scalars(select(SessionRow).where(SessionRow.refresh_token_hash == hashed)).first()
 

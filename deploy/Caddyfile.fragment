@@ -46,11 +46,21 @@ budget.example.org {
 		}
 	}
 
-	# Everything else is the app API.
-	handle {
+	# The app API, under an explicit prefix.
+	handle /api/* {
 		reverse_proxy nnf-api:8081 {
 			header_up X-Forwarded-Proto https
 		}
+	}
+
+	# Anything else gets a flat 404 without touching the backend.
+	#
+	# This is not decoration. Certificate Transparency logs are public, and
+	# scanners were probing this hostname for /wp-json/ and /xmlrpc.php within
+	# five seconds of the certificate being issued. Every one of those requests
+	# would otherwise become a backend round trip.
+	handle {
+		respond "Not Found" 404
 	}
 
 	log {

@@ -100,6 +100,30 @@ Not exposed publicly, ever: Postgres, Ollama (11434), the Pi's SSH.
 - Certificate pinning is reasonable later given a fixed domain; not v1.
 - The app never holds a Plaid `access_token`. Only the backend does.
 
+## The public hostname is scanned immediately
+
+When `budget.example.org` first obtained its certificate, scanners
+began probing it **within five seconds** — requests for `/wp-json/`,
+`/xmlrpc.php?rsd` and `/` from four distinct IPs before any service even
+existed behind it.
+
+The cause is **Certificate Transparency**: every certificate Let's Encrypt
+issues is published to public, append-only CT logs, and bots monitor those
+logs in real time to discover new hostnames. A subdomain is not obscure the
+moment it has a certificate, and there is no way to opt out — CT is mandatory
+for publicly trusted certificates.
+
+Consequences, all adopted:
+
+1. **Caddy returns a flat 404 for any path outside `/api/*`**, so scanner
+   traffic never reaches the backend.
+2. **Login rate limiting is mandatory.** The login endpoint is internet-facing
+   from day one.
+3. **Do not treat an unguessable hostname as a security measure.** It will be
+   enumerated within seconds.
+4. Structured logging with `Authorization` headers stripped, so credential
+   material cannot leak into `finance-access.log`.
+
 ## Known accepted risks
 
 - **Residential uptime.** The Pi is a single point of failure. Mitigated by

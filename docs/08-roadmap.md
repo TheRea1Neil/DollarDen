@@ -54,9 +54,21 @@ provably cannot read user A's rows.
 - [ ] **Update mode** implemented and tested via `/sandbox/item/reset_login`
 - [ ] Pending → posted transition handled without double-counting
 
-**Done when:** a sandbox bank links from curl, a fired webhook triggers a
-sync, transactions land, and a forced `ITEM_LOGIN_REQUIRED` is recovered via
-update mode without creating a new Item.
+**DONE — 2026-10-21.** `scripts/sandbox_e2e.py` passes 25/25 against the live
+deployment. Verified against the real database afterwards:
+
+| Check | Result |
+|---|---|
+| Sandbox bank linked | First Platypus Bank, 14 accounts |
+| Transactions synced | 49 added |
+| Re-sync idempotent | 49 modified, **0 duplicate transaction ids** |
+| Sign convention | 0 rows with both outflow and inflow; 0 negative |
+| Cursor persisted | `CAESJXd3ZzlYVmpCalJmNk...`, status healthy |
+| access_token at rest | encrypted; no plaintext in the column |
+| Token never in API output | confirmed absent from `/plaid/items` |
+| **Update-mode re-auth** | **same Item re-authenticated, no new credit** |
+| Unsigned webhook | rejected 401 |
+| Unauthenticated access | rejected 401 |
 
 ## Phase 3 — Budget engine
 

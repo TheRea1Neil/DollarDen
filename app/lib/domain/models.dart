@@ -146,3 +146,60 @@ class BudgetSummary {
         ledgerDrift: j['ledger_drift'] as List? ?? const [],
       );
 }
+
+
+/// One connection to one institution. This is the unit that consumes a
+/// Plaid connection credit, so the UI never offers a "disconnect" action --
+/// removing an Item means paying to re-link it (docs/04).
+class PlaidItem {
+  final String id;
+  final String? institutionName;
+  final String status; // healthy | login_required | pending_expiration | error
+  final int accounts;
+
+  const PlaidItem({
+    required this.id,
+    required this.status,
+    required this.accounts,
+    this.institutionName,
+  });
+
+  factory PlaidItem.fromJson(Map<String, dynamic> j) => PlaidItem(
+        id: j['id'] as String,
+        institutionName: j['institution_name'] as String?,
+        status: j['status'] as String? ?? 'healthy',
+        accounts: j['accounts'] as int? ?? 0,
+      );
+
+  String get displayName => institutionName ?? 'Bank connection';
+
+  /// Needs re-authentication. The fix is update mode, which repairs the
+  /// existing Item in place and does NOT consume a credit.
+  bool get needsReauth => status == 'login_required' || status == 'pending_expiration';
+  bool get isHealthy => status == 'healthy';
+}
+
+class SyncResult {
+  final int added;
+  final int modified;
+  final int removed;
+  final Map<String, dynamic> categorised;
+
+  const SyncResult({
+    required this.added,
+    required this.modified,
+    required this.removed,
+    required this.categorised,
+  });
+
+  factory SyncResult.fromJson(Map<String, dynamic> j) => SyncResult(
+        added: j['added'] as int? ?? 0,
+        modified: j['modified'] as int? ?? 0,
+        removed: j['removed'] as int? ?? 0,
+        categorised: (j['categorised'] as Map?)?.cast<String, dynamic>() ?? const {},
+      );
+
+  int get autoCategorised => (categorised['rule'] as int? ?? 0) +
+      (categorised['prior_decision'] as int? ?? 0);
+  int get needsReview => categorised['review'] as int? ?? 0;
+}

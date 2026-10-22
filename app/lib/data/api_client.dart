@@ -232,6 +232,63 @@ class ApiClient {
     return NextPayday.fromJson((r.data as Map).cast<String, dynamic>());
   }
 
+  // ------------------------------------------------------------------ //
+  // plaid
+  // ------------------------------------------------------------------ //
+
+  /// Mint a link_token for the Plaid Link SDK.
+  ///
+  /// Passing [itemId] requests UPDATE MODE, which re-authenticates that
+  /// existing connection in place. That path does not consume a connection
+  /// credit and is the correct response to `login_required` (docs/04).
+  Future<String> linkToken({String? itemId}) async {
+    final r = await _withRetry((o) => _dio.post(
+          '/plaid/link-token',
+          queryParameters: {if (itemId != null) 'item_id': itemId},
+          options: o,
+        ));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as Map)['link_token'] as String;
+  }
+
+  /// Hand the short-lived public_token to the backend, which exchanges it
+  /// for the long-lived access_token. That token never reaches this app.
+  Future<PlaidItem> exchangePublicToken(String publicToken) async {
+    final r = await _withRetry((o) => _dio.post(
+          '/plaid/exchange',
+          data: {'public_token': publicToken},
+          options: o,
+        ));
+    if (r.statusCode != 201) _fail(r);
+    return PlaidItem.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
+  Future<List<PlaidItem>> plaidItems() async {
+    final r = await _withRetry((o) => _dio.get('/plaid/items', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as List)
+        .map((e) => PlaidItem.fromJson((e as Map).cast<String, dynamic>()))
+        .toList();
+  }
+
+  Future<SyncResult> syncItem(String itemId) async {
+    final r = await _withRetry(
+        (o) => _dio.post('/plaid/items/$itemId/sync', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return SyncResult.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
+  /// Fetch the encrypted token blobs for on-device redundancy.
+  ///
+  /// These are ciphertext the app cannot decrypt -- the server holds the
+  /// key. Storing them means a dead Pi can be recovered without re-linking
+  /// and burning a credit (docs/04).
+  Future<Map<String, dynamic>> exportTokenBlobs() async {
+    final r = await _withRetry((o) => _dio.get('/backup/tokens', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as Map).cast<String, dynamic>();
+  }
+
   Future<bool> health() async {
     try {
       final r = await _dio.get('/health');

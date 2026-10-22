@@ -28,6 +28,11 @@ dependencies:
 
   intl: ^0.19.0
 
+  # Native Plaid Link SDK (iOS/Android). The app never sees an
+  # access_token -- Link returns a short-lived public_token which the
+  # backend exchanges (docs/04).
+  plaid_flutter: ^5.2.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

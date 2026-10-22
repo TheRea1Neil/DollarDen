@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../domain/models.dart';
 import 'api_client.dart';
+import 'plaid_link_service.dart';
 
 /// Server URL is a preference, not a secret, so it lives in SharedPreferences.
 /// Configurable so a user can point the app at their own deployment.
@@ -82,4 +83,16 @@ final reviewProvider = FutureProvider<List<ReviewItem>>((ref) async {
 final categoriesProvider = FutureProvider<List<Category>>((ref) async {
   ref.watch(authStateProvider);
   return ref.watch(apiProvider).categories();
+});
+
+
+final plaidItemsProvider = FutureProvider<List<PlaidItem>>((ref) async {
+  ref.watch(authStateProvider);
+  return ref.watch(apiProvider).plaidItems();
+});
+
+final plaidLinkProvider = Provider<PlaidLinkService>((ref) {
+  final service = PlaidLinkService(ref.watch(apiProvider));
+  ref.onDispose(service.dispose);
+  return service;
 });

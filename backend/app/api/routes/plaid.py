@@ -197,6 +197,7 @@ async def sync_now(
         "modified": stats.modified,
         "removed": stats.removed,
         "pending_resolved": stats.pending_resolved,
+        "categorised": stats.categorised,
         "status": item.status,
     }
 

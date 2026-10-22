@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -58,13 +59,15 @@ class SyncStats:
     removed: int = 0
     pending_resolved: int = 0
     skipped_unknown_account: int = 0
+    categorised: dict[str, int] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
     def __str__(self) -> str:
-        return (
+        base = (
             f"added={self.added} modified={self.modified} removed={self.removed} "
             f"pending_resolved={self.pending_resolved}"
         )
+        return f"{base} categorised={self.categorised}" if self.categorised else base
 
 
 async def refresh_accounts(db: Session, client: Any, item: PlaidItem,
@@ -211,6 +214,7 @@ async def sync_item(db: Session, client: Any, item: PlaidItem,
     accounts = _account_map(db, item)
     pages = 0
     refreshed = False
+    new_txns: list[Transaction] = []
 
     # An Item with no accounts stores nothing: every transaction would be
     # skipped as "unknown account" while the cursor advanced past it, losing
@@ -228,7 +232,9 @@ async def sync_item(db: Session, client: Any, item: PlaidItem,
 
         before = stats.skipped_unknown_account
         for raw in page.get("added", []):
-            _upsert(db, item, accounts, raw, stats)
+            t = _upsert(db, item, accounts, raw, stats)
+            if t is not None:
+                new_txns.append(t)
         for raw in page.get("modified", []):
             _upsert(db, item, accounts, raw, stats)
 
@@ -241,7 +247,9 @@ async def sync_item(db: Session, client: Any, item: PlaidItem,
             refreshed = True
             stats.skipped_unknown_account = before
             for raw in page.get("added", []):
-                _upsert(db, item, accounts, raw, stats)
+                t = _upsert(db, item, accounts, raw, stats)
+                if t is not None:
+                    new_txns.append(t)
             for raw in page.get("modified", []):
                 _upsert(db, item, accounts, raw, stats)
 
@@ -270,10 +278,28 @@ async def sync_item(db: Session, client: Any, item: PlaidItem,
     else:
         stats.errors.append(f"stopped after {max_pages} pages; more data remains")
 
+    # Categorise what just arrived, before committing, so transactions and
+    # their allocations land in the same database transaction. A crash in
+    # between would otherwise leave spending recorded but unallocated.
+    if new_txns:
+        from app.budget.categorize import categorise_batch
+
+        # Flush first. Transaction.id uses a PYTHON-side uuid4 default, which
+        # SQLAlchemy only applies at flush time -- reading .id before this
+        # yields None, and categorisation silently sees nothing.
+        db.flush()
+        try:
+            stats.categorised = categorise_batch(db, item.user_id, new_txns)
+        except Exception as exc:
+            # Categorisation is best-effort: never lose transaction data over
+            # it. Anything missed shows up unallocated and can be re-run.
+            log.warning("categorisation failed during sync: %s", exc)
+            stats.errors.append(f"categorisation: {exc}")
+
     item.sync_cursor = cursor
     item.last_synced_at = datetime.now(UTC)
     item.status = "healthy"
-    db.commit()          # rows and cursor land together
+    db.commit()          # rows, allocations and cursor land together
 
     log.info("sync %s: %s", item.plaid_item_id, stats)
     return stats

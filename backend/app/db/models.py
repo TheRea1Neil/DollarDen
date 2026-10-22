@@ -200,8 +200,11 @@ class Allocation(Base):
 
     id: Mapped[uuid.UUID] = _pk()
     user_id: Mapped[uuid.UUID] = _user_fk()
+    # CASCADE so deleting a user tears down cleanly. Categories are never
+    # deleted through the API -- they are archived (see routes/budget.py) --
+    # so this does not weaken the archive-not-delete rule in practice.
     category_id: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("categories.id"), nullable=False
+        PG_UUID(as_uuid=True), ForeignKey("categories.id", ondelete="CASCADE"), nullable=False
     )
     transaction_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("transactions.id", ondelete="CASCADE")
@@ -254,7 +257,7 @@ class SplitRule(Base):
         PG_UUID(as_uuid=True), ForeignKey("split_plans.id", ondelete="CASCADE"), nullable=False
     )
     category_id: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("categories.id"), nullable=False
+        PG_UUID(as_uuid=True), ForeignKey("categories.id", ondelete="CASCADE"), nullable=False
     )
     order_index: Mapped[int] = mapped_column(Integer, nullable=False)
     # percent | fixed | refill_to | conditional | remainder
@@ -276,7 +279,7 @@ class Paycheck(Base):
     gross_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
     received_on: Mapped[date] = mapped_column(Date, nullable=False)
     split_plan_id: Mapped[uuid.UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("split_plans.id")
+        PG_UUID(as_uuid=True), ForeignKey("split_plans.id", ondelete="SET NULL")
     )
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _now()

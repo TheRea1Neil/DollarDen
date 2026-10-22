@@ -264,3 +264,87 @@ class TestPaydayPrediction:
             # A range, not false precision.
             assert p["earliest"] <= p["expected"] <= p["latest"]
             db.rollback()
+
+
+@requires_db
+class TestSyncCategorisationWiring:
+    def test_new_transactions_have_ids_before_categorisation(self) -> None:
+        """Transaction.id is a Python-side uuid4 default, populated only at
+        flush. Reading it earlier yields None, which once made the sync path
+        categorise an empty list while reporting transactions added.
+        """
+        with SessionLocal() as db:
+            u, acct, cats, plan = _fixture(db)
+            t = Transaction(
+                user_id=u.id, account_id=acct.id,
+                plaid_transaction_id=f"tx-{uuid.uuid4().hex[:14]}",
+                outflow_cents=1000, inflow_cents=0, date=date.today(), name="X",
+            )
+            db.add(t)
+            assert t.id is None, "precondition: id is unset before flush"
+            db.flush()
+            assert t.id is not None, "id must exist once flushed"
+            db.rollback()
+
+    def test_categorise_batch_handles_freshly_added_rows(self) -> None:
+        with SessionLocal() as db:
+            u, acct, cats, plan = _fixture(db)
+            post(db, u.id, [Entry(cats["Food"].id, 300_00, "opening_balance")])
+            db.add(CategoryRule(user_id=u.id, category_id=cats["Food"].id,
+                                matcher={"merchant_contains": "kfc"}, priority=10))
+            db.flush()
+
+            from app.budget.categorize import categorise_batch
+
+            rows = [_txn(db, u, acct, out=500, merchant="KFC") for _ in range(3)]
+            counts = categorise_batch(db, u.id, rows)
+            assert counts.get("rule") == 3, counts
+            assert cats["Food"].balance_cents == 300_00 - 1500
+            db.rollback()
+
+
+@requires_db
+class TestUserDeletionCascades:
+    def test_deleting_a_user_removes_everything_they_own(self) -> None:
+        """Migration 0002. Three foreign keys used NO ACTION, so a user
+        delete cascaded into categories and then hit a FK violation,
+        failing outright and leaving orphans behind.
+        """
+        from sqlalchemy import func
+
+        from app.db.models import Allocation as A
+
+        with SessionLocal() as db:
+            u, acct, cats, plan = _fixture(db)
+            pc = Paycheck(user_id=u.id, gross_cents=1000_00, received_on=date.today())
+            db.add(pc); db.flush()
+            apply_plan(db, u.id, pc, plan)
+            t = _txn(db, u, acct, out=2500, merchant="Somewhere")
+            categorise(db, u.id, t)
+            db.commit()
+
+            uid = u.id
+            assert db.scalar(select(func.count()).select_from(A).where(A.user_id == uid)) > 0
+
+            db.delete(db.get(User, uid))
+            db.commit()      # would previously raise a ForeignKeyViolation
+
+            for model in (Category, Paycheck, Transaction, ReviewItem, SplitPlan):
+                left = db.scalar(
+                    select(func.count()).select_from(model).where(model.user_id == uid)
+                )
+                assert left == 0, f"{model.__name__} rows survived the user delete"
+            assert db.scalar(select(func.count()).select_from(A).where(A.user_id == uid)) == 0
+
+    def test_split_rules_do_not_block_the_cascade(self) -> None:
+        from sqlalchemy import func
+
+        with SessionLocal() as db:
+            u, acct, cats, plan = _fixture(db)
+            db.commit()
+            uid, plan_id = u.id, plan.id
+            db.delete(db.get(User, uid))
+            db.commit()
+            assert db.scalar(
+                select(func.count()).select_from(SplitRule).where(SplitRule.plan_id == plan_id)
+            ) == 0

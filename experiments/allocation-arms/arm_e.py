@@ -151,6 +151,12 @@ def main() -> None:
     print(f"model={a.model}\n")
     clean_ok = clean_n = 0
     caught = missed = 0
+    # A request that never returned is NOT the model passing or failing a
+    # judgement, and counting it as either makes the summary a lie. The
+    # first run of this reported "4/8 false alarms" when the truth was
+    # "4 answered, 1 timed out, 3 were HTTP 500 from a host whose disk had
+    # failed".
+    errors: list[str] = []
     secs = []
     print("  CORRECT splits -- the model should pass these")
     print("  " + "-" * 72)
@@ -160,7 +166,9 @@ def main() -> None:
         secs.append(dt)
         clean_n += 1
         if raw is None:
-            print(f"  {s['id']:22} FAILED {err[:50]}")
+            errors.append(f"clean/{s['id']}: {err[:60]}")
+            clean_n -= 1          # not a judgement, so not a denominator
+            print(f"  {s['id']:22} ERROR  {err[:50]}")
             continue
         ok = bool(raw.get("matches_intent"))
         clean_ok += ok
@@ -177,16 +185,37 @@ def main() -> None:
             raw, dt, err = ask(a.model, build(s["gross_cents"], s["balances"], broken))
             secs.append(dt)
             if raw is None:
-                print(f"  {s['id']:16}{name:26} FAILED")
+                errors.append(f"fault/{s['id']}/{name}: {err[:50]}")
+                print(f"  {s['id']:16}{name:26} ERROR   {err[:30]}")
                 continue
             flagged = not raw.get("matches_intent")
             caught += flagged
             missed += not flagged
             print(f"  {s['id']:16}{name:26} {'CAUGHT' if flagged else 'missed '}  {desc[:34]}")
 
-    print(f"\n  false alarms on correct splits: {clean_n-clean_ok}/{clean_n}")
-    print(f"  faults caught:                  {caught}/{caught+missed}")
-    print(f"  mean latency:                   {sum(secs)/len(secs):.1f}s")
+    print()
+    if errors:
+        # Loud, and before the scores, so a broken run cannot be mistaken
+        # for a measured one.
+        print(f"  !! {len(errors)} request(s) never returned — "
+              f"the scores below cover only what did")
+        for e in errors[:6]:
+            print(f"     {e}")
+        if len(errors) > 6:
+            print(f"     ... and {len(errors)-6} more")
+        print()
+    if clean_n > 0:
+        print(f"  false alarms on correct splits: {clean_n-clean_ok}/{clean_n}")
+    else:
+        print(f"  false alarms on correct splits: no valid runs")
+    if caught + missed > 0:
+        print(f"  faults caught:                  {caught}/{caught+missed}")
+    else:
+        print(f"  faults caught:                  no valid runs")
+    if secs:
+        print(f"  mean latency:                   {sum(secs)/len(secs):.1f}s")
+    if errors:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

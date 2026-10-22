@@ -164,3 +164,48 @@ curl -o /dev/null -w '%{http_code}\n' \
 Verified working end to end over the public internet: register → 201,
 `/me` with token → 200, `/me` without → 401, refresh → 200 and rotates,
 replaying a used refresh token → 401.
+
+## The AI host (deck) after a reboot
+
+Ollama runs as a rootless podman container on the gaming PC, with models
+bind-mounted from `/home/deck/ollama-models` (not the 5 GB SteamOS root).
+
+It did **not** survive a reboot: the container had `restart=no`, so waking
+the PC gave you a machine that was up but had no Ollama on it, and every
+AI job failed until someone SSHed in and started it by hand. Fixed:
+
+```bash
+podman update --restart=always ollama
+systemctl --user enable --now podman-restart.service   # needs linger, already on
+```
+
+`podman-restart.service` runs `podman start --all --filter
+should-start-on-boot=true` at login. Verified by stopping the container
+and running that unit directly, rather than assuming.
+
+### A wedge under sustained 14B inference
+
+On 2026-10-22, during an allocation experiment, the deck entered a state
+where:
+
+- `sshd` accepted TCP but reset before sending its banner (could not fork)
+- Ollama returned `mkdir .../manifests-v2: input/output error` on any disk
+  access, while `/api/ps` still answered from memory
+- **journald stopped recording twelve minutes before the reboot**
+
+The machine stayed pingable throughout. A reboot cleared it completely.
+
+It was **not** the disk. NVMe SMART afterwards: `critical_warning 0`,
+`media_errors 0`, `num_err_log_entries 0`, `available_spare 100%`, and the
+previous boot's kernel log had no I/O errors at all. It was not disk space
+either — models live on `/home`, which had 716 GB free.
+
+The last thing journald recorded was `qwen3:14b` at `n_gen = 10650` and
+still generating: a runaway thinking loop on the one scenario that model
+could not terminate on. No OOM kill was logged, but logging had already
+failed, so absence of evidence means little here.
+
+Root cause is not established. What is established is that it coincided
+with sustained 14B inference, and that `qwen3:14b` has since been removed
+(ADR 0006 — it was not adopted anyway). If it recurs without that model
+present, suspect hardware and run a long SMART self-test.

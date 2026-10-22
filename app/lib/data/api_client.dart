@@ -635,6 +635,20 @@ class ApiClient {
     return (r.data as Map).cast<String, dynamic>();
   }
 
+  /// Ask where one charge belongs. Suggests; never files.
+  Future<CategorySuggestion> suggestCategory({
+    required String merchant,
+    required int amountCents,
+  }) async {
+    final job = await queueJob('suggest_category',
+        {'merchant': merchant, 'amount_cents': amountCents});
+    final done = await awaitJob(job.id);
+    if (!done.ok) {
+      throw ApiException(done.error ?? 'The assistant could not finish.');
+    }
+    return CategorySuggestion.fromJson(done.result ?? {});
+  }
+
   /// Deposits that look like income and have not been recorded yet.
   Future<List<Map<String, dynamic>>> paycheckCandidates() async {
     final r = await _withRetry(

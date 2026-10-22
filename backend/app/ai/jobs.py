@@ -37,6 +37,7 @@ KINDS = {
     "design_category",
     "refine_category",
     "describe_category",
+    "suggest_category",
     "summary",
     "advise",
 }

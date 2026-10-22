@@ -6,6 +6,7 @@ import '../../core/theme.dart';
 import '../../data/api_client.dart';
 import '../../data/providers.dart';
 import '../../domain/models.dart';
+import 'assisted_review_screen.dart';
 
 /// The review queue: transactions the deterministic rules could not place.
 ///
@@ -35,9 +36,30 @@ class ReviewScreen extends ConsumerWidget {
             },
             child: ListView.separated(
               padding: const EdgeInsets.all(16),
-              itemCount: list.length,
+              itemCount: list.length + 1,
               separatorBuilder: (_, __) => const SizedBox(height: 10),
-              itemBuilder: (_, i) => _ReviewCard(item: list[i]),
+              itemBuilder: (context, i) {
+                if (i == 0) {
+                  // Walking the backlog with a suggestion per charge is
+                  // the fast path; the list below stays for picking off
+                  // individual ones.
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: FilledButton.tonalIcon(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) =>
+                              AssistedReviewScreen(items: list),
+                        ),
+                      ),
+                      icon: const Icon(Icons.auto_awesome, size: 18),
+                      label: Text('Go through all ${list.length} with the '
+                          'assistant'),
+                    ),
+                  );
+                }
+                return _ReviewCard(item: list[i - 1]);
+              },
             ),
           );
         },

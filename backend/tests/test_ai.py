@@ -655,3 +655,134 @@ class TestConditionalPredicateIsComplete:
         out = _validate_design(p, [])
         assert any("value_cents" in n for n in out["problems"]), out["problems"]
         assert not out["applicable"]
+
+
+class TestSuggestionAttribution:
+    """A suggestion must say what decided it, and the quote must be real.
+
+    Measured first in experiments/categorise-arms: descriptions that name
+    a payee or draw a boundary are what make this work. Showing WHICH
+    words decided a suggestion is how a user finds out their description
+    is too vague or too greedy.
+    """
+
+    @staticmethod
+    def _cats() -> list[Category]:
+        return [
+            Category(name="Gas", kind="spending", balance_cents=0,
+                     description="Fuel at a pump, nothing else. Uber and "
+                                 "Lyft come out of Date Fund."),
+            Category(name="Date Fund", kind="spending", balance_cents=0,
+                     description="Going out together, and the rideshare "
+                                 "to get there."),
+            Category(name="Food", kind="spending", balance_cents=0),
+        ]
+
+    def test_a_real_quote_is_verified(self) -> None:
+        from app.ai.tasks import _validate_suggestion
+        out = _validate_suggestion({
+            "category": "Gas", "confidence": "high", "why": "fuel",
+            "matched_phrase": "Fuel at a pump, nothing else",
+        }, self._cats())
+        assert out["category_name"] == "Gas"
+        assert out["attribution_verified"] is True
+        assert out["matched_phrase"] == "Fuel at a pump, nothing else"
+
+    def test_a_paraphrase_is_not_passed_off_as_a_quote(self) -> None:
+        """An attribution the user cannot find in their own description
+        is worse than none."""
+        from app.ai.tasks import _validate_suggestion
+        out = _validate_suggestion({
+            "category": "Gas", "confidence": "high", "why": "fuel",
+            "matched_phrase": "this category is for petrol purchases",
+        }, self._cats())
+        assert out["category_name"] == "Gas"
+        assert out["attribution_verified"] is False
+        assert out["matched_phrase"] is None
+
+    def test_quoting_a_category_with_no_description_is_rejected(self) -> None:
+        from app.ai.tasks import _validate_suggestion
+        out = _validate_suggestion({
+            "category": "Food", "confidence": "high", "why": "groceries",
+            "matched_phrase": "groceries from a shop",
+        }, self._cats())
+        assert out["matched_phrase"] is None
+
+    def test_punctuation_around_the_quote_is_tolerated(self) -> None:
+        from app.ai.tasks import _validate_suggestion
+        out = _validate_suggestion({
+            "category": "Date Fund", "confidence": "high", "why": "x",
+            "matched_phrase": '"the rideshare to get there."',
+        }, self._cats())
+        assert out["attribution_verified"] is True
+
+    def test_unsure_comes_back_as_no_category(self) -> None:
+        from app.ai.tasks import _validate_suggestion
+        out = _validate_suggestion({
+            "category": "UNSURE", "confidence": "low",
+            "why": "the name says nothing",
+        }, self._cats())
+        assert out["unsure"] is True
+        assert out["category_id"] is None
+
+    def test_a_category_that_does_not_exist_is_treated_as_unsure(self) -> None:
+        """Rather than inventing one, or crashing."""
+        from app.ai.tasks import _validate_suggestion
+        out = _validate_suggestion({
+            "category": "Holiday Fund", "confidence": "high", "why": "x",
+        }, self._cats())
+        assert out["unsure"] is True
+
+
+class TestDeterministicAttribution:
+    """Which descriptions name something in this charge — computed, not asked.
+
+    The model cannot be trusted to report what decided its answer: given
+    "Uber and Lyft come out of Date Fund" it moved a rideshare off Gas
+    and then reported it had gone on the merchant name alone. A string
+    match is checkable.
+    """
+
+    @staticmethod
+    def _cats() -> list[Category]:
+        return [
+            Category(name="Gas", kind="spending", balance_cents=0,
+                     description="Fuel at a pump, nothing else. Uber and "
+                                 "Lyft come out of Date Fund."),
+            Category(name="Date Fund", kind="spending", balance_cents=0,
+                     description="Going out together and the rideshare there."),
+            Category(name="Food", kind="spending", balance_cents=0),
+        ]
+
+    def test_finds_the_description_that_names_the_merchant(self) -> None:
+        from app.ai.tasks import _mentions
+        hits = _mentions("UBER TRIP 4KX2M", self._cats())
+        assert [h["category_name"] for h in hits] == ["Gas"]
+        assert hits[0]["word"] == "uber"
+
+    def test_ignores_boilerplate_words(self) -> None:
+        """'payment', 'card', 'trip' and friends match everything."""
+        from app.ai.tasks import _mentions
+        assert _mentions("CARD PAYMENT POS DEBIT", self._cats()) == []
+        assert _mentions("SQ *MERCHANT 4821", self._cats()) == []
+
+    def test_ignores_bare_numbers(self) -> None:
+        from app.ai.tasks import _mentions
+        assert _mentions("ACH DEBIT 88291002", self._cats()) == []
+
+    def test_a_category_with_no_description_never_matches(self) -> None:
+        from app.ai.tasks import _mentions
+        assert all(h["category_name"] != "Food"
+                   for h in _mentions("FOOD MART", self._cats()))
+
+    def test_the_suggestion_carries_the_chosen_description(self) -> None:
+        from app.ai.tasks import _validate_suggestion
+        out = _validate_suggestion(
+            {"category": "Date Fund", "confidence": "high", "why": "x",
+             "matched_phrase": ""},
+            self._cats(), "UBER TRIP 4KX2M")
+        assert out["category_name"] == "Date Fund"
+        assert "rideshare" in out["chosen_description"]
+        # And it still reports that GAS is the description naming Uber,
+        # which is what the user needs to see.
+        assert [m["category_name"] for m in out["mentions"]] == ["Gas"]

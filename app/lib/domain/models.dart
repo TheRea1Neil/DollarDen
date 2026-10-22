@@ -1118,3 +1118,74 @@ class UndoPreview {
         safe: j['safe'] as bool? ?? true,
       );
 }
+
+/// A description that names something in the charge being filed.
+///
+/// Computed server-side by string match, not reported by the model —
+/// asked what decided its answer, the model quotes only sometimes and
+/// is silent exactly when a description quietly shifted its pick. This
+/// is checkable: the word is in the charge and in the description.
+class DescriptionMention {
+  final String categoryName;
+  final String word;
+  final String description;
+
+  const DescriptionMention({
+    required this.categoryName,
+    required this.word,
+    required this.description,
+  });
+
+  factory DescriptionMention.fromJson(Map<String, dynamic> j) =>
+      DescriptionMention(
+        categoryName: j['category_name'] as String? ?? '',
+        word: j['word'] as String? ?? '',
+        description: j['description'] as String? ?? '',
+      );
+}
+
+/// Where the assistant thinks a charge belongs, and why.
+class CategorySuggestion {
+  final String? categoryId;
+  final String? categoryName;
+  final String confidence;
+  final String why;
+
+  /// A verified quote from the chosen category's description, when the
+  /// model cited one and the words really are in there.
+  final String? matchedPhrase;
+  final String? chosenDescription;
+  final List<DescriptionMention> mentions;
+  final bool unsure;
+
+  const CategorySuggestion({
+    required this.confidence,
+    required this.why,
+    required this.unsure,
+    required this.mentions,
+    this.categoryId,
+    this.categoryName,
+    this.matchedPhrase,
+    this.chosenDescription,
+  });
+
+  factory CategorySuggestion.fromJson(Map<String, dynamic> j) =>
+      CategorySuggestion(
+        categoryId: j['category_id'] as String?,
+        categoryName: j['category_name'] as String?,
+        confidence: j['confidence'] as String? ?? 'low',
+        why: j['why'] as String? ?? '',
+        matchedPhrase: j['matched_phrase'] as String?,
+        chosenDescription: j['chosen_description'] as String?,
+        mentions: ((j['mentions'] as List?) ?? const [])
+            .map((e) =>
+                DescriptionMention.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        unsure: j['unsure'] as bool? ?? true,
+      );
+
+  /// True when something checkable backs the suggestion, rather than it
+  /// being the model's general sense of the merchant. A high-confidence
+  /// pick with nothing behind it is the failure mode worth showing.
+  bool get hasEvidence => matchedPhrase != null || mentions.isNotEmpty;
+}

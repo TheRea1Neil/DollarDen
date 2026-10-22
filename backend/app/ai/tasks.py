@@ -1054,3 +1054,195 @@ async def run_describe_category(
         "problems": [] if text else ["the assistant did not write anything"],
         "notices": [],
     }
+
+
+# --------------------------------------------------------------------------- #
+# Suggesting a category for one charge
+# --------------------------------------------------------------------------- #
+#
+# Measured in experiments/categorise-arms before being built. The short
+# version: picking a label is a task this model can do (83% precision,
+# ~1.2s), unlike dividing a paycheck (ADR 0006). Descriptions that name a
+# payee or state a boundary are what make it work; descriptions that
+# restate the name make it worse.
+#
+# It SUGGESTS. One wrong answer in that experiment came with high
+# confidence, and a wrong auto-file is money in the wrong envelope that
+# nobody notices, while a suggestion costs one tap to reject.
+SUGGEST_PROMPT = """Which budget category should this charge come out of?
+
+The charge:
+  {merchant}
+  {amount}
+
+The categories:
+{cats}
+
+Pick the ONE category this charge belongs to.
+
+If the merchant name does not tell you what was actually bought — a bare
+payment processor, a transfer, a generic terminal string — answer
+"{unsure}". A wrong guess puts money in the wrong envelope and is worse
+than asking. "{unsure}" is a good answer when the name is genuinely
+uninformative.
+
+`matched_phrase`: if the category's description is what told you this
+charge belongs there, copy the exact words from it. Copy them verbatim —
+do not reword. If the merchant name alone was enough and the description
+played no part, use an empty string.
+
+Return JSON only."""
+
+UNSURE = "UNSURE"
+
+
+def _suggest_schema(names: list[str]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "category": {"type": "string", "enum": names + [UNSURE]},
+            "confidence": {"type": "string",
+                           "enum": ["high", "medium", "low"]},
+            "why": {"type": "string", "description": "one short sentence"},
+            "matched_phrase": {
+                "type": "string",
+                "description": "copy the exact words from the chosen "
+                               "category's description that decided it. "
+                               "Empty string only if you went on the "
+                               "merchant name alone.",
+            },
+        },
+        # REQUIRED on purpose. A property a schema leaves optional is one
+        # the model leaves out -- the same failure as the conditional
+        # threshold in ADR 0006. Asked for it optionally, it cited
+        # nothing even when the description was the only thing that
+        # could have decided the answer.
+        "required": ["category", "confidence", "why", "matched_phrase"],
+    }
+
+
+async def run_suggest_category(
+    db: Session, user: User, provider: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    """Suggest where one charge belongs, and say what decided it."""
+    merchant = (request.get("merchant") or "").strip()
+    amount = request.get("amount_cents")
+    if not merchant:
+        raise ValueError("suggest_category needs a merchant")
+
+    cats = [c for c in _categories(db, user) if not c.is_unallocated]
+    if not cats:
+        raise ValueError("there are no categories to choose from")
+
+    lines = []
+    for c in cats:
+        line = f"  - {c.name} ({c.kind})"
+        if c.description:
+            line += f": {c.description}"
+        lines.append(line)
+
+    names = [c.name for c in cats]
+    prompt = SUGGEST_PROMPT.format(
+        merchant=merchant,
+        amount=f"${int(amount or 0) / 100:,.2f}",
+        cats="\n".join(lines),
+        unsure=UNSURE,
+    )
+    res = await provider.chat(prompt, schema=_suggest_schema(names))
+    return _validate_suggestion(_parse_json(res.content), cats, merchant)
+
+
+# Words too common to mean anything when found in a description.
+_NOISE = {
+    "the", "and", "for", "inc", "llc", "ltd", "co", "com", "store",
+    "payment", "purchase", "pos", "debit", "credit", "card", "ach",
+    "transfer", "online", "www", "usa", "us", "trip", "ride", "sq",
+}
+
+
+def _mentions(merchant: str, cats: list[Category]) -> list[dict[str, str]]:
+    """Which descriptions actually name something in this charge.
+
+    Computed here rather than asked of the model. Asked to cite its
+    reasoning, the model reliably quotes when the merchant appears
+    verbatim in a description and reliably does NOT when the
+    description merely shifted its answer -- so its own account of what
+    decided it cannot be trusted. This can be: it is a string match the
+    user can check.
+
+    The point is Neil's: you should be able to see whether a
+    description you wrote is doing anything.
+    """
+    words = {
+        w.strip(".,#*'\"").lower()
+        for w in merchant.replace("*", " ").replace("/", " ").split()
+    }
+    words = {w for w in words if len(w) > 2 and w not in _NOISE
+             and not w.isdigit()}
+
+    hits: list[dict[str, str]] = []
+    for c in cats:
+        if not c.description:
+            continue
+        low = c.description.lower()
+        for w in sorted(words):
+            if w in low:
+                hits.append({"category_name": c.name, "word": w,
+                             "description": c.description})
+                break
+    return hits
+
+
+def _validate_suggestion(
+    raw: dict[str, Any], cats: list[Category], merchant: str = ""
+) -> dict[str, Any]:
+    picked = str(raw.get("category", "")).strip()
+    by_name = {c.name: c for c in cats}
+
+    mentions = _mentions(merchant, cats) if merchant else []
+
+    if picked == UNSURE or picked not in by_name:
+        return {
+            "category_id": None, "category_name": None,
+            "confidence": "low",
+            "why": str(raw.get("why", "")).strip(),
+            "matched_phrase": None, "matched_phrase_raw": None,
+            "attribution_verified": False,
+            "mentions": mentions,
+            "chosen_description": None,
+            "unsure": True,
+        }
+
+    cat = by_name[picked]
+    phrase = str(raw.get("matched_phrase", "")).strip()
+
+    # Check the quote is real. A model asked to cite will sometimes
+    # produce a plausible paraphrase instead, and an attribution the
+    # user cannot find in their own description is worse than none --
+    # the whole point is to show which words are doing the work.
+    verified = bool(
+        phrase
+        and cat.description
+        and phrase.lower().strip(' ."\'') in cat.description.lower()
+    )
+
+    return {
+        "category_id": str(cat.id),
+        "category_name": cat.name,
+        "confidence": str(raw.get("confidence", "medium")),
+        "why": str(raw.get("why", "")).strip(),
+        "matched_phrase": phrase if verified else None,
+        # Kept even when it fails verification: a paraphrase is useful
+        # to see while tuning, and silently dropping it hides whether
+        # the model is citing at all.
+        "matched_phrase_raw": phrase or None,
+        "attribution_verified": verified,
+        # Deterministic, and the useful half: every description that
+        # names something in this charge, whether or not the model said
+        # so and whether or not it is the category it picked. A
+        # description that keeps turning up here against the wrong
+        # charges is one worth rewording.
+        "mentions": mentions,
+        "chosen_description": cat.description or None,
+        "unsure": False,
+    }

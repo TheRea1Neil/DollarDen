@@ -12,9 +12,11 @@ from sqlalchemy.orm import Session
 from app.api.deps import current_user
 from app.budget.categorize import resolve_review, signed_amount
 from app.budget.ledger import LedgerError, audit_balances
+from app.budget.treatment import Treatment, explain
 from app.budget.paycheck import apply_plan, candidates, predict_next, unapply
 from app.budget.split import RuleType, SplitPlanError, SplitRule as EngineRule, apply_split
 from app.db.models import (
+    Account,
     Allocation,
     Category,
     CategoryRule,
@@ -570,9 +572,31 @@ class SplitIn(BaseModel):
     amount_cents: int
 
 
+class NewCategoryIn(BaseModel):
+    """Create a category as part of resolving a review.
+
+    Finding a charge that fits nowhere is the normal moment to realise a
+    category is missing, so the flow allows it without leaving the queue.
+    """
+
+    name: str = Field(min_length=1, max_length=120)
+    kind: str = "spending"
+    target_cents: int | None = Field(default=None, ge=0)
+    alert_at_cents: int | None = Field(default=None, ge=0)
+
+    @field_validator("kind")
+    @classmethod
+    def _kind(cls, v: str) -> str:
+        if v not in KINDS:
+            raise ValueError(f"kind must be one of {sorted(KINDS)}")
+        return v
+
+
 class ResolveIn(BaseModel):
-    splits: list[SplitIn] = Field(min_length=1)
+    splits: list[SplitIn] = Field(default_factory=list)
     remember: bool = False
+    # Create this category and allocate the whole transaction to it.
+    new_category: NewCategoryIn | None = None
 
 
 @router.post("/review/{review_id}/resolve", status_code=status.HTTP_204_NO_CONTENT)
@@ -584,10 +608,42 @@ def resolve(
     if rv.resolved_at is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Already resolved")
 
-    pairs = []
-    for s in body.splits:
-        cat = _own(db, Category, s.category_id, user)
-        pairs.append((cat.id, s.amount_cents))
+    pairs: list[tuple[uuid.UUID, int]] = []
+
+    if body.new_category is not None:
+        if body.splits:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "Provide either splits or new_category, not both",
+            )
+        clash = db.scalars(
+            select(Category).where(
+                Category.user_id == user.id,
+                Category.name == body.new_category.name,
+                Category.archived_at.is_(None),
+            )
+        ).first()
+        if clash is not None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "A category with that name already exists"
+            )
+        cat = Category(user_id=user.id, **body.new_category.model_dump())
+        db.add(cat)
+        db.flush()
+
+        txn = db.get(Transaction, rv.transaction_id)
+        if txn is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Transaction missing")
+        pairs = [(cat.id, signed_amount(txn))]
+    else:
+        if not body.splits:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "Provide splits or new_category",
+            )
+        for s in body.splits:
+            cat = _own(db, Category, s.category_id, user)
+            pairs.append((cat.id, s.amount_cents))
 
     try:
         resolve_review(db, user.id, rv, pairs)
@@ -603,6 +659,141 @@ def resolve(
             db.add(CategoryRule(user_id=user.id, category_id=pairs[0][0],
                                 matcher={"merchant_contains": merchant.lower()}, priority=50))
     db.commit()
+
+
+# --------------------------------------------------------------------------- #
+# Transactions excluded from the budget
+# --------------------------------------------------------------------------- #
+class ExcludedOut(BaseModel):
+    transaction_id: str
+    date: str
+    name: str
+    merchant_name: str | None
+    amount_cents: int
+    treatment: str
+    reason: str
+
+
+@router.get("/excluded", response_model=list[ExcludedOut])
+def list_excluded(
+    limit: int = 100, user: User = Depends(current_user), db: Session = Depends(get_db)
+) -> list[ExcludedOut]:
+    """Transactions deliberately not counted against any category.
+
+    Exposed so an exclusion is never silent. If something was misclassified
+    the user can see it and change it.
+    """
+    rows = db.scalars(
+        select(Transaction)
+        .where(
+            Transaction.user_id == user.id,
+            Transaction.treatment != Treatment.SPEND.value,
+            Transaction.removed_at.is_(None),
+        )
+        .order_by(Transaction.date.desc())
+        .limit(min(limit, 500))
+    ).all()
+    return [
+        ExcludedOut(
+            transaction_id=str(t.id), date=t.date.isoformat(), name=t.name,
+            merchant_name=t.merchant_name, amount_cents=signed_amount(t),
+            treatment=t.treatment, reason=explain(Treatment(t.treatment)),
+        )
+        for t in rows
+    ]
+
+
+class ReclassifyIn(BaseModel):
+    treatment: str
+
+    @field_validator("treatment")
+    @classmethod
+    def _known(cls, v: str) -> str:
+        if v not in {t.value for t in Treatment}:
+            raise ValueError(f"treatment must be one of {[t.value for t in Treatment]}")
+        return v
+
+
+@router.post("/transactions/{transaction_id}/treatment")
+def reclassify(
+    transaction_id: str, body: ReclassifyIn,
+    user: User = Depends(current_user), db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Change how a transaction is treated.
+
+    Moving something OUT of `spend` reverses any allocations it made, so the
+    category balance is corrected rather than left reflecting a transaction
+    that no longer counts.
+    """
+    from app.budget.categorize import categorise
+    from app.budget.ledger import allocations_for_transaction, reverse
+
+    txn = _own(db, Transaction, transaction_id, user)
+    old = Treatment(txn.treatment)
+    new = Treatment(body.treatment)
+    if old is new:
+        return {"treatment": new.value, "changed": False}
+
+    txn.treatment = new.value
+
+    if old.affects_budget and not new.affects_budget:
+        existing = allocations_for_transaction(db, txn)
+        if existing:
+            reverse(db, user.id, existing, f"reclassified as {new.value}")
+        open_review = db.scalars(
+            select(ReviewItem).where(
+                ReviewItem.transaction_id == txn.id, ReviewItem.resolved_at.is_(None)
+            )
+        ).first()
+        if open_review is not None:
+            open_review.resolved_at = datetime.now(UTC)
+            open_review.resolution = {"excluded_as": new.value}
+
+    outcome = None
+    if not old.affects_budget and new.affects_budget:
+        outcome = categorise(db, user.id, txn)
+
+    db.commit()
+    return {"treatment": new.value, "changed": True, "categorised": outcome,
+            "reason": explain(new)}
+
+
+# --------------------------------------------------------------------------- #
+# Credit cards
+# --------------------------------------------------------------------------- #
+class CardOut(BaseModel):
+    account_id: str
+    name: str
+    mask: str | None
+    balance_cents: int
+    as_of: str | None
+
+
+@router.get("/cards", response_model=list[CardOut])
+def credit_cards(
+    user: User = Depends(current_user), db: Session = Depends(get_db)
+) -> list[CardOut]:
+    """Outstanding credit card balances.
+
+    Not part of the budget -- card spending already drew down categories at
+    purchase time. This answers a different question: how much needs paying,
+    and it updates on its own once the payment posts.
+    """
+    rows = db.scalars(
+        select(Account).where(
+            Account.user_id == user.id,
+            Account.type == "credit",
+            Account.is_tracked.is_(True),
+        ).order_by(Account.name)
+    ).all()
+    return [
+        CardOut(
+            account_id=str(a.id), name=a.name or "Credit card", mask=a.mask,
+            balance_cents=a.current_cents or 0,
+            as_of=a.balance_as_of.isoformat() if a.balance_as_of else None,
+        )
+        for a in rows
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -622,7 +813,20 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
         ).all()
     )
     drift = audit_balances(db, user.id)
+    cards = credit_cards(user=user, db=db)
+    excluded_count = len(
+        db.scalars(
+            select(Transaction).where(
+                Transaction.user_id == user.id,
+                Transaction.treatment != Treatment.SPEND.value,
+                Transaction.removed_at.is_(None),
+            )
+        ).all()
+    )
     return {
+        "cards": [c.model_dump() for c in cards],
+        "card_debt_cents": sum(c.balance_cents for c in cards),
+        "excluded_count": excluded_count,
         "categories": [_cat_out(c).model_dump() for c in cats],
         "total_allocated_cents": sum(c.balance_cents for c in cats),
         "alerts": [_cat_out(c).model_dump() for c in cats if _cat_out(c).below_alert],

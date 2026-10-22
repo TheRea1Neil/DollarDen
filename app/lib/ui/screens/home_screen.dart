@@ -44,6 +44,10 @@ class HomeScreen extends ConsumerWidget {
                 const SizedBox(height: 12),
                 _DriftWarning(count: s.ledgerDrift.length),
               ],
+              if (s.cards.any((c) => c.owes)) ...[
+                const SizedBox(height: 20),
+                _CardsSection(cards: s.cards, totalCents: s.cardDebtCents),
+              ],
               const SizedBox(height: 20),
               if (s.categories.isEmpty)
                 const _EmptyState()
@@ -240,6 +244,80 @@ class _ErrorView extends StatelessWidget {
             Text(message, textAlign: TextAlign.center),
             const SizedBox(height: 20),
             FilledButton.tonal(onPressed: onRetry, child: const Text('Retry')),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+
+/// Outstanding card balances, shown apart from the budget on purpose.
+///
+/// Card spending already drew categories down at purchase time. This is a
+/// reminder of what needs paying, not money to allocate -- which is why it
+/// never joins the category total.
+class _CardsSection extends StatelessWidget {
+  final List<CreditCard> cards;
+  final int totalCents;
+  const _CardsSection({required this.cards, required this.totalCents});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final owed = cards.where((c) => c.owes).toList();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.credit_card,
+                    size: 18, color: theme.colorScheme.onSurfaceVariant),
+                const SizedBox(width: 8),
+                Text('To pay off',
+                    style: theme.textTheme.labelLarge
+                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                const Spacer(),
+                Text(
+                  Money.format(totalCents),
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            for (final c in owed)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(c.label,
+                          style: theme.textTheme.bodyMedium,
+                          overflow: TextOverflow.ellipsis),
+                    ),
+                    Text(
+                      Money.format(c.balanceCents),
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 8),
+            Text(
+              'Already budgeted when you spent it. Paying the card will not '
+              'change your category balances.',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
           ],
         ),
       ),

@@ -118,6 +118,9 @@ class BudgetSummary {
   final int pendingReview;
   final NextPayday nextPayday;
   final List<dynamic> ledgerDrift;
+  final List<CreditCard> cards;
+  final int cardDebtCents;
+  final int excludedCount;
 
   const BudgetSummary({
     required this.categories,
@@ -127,6 +130,9 @@ class BudgetSummary {
     required this.pendingReview,
     required this.nextPayday,
     required this.ledgerDrift,
+    required this.cards,
+    required this.cardDebtCents,
+    required this.excludedCount,
   });
 
   factory BudgetSummary.fromJson(Map<String, dynamic> j) => BudgetSummary(
@@ -144,6 +150,11 @@ class BudgetSummary {
         nextPayday: NextPayday.fromJson(
             (j['next_payday'] as Map?)?.cast<String, dynamic>() ?? const {}),
         ledgerDrift: j['ledger_drift'] as List? ?? const [],
+        cards: (j['cards'] as List? ?? [])
+            .map((e) => CreditCard.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        cardDebtCents: j['card_debt_cents'] as int? ?? 0,
+        excludedCount: j['excluded_count'] as int? ?? 0,
       );
 }
 
@@ -202,4 +213,34 @@ class SyncResult {
   int get autoCategorised => (categorised['rule'] as int? ?? 0) +
       (categorised['prior_decision'] as int? ?? 0);
   int get needsReview => categorised['review'] as int? ?? 0;
+}
+
+
+/// An outstanding credit card balance.
+///
+/// Not part of the budget: card spending already drew down categories at
+/// purchase time. This answers a different question -- how much needs
+/// paying -- and updates itself once the payment posts.
+class CreditCard {
+  final String accountId;
+  final String name;
+  final String? mask;
+  final int balanceCents;
+
+  const CreditCard({
+    required this.accountId,
+    required this.name,
+    required this.balanceCents,
+    this.mask,
+  });
+
+  factory CreditCard.fromJson(Map<String, dynamic> j) => CreditCard(
+        accountId: j['account_id'] as String,
+        name: j['name'] as String? ?? 'Credit card',
+        mask: j['mask'] as String?,
+        balanceCents: j['balance_cents'] as int? ?? 0,
+      );
+
+  String get label => mask == null ? name : '$name ••$mask';
+  bool get owes => balanceCents > 0;
 }

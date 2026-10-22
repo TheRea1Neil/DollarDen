@@ -17,6 +17,7 @@ app/budget/ledger.py
 app/budget/paycheck.py
 app/budget/rules.py
 app/budget/split.py
+app/budget/treatment.py
 app/core/__init__.py
 app/core/config.py
 app/core/ratelimit.py
@@ -44,3 +45,4 @@ tests/test_plaid_webhook.py
 tests/test_ratelimit.py
 tests/test_split_engine.py
 tests/test_token_backup.py
+tests/test_treatment.py

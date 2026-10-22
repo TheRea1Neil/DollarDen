@@ -348,3 +348,72 @@ class TestUserDeletionCascades:
             assert db.scalar(
                 select(func.count()).select_from(SplitRule).where(SplitRule.plan_id == plan_id)
             ) == 0
+
+
+@requires_db
+class TestCreditCardDoubleCounting:
+    """The scenario that motivated treatment classification."""
+
+    def test_card_purchase_then_payment_counts_once(self) -> None:
+        from app.budget.treatment import Treatment
+
+        with SessionLocal() as db:
+            u, acct, cats, plan = _fixture(db)
+            post(db, u.id, [Entry(cats["Food"].id, 300_00, "opening_balance")])
+            db.add(CategoryRule(user_id=u.id, category_id=cats["Food"].id,
+                                matcher={"merchant_contains": "smiths"}, priority=10))
+            db.flush()
+
+            # 1. Groceries on the credit card -> Food draws down.
+            purchase = _txn(db, u, acct, out=42_10, merchant="Smiths Food")
+            assert categorise(db, u.id, purchase) == "rule"
+            assert cats["Food"].balance_cents == 300_00 - 42_10
+
+            # 2. Paying the card settles debt already accounted for.
+            payment = _txn(db, u, acct, out=500_00, name="AUTOMATIC PAYMENT - THANK YOU")
+            payment.treatment = Treatment.CARD_PAYMENT.value
+            db.flush()
+            assert categorise(db, u.id, payment) == "not_budgeted"
+
+            # Food is unchanged: the $42.10 was counted exactly once.
+            assert cats["Food"].balance_cents == 300_00 - 42_10
+            assert audit_balances(db, u.id) == []
+            db.rollback()
+
+    def test_payments_never_reach_the_review_queue(self) -> None:
+        from sqlalchemy import func
+
+        from app.budget.treatment import Treatment
+        from app.db.models import ReviewItem as RI
+
+        with SessionLocal() as db:
+            u, acct, cats, plan = _fixture(db)
+            p = _txn(db, u, acct, out=500_00, name="CREDIT CARD PAYMENT")
+            p.treatment = Treatment.CARD_PAYMENT.value
+            db.flush()
+            categorise(db, u.id, p)
+            assert db.scalar(
+                select(func.count()).select_from(RI).where(RI.transaction_id == p.id)
+            ) == 0, "a card payment must not ask the user to categorise it"
+            db.rollback()
+
+    def test_reclassifying_to_a_payment_reverses_its_allocation(self) -> None:
+        """If something was wrongly counted, excluding it must correct the
+        balance rather than leave the category wrong."""
+        from app.budget.ledger import allocations_for_transaction, reverse
+
+        with SessionLocal() as db:
+            u, acct, cats, plan = _fixture(db)
+            post(db, u.id, [Entry(cats["Food"].id, 300_00, "opening_balance")])
+            db.add(CategoryRule(user_id=u.id, category_id=cats["Food"].id,
+                                matcher={"merchant_contains": "acme"}, priority=10))
+            db.flush()
+
+            t = _txn(db, u, acct, out=120_00, merchant="ACME")
+            categorise(db, u.id, t)
+            assert cats["Food"].balance_cents == 180_00
+
+            reverse(db, u.id, allocations_for_transaction(db, t), "reclassified")
+            assert cats["Food"].balance_cents == 300_00
+            assert audit_balances(db, u.id) == []
+            db.rollback()

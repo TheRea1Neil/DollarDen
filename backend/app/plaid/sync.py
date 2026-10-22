@@ -24,6 +24,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.budget.treatment import classify
 from app.db.models import Account, PlaidItem, Transaction
 
 log = logging.getLogger("nnf.plaid.sync")
@@ -145,6 +146,19 @@ def _upsert(db: Session, item: PlaidItem, accounts: dict[str, Account],
     txn.pfc_primary = pfc.get("primary")
     txn.pfc_detailed = pfc.get("detailed")
     txn.removed_at = None
+
+    # Only classify on first sight. Re-classifying would silently undo a
+    # user's manual correction every time Plaid re-sends the transaction.
+    if is_new:
+        txn.treatment = classify(
+            pfc_primary=txn.pfc_primary,
+            pfc_detailed=txn.pfc_detailed,
+            name=txn.name,
+            merchant_name=txn.merchant_name,
+            account_type=acct.type,
+            outflow_cents=out_c,
+            inflow_cents=in_c,
+        ).value
 
     # Plaid tells us which pending transaction this posted one replaces.
     ref = raw.get("pending_transaction_id")

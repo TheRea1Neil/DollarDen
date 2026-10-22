@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.budget import rules
 from app.budget.ledger import Entry, post, transaction_is_fully_allocated
+from app.budget.treatment import Treatment
 from app.db.models import ReviewItem, Transaction
 
 log = logging.getLogger("nnf.budget.categorize")
@@ -66,10 +67,19 @@ def queue_for_review(
 def categorise(db: Session, user_id: uuid.UUID, txn: Transaction) -> str:
     """Categorise one transaction. Returns what happened.
 
-    Outcomes: rule | prior_decision | review | already_allocated | skipped
+    Outcomes: rule | prior_decision | review | already_allocated |
+              not_budgeted | skipped
     """
     if txn.removed_at is not None:
         return "skipped"
+
+    # Credit card payments and internal transfers move money without
+    # spending it. The purchases they settle were already allocated, so
+    # counting them again would double-count every card purchase. They are
+    # excluded from both allocation and the review queue -- but remain
+    # visible under /budget/excluded so nothing is silently hidden.
+    if not Treatment(txn.treatment).affects_budget:
+        return "not_budgeted"
 
     if transaction_is_fully_allocated(db, txn):
         return "already_allocated"

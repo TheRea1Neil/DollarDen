@@ -118,7 +118,7 @@ class _ReviewCard extends ConsumerWidget {
     final categories = await ref.read(categoriesProvider.future);
     if (!context.mounted) return;
 
-    final result = await showModalBottomSheet<({String categoryId, bool remember})>(
+    final result = await showModalBottomSheet<_PickerResult>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
@@ -126,19 +126,33 @@ class _ReviewCard extends ConsumerWidget {
     );
     if (result == null || !context.mounted) return;
 
+    final api = ref.read(apiProvider);
     try {
-      await ref.read(apiProvider).resolveReview(
-        item.id,
-        // One category takes the whole amount. Splitting is a separate flow.
-        [(categoryId: result.categoryId, amountCents: item.amountCents)],
-        remember: result.remember,
-      );
+      switch (result) {
+        case _PickExisting(:final categoryId, :final remember):
+          await api.resolveReview(
+            item.id,
+            // One category takes the whole amount. Splitting is separate.
+            [(categoryId: categoryId, amountCents: item.amountCents)],
+            remember: remember,
+          );
+        case _PickNew(:final name, :final kind, :final targetCents, :final remember):
+          await api.resolveReviewWithNewCategory(
+            item.id, name: name, kind: kind,
+            targetCents: targetCents, remember: remember,
+          );
+        case _PickExclude(:final treatment):
+          await api.setTreatment(item.transactionId, treatment);
+      }
       ref.invalidate(reviewProvider);
       ref.invalidate(summaryProvider);
+      ref.invalidate(categoriesProvider);
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${item.title} categorised')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(result is _PickExclude
+              ? '${item.title} excluded from the budget'
+              : '${item.title} categorised'),
+        ));
       }
     } on ApiException catch (e) {
       if (context.mounted) {
@@ -147,6 +161,29 @@ class _ReviewCard extends ConsumerWidget {
       }
     }
   }
+}
+
+sealed class _PickerResult {
+  const _PickerResult();
+}
+
+class _PickExisting extends _PickerResult {
+  final String categoryId;
+  final bool remember;
+  const _PickExisting(this.categoryId, this.remember);
+}
+
+class _PickNew extends _PickerResult {
+  final String name;
+  final String kind;
+  final int? targetCents;
+  final bool remember;
+  const _PickNew(this.name, this.kind, this.targetCents, this.remember);
+}
+
+class _PickExclude extends _PickerResult {
+  final String treatment;
+  const _PickExclude(this.treatment);
 }
 
 class _CategoryPicker extends StatefulWidget {
@@ -160,6 +197,54 @@ class _CategoryPicker extends StatefulWidget {
 
 class _CategoryPickerState extends State<_CategoryPicker> {
   bool _remember = true;
+
+  Future<void> _createCategory(BuildContext context) async {
+    final created = await showDialog<_PickNew>(
+      context: context,
+      builder: (ctx) => _NewCategoryDialog(remember: _remember),
+    );
+    if (created != null && context.mounted) Navigator.pop(context, created);
+  }
+
+  Future<void> _excludeSheet(BuildContext context) async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(
+                'Money that moves without being spent is left out of the '
+                'budget, so card purchases are not counted twice.',
+                textAlign: TextAlign.center,
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.credit_card),
+              title: const Text('Credit card payment'),
+              onTap: () => Navigator.pop(ctx, 'card_payment'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.swap_horiz),
+              title: const Text('Transfer between my accounts'),
+              onTap: () => Navigator.pop(ctx, 'transfer'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.visibility_off_outlined),
+              title: const Text('Just ignore it'),
+              onTap: () => Navigator.pop(ctx, 'ignored'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice != null && context.mounted) {
+      Navigator.pop(context, _PickExclude(choice));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -188,10 +273,32 @@ class _CategoryPickerState extends State<_CategoryPicker> {
                       subtitle: Text(Money.format(c.balanceCents)),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: () => Navigator.pop(
-                        context,
-                        (categoryId: c.id, remember: _remember),
-                      ),
+                          context, _PickExisting(c.id, _remember)),
                     ),
+                  const Divider(),
+                  // Noticing a charge fits nowhere is exactly when you
+                  // realise a category is missing, so make one here.
+                  ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor:
+                          theme.colorScheme.primaryContainer,
+                      child: Icon(Icons.add,
+                          color: theme.colorScheme.onPrimaryContainer),
+                    ),
+                    title: const Text('New category…'),
+                    subtitle: const Text('Create one for this charge'),
+                    onTap: () => _createCategory(context),
+                  ),
+                  ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor:
+                          theme.colorScheme.surfaceContainerHighest,
+                      child: const Icon(Icons.block),
+                    ),
+                    title: const Text("Don't count this"),
+                    subtitle: const Text('Card payment or transfer'),
+                    onTap: () => _excludeSheet(context),
+                  ),
                 ],
               ),
             ),
@@ -206,6 +313,82 @@ class _CategoryPickerState extends State<_CategoryPicker> {
           ],
         ),
       ),
+    );
+  }
+}
+
+
+class _NewCategoryDialog extends StatefulWidget {
+  final bool remember;
+  const _NewCategoryDialog({required this.remember});
+
+  @override
+  State<_NewCategoryDialog> createState() => _NewCategoryDialogState();
+}
+
+class _NewCategoryDialogState extends State<_NewCategoryDialog> {
+  final _name = TextEditingController();
+  final _target = TextEditingController();
+  String _kind = 'spending';
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _target.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('New category'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _name,
+            autofocus: true,
+            textCapitalization: TextCapitalization.words,
+            decoration: const InputDecoration(labelText: 'Name'),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            initialValue: _kind,
+            decoration: const InputDecoration(labelText: 'Type'),
+            items: const [
+              DropdownMenuItem(value: 'spending', child: Text('Spending')),
+              DropdownMenuItem(
+                  value: 'savings_bucket', child: Text('Savings bucket')),
+              DropdownMenuItem(value: 'obligation', child: Text('Obligation')),
+            ],
+            onChanged: (v) => setState(() => _kind = v ?? 'spending'),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _target,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(
+              labelText: 'Refill target (optional)',
+              prefixText: r'$',
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () {
+            final name = _name.text.trim();
+            if (name.isEmpty) return;
+            Navigator.pop(
+              context,
+              _PickNew(name, _kind, Money.parse(_target.text), widget.remember),
+            );
+          },
+          child: const Text('Create & assign'),
+        ),
+      ],
     );
   }
 }

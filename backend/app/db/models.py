@@ -137,6 +137,7 @@ class Transaction(Base):
     __table_args__ = (
         Index("ix_transactions_user_date", "user_id", "date"),
         Index("ix_transactions_user_pending", "user_id", "pending"),
+        Index("ix_transactions_user_treatment", "user_id", "treatment"),
     )
 
     id: Mapped[uuid.UUID] = _pk()
@@ -155,6 +156,9 @@ class Transaction(Base):
     merchant_name: Mapped[str | None] = mapped_column(String(300))
     pending: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     pending_replaced_by: Mapped[str | None] = mapped_column(String(128))
+    # spend | card_payment | transfer | ignored -- see app/budget/treatment.py.
+    # Only `spend` allocates against a category.
+    treatment: Mapped[str] = mapped_column(String(16), nullable=False, default="spend")
     pfc_primary: Mapped[str | None] = mapped_column(String(64))
     pfc_detailed: Mapped[str | None] = mapped_column(String(96))
     removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

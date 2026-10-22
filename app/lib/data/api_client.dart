@@ -226,6 +226,45 @@ class ApiClient {
     if (r.statusCode != 204) _fail(r);
   }
 
+  /// Resolve a review by creating a brand-new category for it.
+  ///
+  /// Finding a charge that fits nowhere is exactly when you notice a
+  /// category is missing, so this avoids leaving the queue to go and make
+  /// one.
+  Future<void> resolveReviewWithNewCategory(
+    String reviewId, {
+    required String name,
+    String kind = 'spending',
+    int? targetCents,
+    int? alertAtCents,
+    bool remember = false,
+  }) async {
+    final r = await _withRetry((o) => _dio.post(
+          '/budget/review/$reviewId/resolve',
+          data: {
+            'new_category': {
+              'name': name,
+              'kind': kind,
+              if (targetCents != null) 'target_cents': targetCents,
+              if (alertAtCents != null) 'alert_at_cents': alertAtCents,
+            },
+            'remember': remember,
+          },
+          options: o,
+        ));
+    if (r.statusCode != 204) _fail(r);
+  }
+
+  /// Move a transaction in or out of the budget entirely.
+  Future<void> setTreatment(String transactionId, String treatment) async {
+    final r = await _withRetry((o) => _dio.post(
+          '/budget/transactions/$transactionId/treatment',
+          data: {'treatment': treatment},
+          options: o,
+        ));
+    if (r.statusCode != 200) _fail(r);
+  }
+
   Future<NextPayday> nextPayday() async {
     final r = await _withRetry((o) => _dio.get('/budget/next-payday', options: o));
     if (r.statusCode != 200) _fail(r);

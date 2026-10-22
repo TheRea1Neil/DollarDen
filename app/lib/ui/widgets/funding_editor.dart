@@ -14,9 +14,10 @@ class FundingEditor extends StatefulWidget {
   final Funding? initial;
   final int categoryCount;
 
-  /// Called with (ruleType, params, position). A null ruleType means
-  /// "not funded automatically".
-  final void Function(String?, Map<String, dynamic>, int?) onChanged;
+  /// Called with (ruleType, params, position, complete). `complete` is
+  /// false while a required field is still blank, so the caller can
+  /// refuse to save a rule the engine could not run.
+  final void Function(String?, Map<String, dynamic>, int?, bool) onChanged;
 
   const FundingEditor({
     super.key,
@@ -66,6 +67,11 @@ class _FundingEditorState extends State<FundingEditor> {
     for (final c in [_rate, _amount, _target, _cap, _threshold, _thenAmount]) {
       c.addListener(_emit);
     }
+    // Emit once, before anything is touched. Without this the parent
+    // holds whatever it guessed at construction, and a save that
+    // happens to not trigger a listener silently writes the OLD rule
+    // back -- which looks exactly like "I had to do it twice".
+    WidgetsBinding.instance.addPostFrameCallback((_) => _emit());
   }
 
   static String _pctText(String rate) {
@@ -125,8 +131,27 @@ class _FundingEditorState extends State<FundingEditor> {
     }
   }
 
+  /// Whether every field this rule type needs has a value.
+  bool get _complete {
+    switch (_type) {
+      case _none:
+      case 'remainder':
+        return true;
+      case 'percent':
+        final v = double.tryParse(_rate.text.trim());
+        return v != null && v > 0;
+      case 'fixed':
+        return (_cents(_amount) ?? 0) > 0;
+      case 'refill_to':
+        return (_cents(_target) ?? 0) > 0;
+      case 'conditional':
+        return (_cents(_threshold) ?? -1) >= 0 && (_cents(_thenAmount) ?? 0) > 0;
+    }
+    return false;
+  }
+
   void _emit() => widget.onChanged(
-      _type == _none ? null : _type, _params(), _position);
+      _type == _none ? null : _type, _params(), _position, _complete);
 
   /// The same sentence the API renders, built locally so it updates as
   /// the user types rather than only after saving.

@@ -48,6 +48,7 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
   Map<String, dynamic> _pendingParams = const {};
   int? _pendingPosition;
   bool _fundingTouched = false;
+  bool _pendingFundingComplete = true;
   int _categoryCount = 1;
 
   bool get _isNew => widget.existing == null;
@@ -146,7 +147,9 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
       }
       // Funding is a plan revision, so it is a separate call and only
       // made when the user actually touched it.
-      if (!_isNew && _fundingTouched) {
+      // An incomplete rule cannot be run by the engine, so it is not
+      // saved; the rest of the category still is.
+      if (!_isNew && _fundingTouched && _pendingFundingComplete) {
         await api.setFunding(
           widget.existing!.id,
           ruleType: _pendingRuleType,
@@ -481,10 +484,11 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
                 FundingEditor(
                   initial: _detail?.funding,
                   categoryCount: _categoryCount,
-                  onChanged: (type, params, position) {
+                  onChanged: (type, params, position, complete) {
                     _pendingRuleType = type;
                     _pendingParams = params;
                     _pendingPosition = position;
+                    _pendingFundingComplete = complete;
                     _fundingTouched = true;
                   },
                 ),

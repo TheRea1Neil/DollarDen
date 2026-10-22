@@ -156,6 +156,18 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
     if (result == null) return;
     final (type, params) = result;
 
+    // Nothing to do, and saying so beats a silent no-op that looks like
+    // a failed save.
+    if (type == line.ruleType && _sameParams(params, line.params)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('No change to save'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+      return;
+    }
+
     // A rule change is a decision, not an experiment: it is saved to the
     // plan straight away. Only the dragged ORDER is one-off. Position is
     // preserved, so saving a rule does not also move the category.
@@ -179,6 +191,21 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// Compare only the keys that matter to the engine; a rule carrying
+  /// an extra null is the same rule.
+  static bool _sameParams(Map<String, dynamic> a, Map<String, dynamic> b) {
+    String norm(Map<String, dynamic> m) {
+      final clean = {
+        for (final e in m.entries)
+          if (e.value != null) e.key: e.value
+      };
+      final keys = clean.keys.toList()..sort();
+      return [for (final k in keys) '$k=${clean[k]}'].join('&');
+    }
+
+    return norm(a) == norm(b);
   }
 
   List<Map<String, dynamic>> get _manualJson => [
@@ -584,6 +611,11 @@ class _RuleSheetState extends State<_RuleSheet> {
   String? _type;
   Map<String, dynamic> _params = const {};
 
+  /// False until every field the chosen rule type needs has a value.
+  /// Saving an incomplete rule used to write the old one back, which
+  /// read as "I had to do it twice".
+  bool _complete = false;
+
   @override
   void initState() {
     super.initState();
@@ -646,11 +678,28 @@ class _RuleSheetState extends State<_RuleSheet> {
               // Position is dragged in the list behind this sheet, so the
               // slider would be a second, conflicting control.
               categoryCount: 1,
-              onChanged: (type, params, _) {
-                _type = type;
-                _params = params;
+              onChanged: (type, params, _, complete) {
+                // setState so the Save button enables the moment the
+                // rule becomes usable.
+                setState(() {
+                  _type = type;
+                  _params = params;
+                  _complete = complete;
+                });
               },
             ),
+            if (!_complete) ...[
+              const SizedBox(height: 8),
+              Text('Fill in the amount to save this rule.',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.error)),
+            ],
+            if (!_complete) ...[
+              const SizedBox(height: 8),
+              Text('Fill in every amount this rule needs before saving.',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.error)),
+            ],
             const SizedBox(height: 20),
             Row(children: [
               Expanded(
@@ -662,7 +711,9 @@ class _RuleSheetState extends State<_RuleSheet> {
               const SizedBox(width: 12),
               Expanded(
                 child: FilledButton(
-                  onPressed: () => Navigator.pop(context, (_type, _params)),
+                  onPressed: _complete
+                      ? () => Navigator.pop(context, (_type, _params))
+                      : null,
                   child: const Text('Save rule'),
                 ),
               ),

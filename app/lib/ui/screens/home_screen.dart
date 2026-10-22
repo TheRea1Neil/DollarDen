@@ -6,6 +6,7 @@ import '../../core/theme.dart';
 import '../../data/providers.dart';
 import '../../domain/models.dart';
 import '../widgets/category_tile.dart';
+import 'add_category_screen.dart';
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -18,6 +19,14 @@ class HomeScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Budget'),
         actions: [
+          IconButton(
+            tooltip: 'New category',
+            icon: const Icon(Icons.add),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<bool>(
+                  builder: (_) => const AddCategoryScreen()),
+            ),
+          ),
           IconButton(
             tooltip: 'Sign out',
             icon: const Icon(Icons.logout),
@@ -63,19 +72,186 @@ class HomeScreen extends ConsumerWidget {
               if (s.categories.isEmpty)
                 const _EmptyState()
               else
-                Card(
-                  child: Column(
-                    children: [
-                      for (var i = 0; i < s.categories.length; i++) ...[
-                        if (i > 0) const Divider(height: 1, indent: 16, endIndent: 16),
-                        CategoryTile(category: s.categories[i]),
-                      ],
-                    ],
-                  ),
-                ),
+                _CategoryList(categories: s.categories),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// The category list, with a drag-to-reorder mode.
+///
+/// Reordering is behind an explicit toggle rather than always-on. Drag
+/// handles that are always visible invite accidental drags on a list the
+/// user mostly wants to read, and a long-press to drag would fight the
+/// tap that opens a category.
+class _CategoryList extends ConsumerStatefulWidget {
+  final List<Category> categories;
+  const _CategoryList({required this.categories});
+
+  @override
+  ConsumerState<_CategoryList> createState() => _CategoryListState();
+}
+
+class _CategoryListState extends ConsumerState<_CategoryList> {
+  bool _reordering = false;
+  List<Category>? _draft;
+  bool _saving = false;
+
+  List<Category> get _shown => _draft ?? widget.categories;
+
+  @override
+  void didUpdateWidget(covariant _CategoryList old) {
+    super.didUpdateWidget(old);
+    // A refresh that lands mid-drag must not silently discard the order
+    // the user is arranging.
+    if (!_reordering) _draft = null;
+  }
+
+  Future<void> _save() async {
+    final order = _shown;
+    setState(() => _saving = true);
+    try {
+      await ref.read(apiProvider).reorderCategories([for (final c in order) c.id]);
+      if (!mounted) return;
+      setState(() {
+        _reordering = false;
+        _draft = null;
+        _saving = false;
+      });
+      ref.invalidate(summaryProvider);
+      ref.invalidate(categoriesProvider);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Could not save the order: $e")),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text('Categories',
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            const Spacer(),
+            if (_reordering) ...[
+              TextButton(
+                onPressed: _saving
+                    ? null
+                    : () => setState(() {
+                          _reordering = false;
+                          _draft = null;
+                        }),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: _saving ? null : _save,
+                child: _saving
+                    ? const SizedBox(
+                        width: 16, height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Text('Done'),
+              ),
+            ] else
+              TextButton.icon(
+                onPressed: widget.categories.length < 2
+                    ? null
+                    : () => setState(() => _reordering = true),
+                icon: const Icon(Icons.swap_vert, size: 18),
+                label: const Text('Reorder'),
+              ),
+          ],
+        ),
+        if (_reordering) ...[
+          const SizedBox(height: 4),
+          _ReorderNotice(),
+          const SizedBox(height: 8),
+        ] else
+          const SizedBox(height: 4),
+        Card(
+          child: _reordering
+              ? ReorderableListView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  buildDefaultDragHandles: false,
+                  itemCount: _shown.length,
+                  onReorder: (from, to) => setState(() {
+                    final next = [..._shown];
+                    if (to > from) to -= 1;
+                    next.insert(to, next.removeAt(from));
+                    _draft = next;
+                  }),
+                  itemBuilder: (context, i) {
+                    final c = _shown[i];
+                    return ListTile(
+                      key: ValueKey(c.id),
+                      dense: true,
+                      leading: ReorderableDragStartListener(
+                        index: i,
+                        child: const Icon(Icons.drag_handle),
+                      ),
+                      title: Text(c.name),
+                      trailing: Text(Money.format(c.balanceCents),
+                          style: theme.textTheme.bodyMedium),
+                    );
+                  },
+                )
+              : Column(
+                  children: [
+                    for (var i = 0; i < widget.categories.length; i++) ...[
+                      if (i > 0)
+                        const Divider(height: 1, indent: 16, endIndent: 16),
+                      CategoryTile(category: widget.categories[i]),
+                    ],
+                  ],
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Says plainly what reordering does and does not do.
+///
+/// Users reasonably assume dragging a category up means it gets funded
+/// first. It does not -- that is the split plan's job -- and finding out
+/// after a paycheck lands is the wrong time to learn it.
+class _ReorderNotice extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline,
+              size: 18, color: theme.colorScheme.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'This changes the order you see them in only. '
+              'To change which category gets funded first from a paycheck, '
+              'edit the funding order in your split plan.',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+          ),
+        ],
       ),
     );
   }

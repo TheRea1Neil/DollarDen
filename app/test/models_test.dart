@@ -21,6 +21,7 @@ Map<String, dynamic> _cat({
     };
 
 void main() {
+  _suggestedCategoryTests();
   group('Category.fillRatio', () {
     test('is null without a target to measure against', () {
       expect(Category.fromJson(_cat(balance: 5000)).fillRatio, isNull);
@@ -140,6 +141,63 @@ void _proposalTests() {
       expect(j('done').ok, isTrue);
       expect(j('failed').finished, isTrue);
       expect(j('failed').ok, isFalse);
+    });
+  });
+}
+
+void _suggestedCategoryTests() {
+  group('SuggestedCategory', () {
+    test('reads a full suggestion including the nested rule', () {
+      final s = SuggestedCategory.fromJson({
+        'name': 'Dog Vet',
+        'kind': 'savings_bucket',
+        'description': 'vet bills',
+        'target_cents': 50000,
+        'suggested_rule': {
+          'rule_type': 'fixed',
+          'params': {'amount_cents': 5000},
+          'why': 'steady',
+        },
+        'matcher_hint': {'merchant_contains': 'vet'},
+        'applicable': true,
+      });
+      expect(s.ruleType, 'fixed');
+      expect(s.merchantHint, 'vet');
+      expect(s.fundingSummary, '\$50.00 every paycheck');
+    });
+
+    test('an unfunded category says so rather than showing a blank', () {
+      final s = SuggestedCategory.fromJson(
+          {'name': 'X', 'kind': 'spending', 'applicable': true});
+      expect(s.ruleType, isNull);
+      expect(s.fundingSummary, contains('by hand'));
+    });
+
+    test('funding summary is plain English, not rule_type jargon', () {
+      SuggestedCategory of(Map<String, dynamic> rule) =>
+          SuggestedCategory.fromJson(
+              {'name': 'X', 'kind': 'spending', 'suggested_rule': rule});
+
+      expect(of({'rule_type': 'percent', 'params': {'rate': '0.10', 'of': 'gross'}})
+          .fundingSummary, '10% of gross pay each paycheck');
+      expect(of({'rule_type': 'refill_to', 'params': {'target_cents': 30000}})
+          .fundingSummary, contains('\$300.00'));
+    });
+
+    test('degrades rather than crashing when params are missing', () {
+      final s = SuggestedCategory.fromJson({
+        'name': 'X', 'kind': 'spending',
+        'suggested_rule': {'rule_type': 'fixed', 'params': {}},
+      });
+      expect(s.fundingSummary, isNotEmpty);
+    });
+
+    test('toProposed carries the description through', () {
+      final s = SuggestedCategory.fromJson({
+        'name': 'Dog Vet', 'kind': 'savings_bucket',
+        'description': 'vet bills', 'applicable': true,
+      });
+      expect(s.toProposed().toJson()['description'], 'vet bills');
     });
   });
 }

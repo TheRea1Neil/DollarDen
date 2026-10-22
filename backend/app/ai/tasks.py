@@ -27,6 +27,22 @@ def _goals(db: Session, user: User) -> str:
     return (row.body if row else "").strip()
 
 
+def _describe_category(c: Category) -> str:
+    """One line of context about a category.
+
+    The description is written by the user or a previous proposal and says
+    what the category is FOR. It is not used by the allocation engine --
+    that is driven entirely by split rules -- but it is exactly the context
+    the model needs to place a new transaction or design around it.
+    """
+    bits = [f"  - {c.name} ({c.kind})"]
+    if c.target_cents:
+        bits.append(f", target ${c.target_cents / 100:.2f}")
+    if c.description:
+        bits.append(f" — {c.description}")
+    return "".join(bits)
+
+
 def _categories(db: Session, user: User) -> list[Category]:
     return list(
         db.scalars(
@@ -197,11 +213,7 @@ async def run_design_categories(
     goals = request.get("goals") or _goals(db, user) or "(none stated)"
 
     if existing:
-        lines = "\n".join(
-            f"  - {c.name} ({c.kind})"
-            + (f", target ${c.target_cents / 100:.2f}" if c.target_cents else "")
-            for c in existing
-        )
+        lines = "\n".join(_describe_category(c) for c in existing)
         existing_block = (
             f"The user ALREADY has these categories. Reuse them by name where they "
             f"fit, and only add what is missing:\n{lines}"
@@ -509,6 +521,7 @@ async def run_summary(
     balances = "\n".join(
         f"  {c.name}: ${c.balance_cents / 100:.2f}"
         + (f" of ${c.target_cents / 100:.2f}" if c.target_cents else "")
+        + (f" — {c.description}" if c.description else "")
         for c in cats
     ) or "  (no categories yet)"
 
@@ -554,7 +567,11 @@ async def run_advise(
     goals = _goals(db, user) or "(none stated)"
     cats = _categories(db, user)
     rec = compute_reconciliation(db, user.id)
-    balances = "\n".join(f"  {c.name}: ${c.balance_cents / 100:.2f}" for c in cats)
+    balances = "\n".join(
+        f"  {c.name}: ${c.balance_cents / 100:.2f}"
+        + (f" — {c.description}" if c.description else "")
+        for c in cats
+    )
 
     prompt = (
         f"Someone is asking about their own budget.\n\n"
@@ -568,3 +585,147 @@ async def run_advise(
     )
     res = await provider.chat(prompt)
     return {"answer": res.content.strip(), "model": res.model}
+
+
+# --------------------------------------------------------------------------- #
+# Designing ONE category
+# --------------------------------------------------------------------------- #
+SINGLE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "kind": {"type": "string",
+                 "enum": ["spending", "savings_bucket", "obligation"]},
+        "description": {"type": "string",
+                        "description": "what this category is for, one sentence"},
+        "target_cents": {"type": "integer",
+                         "description": "refill target in CENTS, 30000 means $300"},
+        "alert_at_cents": {"type": "integer"},
+        "suggested_rule": {
+            "type": "object",
+            "properties": {
+                "rule_type": {"type": "string",
+                              "enum": ["percent", "fixed", "refill_to", "conditional"]},
+                "params": {
+                    "type": "object",
+                    "properties": {
+                        "rate": {"type": "string"},
+                        "of": {"type": "string", "enum": ["gross", "remaining"]},
+                        "amount_cents": {"type": "integer"},
+                        "target_cents": {"type": "integer"},
+                    },
+                },
+                "why": {"type": "string"},
+            },
+        },
+        "matcher_hint": {
+            "type": "object",
+            "description": "words likely to appear on matching transactions",
+            "properties": {
+                "merchant_contains": {"type": "string"},
+            },
+        },
+    },
+    "required": ["name", "kind", "description"],
+}
+
+SINGLE_PROMPT = """Design ONE budget category from a description.
+
+Category kinds:
+    spending        refilled each paycheck and spent down (groceries, gas)
+    savings_bucket  accumulates toward something (emergency fund, new car)
+    obligation      accrues toward a known payment (rent, tithing, insurance)
+
+All money is INTEGER CENTS. $300.00 is 30000. $2,000.00 is 200000.
+
+The user already has these categories — do NOT duplicate one of them, and
+pick a name that clearly distinguishes the new one:
+{existing}
+
+Their overall goals, for context:
+{goals}
+
+They want a category for:
+{request}
+
+Return:
+- a short clear name
+- the right kind
+- a one-sentence description of what it is for
+- target_cents if it makes sense to refill it to a set amount
+- suggested_rule: how each paycheck should fund it (NOT a remainder rule —
+  this is one category, not a whole plan)
+- matcher_hint: a word likely to appear on transactions belonging here,
+  lowercase, if there is an obvious one
+
+Return JSON only."""
+
+
+async def run_design_category(
+    db: Session, user: User, provider: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    """Design a single category from a prose description.
+
+    Separate from `design_categories` because adding one category should
+    not mean regenerating -- and risking changes to -- an entire working
+    plan the user has already tuned.
+    """
+    wanted = (request.get("request") or "").strip()
+    if not wanted:
+        raise ValueError("describe what the category is for")
+
+    existing = _categories(db, user)
+    prompt = SINGLE_PROMPT.format(
+        existing="\n".join(_describe_category(c) for c in existing) or "  (none yet)",
+        goals=_goals(db, user) or "(none stated)",
+        request=wanted,
+    )
+
+    res = await provider.chat(prompt, schema=SINGLE_SCHEMA)
+    raw = _parse_json(res.content)
+    return _validate_single(raw, existing)
+
+
+def _validate_single(
+    raw: dict[str, Any], existing: list[Category]
+) -> dict[str, Any]:
+    problems: list[str] = []
+    notices: list[str] = []
+
+    name = str(raw.get("name", "")).strip()
+    if not name:
+        problems.append("the model did not give the category a name")
+
+    kind = raw.get("kind")
+    if kind not in VALID_KINDS:
+        notices.append(f"kind '{kind}' was not valid, defaulted to spending")
+        kind = "spending"
+
+    if any(c.name.lower() == name.lower() for c in existing):
+        problems.append(f"'{name}' already exists — rename it or edit the existing one")
+
+    rule = raw.get("suggested_rule") or {}
+    rule_type = rule.get("rule_type")
+    if rule_type is not None:
+        if rule_type not in VALID_RULE_TYPES or rule_type == "remainder":
+            notices.append(f"suggested rule type '{rule_type}' was dropped")
+            rule = {}
+        else:
+            missing = _missing_params(rule_type, rule.get("params") or {})
+            if missing:
+                notices.append(
+                    f"the suggested rule is missing {missing}; fill it in or skip it"
+                )
+
+    return {
+        "name": name,
+        "kind": kind,
+        "description": str(raw.get("description", "")).strip(),
+        "target_cents": _as_int(raw.get("target_cents")),
+        "alert_at_cents": _as_int(raw.get("alert_at_cents")),
+        "suggested_rule": rule or None,
+        "matcher_hint": raw.get("matcher_hint") or None,
+        "problems": problems,
+        "notices": notices,
+        "applicable": not problems,
+    }

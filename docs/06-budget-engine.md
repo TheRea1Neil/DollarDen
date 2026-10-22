@@ -208,3 +208,68 @@ next paycheck is ~6 days out" is actionable; "Food is at $180" is not.
 
 These belong in a property-based test suite. The rule engine is the one place
 where a subtle bug silently produces wrong numbers for months.
+
+## The two orders
+
+Categories carry two independent orderings, and conflating them is the
+easiest way to give a user a false impression about where their money is
+going.
+
+| | Column | Changed by | Effect |
+|---|---|---|---|
+| **Display order** | `categories.sort_order` | `POST /budget/categories/reorder` | Cosmetic. What order the budget list renders in. Moves no money. |
+| **Funding order** | `split_rules.order_index` | `POST /budget/plans/{id}/reorder`, or any plan edit | Which category gets filled first out of a paycheck. Moves money. |
+
+Both are exposed as drag-to-reorder, so the app has to say which one the
+user is dragging. The category list shows a notice in reorder mode stating
+plainly that it changes display only.
+
+A funding reorder is a **plan revision**: it bumps `version`, deactivates
+the old plan, and is validated like any other edit. In particular a drag
+that leaves the `remainder` rule somewhere other than last is **rejected**,
+not silently repaired — if the user dragged the catch-all into the middle,
+the right response is to tell them, because any automatic fix would be a
+guess about intent. A rejected drag leaves the live plan active and
+untouched.
+
+## Category descriptions
+
+`categories.description` is **not** read by the allocation engine. Nothing
+about where money goes depends on it; that is entirely `split_rules`
+(`rule_type` + `params`, evaluated in `order_index` order).
+
+What it *is* for is context for the model. It is passed to every AI task
+that reasons about categories — designing them, categorising a
+transaction, writing a summary — via `_describe_category()` in
+`app/ai/tasks.py`. "Groceries only, not restaurants" is the kind of thing
+that cannot be inferred from a name and a balance.
+
+This is worth stating because the field looked decorative for a while: the
+model was writing descriptions that were stored and then never read by
+anything. If you add a new AI task that mentions categories, send the
+description.
+
+## Adding one category
+
+`POST /budget/apply-category` creates a single category and, optionally,
+inserts one funding rule into the active plan.
+
+It exists separately from `/budget/apply-proposal` because regenerating a
+whole plan to add one envelope risks changing rules the user has already
+tuned. The single-category path:
+
+- **inserts** rather than replaces — every other rule keeps its relative
+  funding priority
+- defaults the new rule to **last before the remainder**, so a new category
+  cannot starve rent
+- refuses `rule_type: remainder` outright: one category has no business
+  claiming whatever is left
+- resolves the plan **before** creating the category, so a missing plan is a
+  clean 409 rather than something that depends on session teardown
+
+The `matcher` field turns the model's `matcher_hint` into a real
+`category_rules` row. It is **opt-in in the app and off by default**: a
+too-broad match quietly files real spending into the wrong envelope, and
+the user has no reason to go looking for it. The suggested word is editable
+before it is accepted, because the model's guess tends to be narrow
+("dog food" never matches `VCA ANIMAL HOSPITAL`).

@@ -408,6 +408,56 @@ class ApiClient {
     return (r.data as Map).cast<String, dynamic>();
   }
 
+  /// Set DISPLAY order from a dragged list. Changes no money.
+  ///
+  /// Funding priority is a different thing entirely -- see [reorderPlan].
+  Future<List<Category>> reorderCategories(List<String> ids) async {
+    final r = await _withRetry((o) => _dio.post('/budget/categories/reorder',
+        data: {'category_ids': ids}, options: o));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as List)
+        .map((e) => Category.fromJson((e as Map).cast<String, dynamic>()))
+        .toList();
+  }
+
+  /// Set FUNDING order: who gets paid first out of a paycheck. Saves a new
+  /// plan version, and is rejected if the drag would strand the remainder.
+  Future<Map<String, dynamic>> reorderPlan(
+      String planId, List<String> categoryIds) async {
+    final r = await _withRetry((o) => _dio.post('/budget/plans/$planId/reorder',
+        data: {'category_ids': categoryIds}, options: o));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as Map).cast<String, dynamic>();
+  }
+
+  Future<List<Map<String, dynamic>>> plans() async {
+    final r = await _withRetry((o) => _dio.get('/budget/plans', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as List)
+        .map((e) => (e as Map).cast<String, dynamic>())
+        .toList();
+  }
+
+  /// Create one reviewed category, optionally inserting a funding rule into
+  /// the active plan. Unlike [applyProposal] this never rewrites the plan.
+  Future<Map<String, dynamic>> applyCategory({
+    required ProposedCategory category,
+    String? ruleType,
+    Map<String, dynamic> params = const {},
+    int? orderIndex,
+    Map<String, dynamic>? matcher,
+  }) async {
+    final r = await _withRetry((o) => _dio.post('/budget/apply-category', data: {
+          'category': category.toJson(),
+          if (ruleType != null) 'rule_type': ruleType,
+          'params': params,
+          if (orderIndex != null) 'order_index': orderIndex,
+          if (matcher != null && matcher.isNotEmpty) 'matcher': matcher,
+        }, options: o));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as Map).cast<String, dynamic>();
+  }
+
   Future<Map<String, dynamic>> reconciliation() async {
     final r = await _withRetry((o) => _dio.get('/budget/reconciliation', options: o));
     if (r.statusCode != 200) _fail(r);

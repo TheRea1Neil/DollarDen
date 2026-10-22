@@ -1,6 +1,8 @@
 /// Domain models. Every monetary field is integer cents and named `*Cents`.
 library;
 
+import '../core/money.dart';
+
 class Category {
   final String id;
   final String name;
@@ -455,4 +457,102 @@ class Proposal {
         warnings: (j['warnings'] as List? ?? []).map((e) => '$e').toList(),
         applicable: j['applicable'] as bool? ?? false,
       );
+}
+
+/// One AI-designed category, before the user has accepted it.
+///
+/// Mutable because the whole point is that the user corrects it on screen:
+/// the model's output is a draft, not a decision.
+class SuggestedCategory {
+  String name;
+  String kind;
+  String description;
+  int? targetCents;
+  int? alertAtCents;
+
+  /// How a paycheck should fund it. Null means "create it unfunded" --
+  /// a perfectly reasonable outcome the user can also choose directly.
+  String? ruleType;
+  Map<String, dynamic> params;
+  final String why;
+
+  final List<String> problems;
+  final List<String> notices;
+  final bool applicable;
+
+  /// A word the model expects on matching transactions, e.g. "vet".
+  ///
+  /// Only becomes a real matching rule if the user says yes: a bad guess
+  /// here silently swallows unrelated spending into the wrong envelope,
+  /// which is worse than reviewing a few transactions by hand.
+  String? merchantHint;
+  bool autoMatch = false;
+
+  SuggestedCategory({
+    required this.name,
+    required this.kind,
+    required this.description,
+    required this.applicable,
+    this.targetCents,
+    this.alertAtCents,
+    this.ruleType,
+    this.params = const {},
+    this.why = '',
+    this.problems = const [],
+    this.notices = const [],
+    this.merchantHint,
+  });
+
+  factory SuggestedCategory.fromJson(Map<String, dynamic> j) {
+    final rule = (j['suggested_rule'] as Map?)?.cast<String, dynamic>();
+    final hint = (j['matcher_hint'] as Map?)?.cast<String, dynamic>();
+    return SuggestedCategory(
+      name: j['name'] as String? ?? '',
+      kind: j['kind'] as String? ?? 'spending',
+      description: j['description'] as String? ?? '',
+      targetCents: j['target_cents'] as int?,
+      alertAtCents: j['alert_at_cents'] as int?,
+      ruleType: rule?['rule_type'] as String?,
+      params: (rule?['params'] as Map?)?.cast<String, dynamic>() ?? {},
+      why: rule?['why'] as String? ?? '',
+      problems: ((j['problems'] as List?) ?? const []).cast<String>(),
+      notices: ((j['notices'] as List?) ?? const []).cast<String>(),
+      applicable: j['applicable'] as bool? ?? false,
+      merchantHint: hint?['merchant_contains'] as String?,
+    );
+  }
+
+  ProposedCategory toProposed() => ProposedCategory(
+        name: name,
+        kind: kind,
+        description: description,
+        targetCents: targetCents,
+        alreadyExists: false,
+      );
+
+  /// A plain-English reading of the funding rule, so the user can tell
+  /// whether it is right without knowing what `refill_to` means.
+  String get fundingSummary {
+    switch (ruleType) {
+      case null:
+        return 'Not funded automatically — you allocate to it by hand.';
+      case 'percent':
+        final rate = params['rate']?.toString() ?? '?';
+        final pct = (double.tryParse(rate) ?? 0) * 100;
+        final of = params['of'] == 'remaining' ? "what's left" : 'gross pay';
+        return '${pct.toStringAsFixed(pct % 1 == 0 ? 0 : 1)}% of $of each paycheck';
+      case 'fixed':
+        final c = params['amount_cents'];
+        return c is int ? '${Money.format(c)} every paycheck' : 'A fixed amount';
+      case 'refill_to':
+        final c = params['target_cents'];
+        return c is int
+            ? 'Topped back up to ${Money.format(c)} each paycheck'
+            : 'Refilled to a target';
+      case 'conditional':
+        return 'Funded only when a condition is met';
+      default:
+        return ruleType!;
+    }
+  }
 }

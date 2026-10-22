@@ -25,7 +25,14 @@ from app.db.session import SessionLocal
 
 log = logging.getLogger("nnf.ai.jobs")
 
-KINDS = {"design_categories", "summary", "advise", "receipt_parse", "categorise"}
+KINDS = {
+    "design_categories",
+    "design_category",
+    "summary",
+    "advise",
+    "receipt_parse",
+    "categorise",
+}
 
 # A job still `running` after this long is assumed dead -- almost always a
 # restart mid-flight -- and is failed so it stops blocking the queue.

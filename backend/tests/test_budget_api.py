@@ -500,3 +500,197 @@ class TestApplyProposal:
         assert bal["Tithing"] == 20000       # 10% of gross, first
         assert bal["Groceries"] == 30000     # refilled to target
         assert bal["Car Fund"] == 150000     # remainder
+
+
+@requires_db
+class TestReorder:
+    """Display order and funding order are deliberately different things."""
+
+    def test_display_reorder(self, client: TestClient) -> None:
+        h = _auth(client)
+        a, b, c = (_cat(client, h, n) for n in ("Food", "Gas", "Fun"))
+
+        r = client.post("/api/budget/categories/reorder",
+                        json={"category_ids": [c["id"], a["id"], b["id"]]}, headers=h)
+        assert r.status_code == 200, r.text
+        assert [x["name"] for x in r.json()] == ["Fun", "Food", "Gas"]
+        # And it persists on a plain list.
+        rows = client.get("/api/budget/categories", headers=h).json()
+        assert [x["name"] for x in rows] == ["Fun", "Food", "Gas"]
+
+    def test_partial_reorder_keeps_the_rest_below(self, client: TestClient) -> None:
+        h = _auth(client)
+        a, b, c = (_cat(client, h, n) for n in ("Food", "Gas", "Fun"))
+        client.post("/api/budget/categories/reorder",
+                    json={"category_ids": [c["id"]]}, headers=h)
+        rows = client.get("/api/budget/categories", headers=h).json()
+        assert rows[0]["name"] == "Fun"
+        assert {x["name"] for x in rows[1:]} == {"Food", "Gas"}
+
+    def test_unknown_and_duplicate_rejected(self, client: TestClient) -> None:
+        h = _auth(client)
+        a = _cat(client, h, "Food")
+        assert client.post("/api/budget/categories/reorder",
+                           json={"category_ids": [str(uuid.uuid4())]},
+                           headers=h).status_code == 404
+        assert client.post("/api/budget/categories/reorder",
+                           json={"category_ids": [a["id"], a["id"]]},
+                           headers=h).status_code == 422
+
+    def test_other_users_category_is_invisible(self, client: TestClient) -> None:
+        ha, hb = _auth(client), _auth(client)
+        a = _cat(client, ha, "Food")
+        assert client.post("/api/budget/categories/reorder",
+                           json={"category_ids": [a["id"]]},
+                           headers=hb).status_code == 404
+
+    def _plan(self, client, h) -> tuple[dict, dict]:
+        rent = _cat(client, h, "Rent", kind="obligation")
+        food = _cat(client, h, "Food")
+        left = _cat(client, h, "Leftover", kind="savings_bucket")
+        body = {"name": "Standard", "rules": [
+            {"category_id": rent["id"], "order_index": 1,
+             "rule_type": "fixed", "params": {"amount_cents": 35000}},
+            {"category_id": food["id"], "order_index": 2,
+             "rule_type": "refill_to", "params": {"target_cents": 30000}},
+            {"category_id": left["id"], "order_index": 3,
+             "rule_type": "remainder", "params": {}},
+        ]}
+        r = client.post("/api/budget/plans", json=body, headers=h)
+        assert r.status_code == 201, r.text
+        return r.json(), {"rent": rent, "food": food, "left": left}
+
+    def test_funding_reorder_makes_a_new_version(self, client: TestClient) -> None:
+        h = _auth(client)
+        plan, cats = self._plan(client, h)
+        r = client.post(f"/api/budget/plans/{plan['id']}/reorder",
+                        json={"category_ids": [cats["food"]["id"], cats["rent"]["id"],
+                                               cats["left"]["id"]]}, headers=h)
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["version"] == plan["version"] + 1 and out["is_active"]
+        assert [x["category_id"] for x in out["rules"]] == [
+            cats["food"]["id"], cats["rent"]["id"], cats["left"]["id"]]
+        # Rules travelled with their categories, not with their positions.
+        assert out["rules"][0]["rule_type"] == "refill_to"
+
+    def test_dragging_remainder_off_the_end_is_rejected(self, client: TestClient) -> None:
+        h = _auth(client)
+        plan, cats = self._plan(client, h)
+        r = client.post(f"/api/budget/plans/{plan['id']}/reorder",
+                        json={"category_ids": [cats["left"]["id"], cats["rent"]["id"],
+                                               cats["food"]["id"]]}, headers=h)
+        assert r.status_code == 422
+        # The original plan is untouched -- a rejected drag must not
+        # deactivate the plan the user is still living on.
+        plans = client.get("/api/budget/plans", headers=h).json()
+        assert [p for p in plans if p["is_active"]][0]["version"] == plan["version"]
+
+    def test_incomplete_funding_reorder_rejected(self, client: TestClient) -> None:
+        h = _auth(client)
+        plan, cats = self._plan(client, h)
+        assert client.post(f"/api/budget/plans/{plan['id']}/reorder",
+                           json={"category_ids": [cats["food"]["id"]]},
+                           headers=h).status_code == 422
+
+
+@requires_db
+class TestApplySingleCategory:
+    def test_category_only(self, client: TestClient) -> None:
+        h = _auth(client)
+        r = client.post("/api/budget/apply-category", json={
+            "category": {"name": "Dog Vet", "kind": "savings_bucket",
+                         "description": "vet bills for the dog",
+                         "target_cents": 50000},
+        }, headers=h)
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["plan_id"] is None and out["funding_position"] is None
+        assert out["category"]["description"] == "vet bills for the dog"
+
+    def test_rule_lands_before_the_remainder(self, client: TestClient) -> None:
+        h = _auth(client)
+        plan, cats = TestReorder()._plan(client, h)
+        r = client.post("/api/budget/apply-category", json={
+            "category": {"name": "Dog Vet", "kind": "savings_bucket"},
+            "rule_type": "fixed", "params": {"amount_cents": 5000},
+        }, headers=h)
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["funding_position"] == 3  # after food, before remainder
+        assert out["plan_version"] == plan["version"] + 1
+
+        rules = client.get("/api/budget/plans", headers=h).json()
+        active = [p for p in rules if p["is_active"]][0]
+        assert active["rules"][-1]["rule_type"] == "remainder"
+        assert active["rules"][2]["category_id"] == out["category"]["id"]
+
+    def test_explicit_position_is_honoured(self, client: TestClient) -> None:
+        h = _auth(client)
+        TestReorder()._plan(client, h)
+        r = client.post("/api/budget/apply-category", json={
+            "category": {"name": "Tithing", "kind": "obligation"},
+            "rule_type": "percent", "params": {"rate": "0.10", "of": "gross"},
+            "order_index": 1,
+        }, headers=h)
+        assert r.status_code == 200, r.text
+        assert r.json()["funding_position"] == 1
+
+    def test_cannot_take_the_remainder(self, client: TestClient) -> None:
+        h = _auth(client)
+        TestReorder()._plan(client, h)
+        assert client.post("/api/budget/apply-category", json={
+            "category": {"name": "Greedy", "kind": "spending"},
+            "rule_type": "remainder", "params": {},
+        }, headers=h).status_code == 422
+
+    def test_duplicate_name_rejected(self, client: TestClient) -> None:
+        h = _auth(client)
+        _cat(client, h, "Food")
+        assert client.post("/api/budget/apply-category", json={
+            "category": {"name": "Food", "kind": "spending"},
+        }, headers=h).status_code == 409
+
+    def test_rule_without_a_plan_explains_itself(self, client: TestClient) -> None:
+        h = _auth(client)
+        r = client.post("/api/budget/apply-category", json={
+            "category": {"name": "Dog Vet", "kind": "savings_bucket"},
+            "rule_type": "fixed", "params": {"amount_cents": 5000},
+        }, headers=h)
+        assert r.status_code == 409
+        assert "no active split plan" in r.json()["detail"]
+        # The category must not be left behind by the failed rule.
+        assert client.get("/api/budget/categories", headers=h).json() == []
+
+    def test_matcher_becomes_a_real_rule(self, client: TestClient) -> None:
+        h = _auth(client)
+        r = client.post("/api/budget/apply-category", json={
+            "category": {"name": "Dog Vet", "kind": "savings_bucket"},
+            "matcher": {"merchant_contains": "vet"},
+        }, headers=h)
+        assert r.status_code == 200, r.text
+        rule_id = r.json()["matcher_rule_id"]
+        assert rule_id is not None
+        rules = client.get("/api/budget/rules", headers=h).json()
+        mine = next(x for x in rules if x["id"] == rule_id)
+        assert mine["matcher"] == {"merchant_contains": "vet"}
+        assert mine["category_id"] == r.json()["category"]["id"]
+
+    def test_no_matcher_creates_no_rule(self, client: TestClient) -> None:
+        h = _auth(client)
+        r = client.post("/api/budget/apply-category", json={
+            "category": {"name": "Dog Vet", "kind": "savings_bucket"},
+        }, headers=h)
+        assert r.json()["matcher_rule_id"] is None
+        assert client.get("/api/budget/rules", headers=h).json() == []
+
+    def test_an_empty_matcher_is_dropped_not_stored(self, client: TestClient) -> None:
+        """A matcher with no conditions would claim every transaction."""
+        h = _auth(client)
+        r = client.post("/api/budget/apply-category", json={
+            "category": {"name": "Dog Vet", "kind": "savings_bucket"},
+            "matcher": {"merchant_contains": ""},
+        }, headers=h)
+        assert r.status_code == 200, r.text
+        assert r.json()["matcher_rule_id"] is None
+        assert client.get("/api/budget/rules", headers=h).json() == []

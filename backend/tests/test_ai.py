@@ -10,7 +10,7 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
-from app.ai.tasks import _validate_design
+from app.ai.tasks import _describe_category, _validate_design, _validate_single
 from app.db.models import Category
 from tests.conftest import requires_db
 
@@ -435,3 +435,80 @@ class TestPlanSimulation:
              "params": {}, "why": ""},
         ]), [], typical_gross_cents=200000)
         assert any("short" in w for w in out["warnings"])
+
+
+class TestSingleCategoryDesign:
+    """Designing ONE category, so adding a category cannot rewrite a plan."""
+
+    @staticmethod
+    def _good() -> dict:
+        return {
+            "name": "Dog Vet",
+            "kind": "savings_bucket",
+            "description": "set aside for the dog's vet bills",
+            "target_cents": 50000,
+            "suggested_rule": {"rule_type": "fixed",
+                               "params": {"amount_cents": 5000},
+                               "why": "steady build-up"},
+            "matcher_hint": {"merchant_contains": "vet"},
+        }
+
+    def test_a_valid_single_category(self) -> None:
+        out = _validate_single(self._good(), [])
+        assert out["applicable"] and not out["problems"]
+        assert out["name"] == "Dog Vet" and out["target_cents"] == 50000
+        assert out["suggested_rule"]["rule_type"] == "fixed"
+
+    def test_duplicate_name_is_a_problem_not_a_notice(self) -> None:
+        existing = [Category(name="Dog Vet", kind="spending", balance_cents=0)]
+        out = _validate_single(self._good(), existing)
+        assert not out["applicable"]
+        assert any("already exists" in p for p in out["problems"])
+
+    def test_duplicate_check_ignores_case(self) -> None:
+        existing = [Category(name="dog vet", kind="spending", balance_cents=0)]
+        assert not _validate_single(self._good(), existing)["applicable"]
+
+    def test_a_remainder_suggestion_is_dropped(self) -> None:
+        """One category must never claim what is left of a paycheck."""
+        p = self._good()
+        p["suggested_rule"] = {"rule_type": "remainder", "params": {}}
+        out = _validate_single(p, [])
+        assert out["suggested_rule"] is None
+        assert out["applicable"]  # still usable, just unfunded
+        assert any("dropped" in n for n in out["notices"])
+
+    def test_a_rule_missing_its_params_is_flagged_not_dropped(self) -> None:
+        p = self._good()
+        p["suggested_rule"] = {"rule_type": "percent", "params": {}}
+        out = _validate_single(p, [])
+        assert any("missing" in n for n in out["notices"])
+        assert out["applicable"]
+
+    def test_a_bad_kind_defaults_rather_than_failing(self) -> None:
+        p = self._good()
+        p["kind"] = "nonsense"
+        out = _validate_single(p, [])
+        assert out["kind"] == "spending" and out["applicable"]
+        assert any("not valid" in n for n in out["notices"])
+
+    def test_a_nameless_category_is_rejected(self) -> None:
+        p = self._good()
+        p["name"] = "  "
+        assert not _validate_single(p, [])["applicable"]
+
+
+class TestCategoryContext:
+    """Descriptions exist to be fed back to the model, not just stored."""
+
+    def test_description_reaches_the_prompt(self) -> None:
+        c = Category(name="Food", kind="spending", balance_cents=0,
+                     target_cents=30000, description="groceries only, no eating out")
+        line = _describe_category(c)
+        assert "Food" in line and "300.00" in line
+        assert "groceries only, no eating out" in line
+
+    def test_a_category_without_one_still_renders(self) -> None:
+        c = Category(name="Gas", kind="spending", balance_cents=0)
+        line = _describe_category(c)
+        assert "Gas" in line and "—" not in line

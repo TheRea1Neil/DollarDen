@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user
@@ -1190,3 +1190,289 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
         # inconsistency is visible instead of quietly wrong.
         "ledger_drift": [{"category_id": str(c), "cached": a, "actual": b} for c, a, b in drift],
     }
+
+
+# --------------------------------------------------------------------------- #
+# Ordering
+#
+# Two different orders exist and users conflate them, so they are two
+# separate endpoints with two separate words:
+#
+#   DISPLAY order  Category.sort_order -- what order the budget list shows.
+#                  Cosmetic. Moves nothing.
+#   FUNDING order  SplitRule.order_index -- what order a paycheck fills
+#                  categories in. This one moves money, and reordering it
+#                  is a plan revision like any other edit.
+# --------------------------------------------------------------------------- #
+class ReorderIn(BaseModel):
+    """Category ids in the order the user dragged them into."""
+
+    category_ids: list[str] = Field(min_length=1)
+
+
+@router.post("/categories/reorder", response_model=list[CategoryOut])
+def reorder_categories(
+    body: ReorderIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[CategoryOut]:
+    """Set display order from a dragged list.
+
+    Does NOT change how paychecks are split -- see /plans/{id}/reorder.
+    """
+    owned = {
+        str(c.id): c
+        for c in db.scalars(
+            select(Category).where(
+                Category.user_id == user.id, Category.archived_at.is_(None)
+            )
+        ).all()
+    }
+
+    unknown = [i for i in body.category_ids if i not in owned]
+    if unknown:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"Unknown category: {unknown[0]}"
+        )
+    if len(set(body.category_ids)) != len(body.category_ids):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "Duplicate category in order"
+        )
+
+    for position, cid in enumerate(body.category_ids):
+        owned[cid].sort_order = position
+
+    # Anything the client did not send keeps a stable place after the
+    # dragged ones rather than silently jumping to the top.
+    for offset, c in enumerate(
+        sorted(
+            (c for cid, c in owned.items() if cid not in set(body.category_ids)),
+            key=lambda c: (c.sort_order, c.name),
+        )
+    ):
+        c.sort_order = len(body.category_ids) + offset
+
+    db.commit()
+    rows = db.scalars(
+        select(Category)
+        .where(Category.user_id == user.id, Category.archived_at.is_(None))
+        .order_by(Category.sort_order, Category.name)
+    ).all()
+    return [_cat_out(c) for c in rows]
+
+
+@router.post("/plans/{plan_id}/reorder", response_model=PlanOut)
+def reorder_plan(
+    plan_id: str,
+    body: ReorderIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> PlanOut:
+    """Reorder FUNDING priority by dragging categories.
+
+    This changes who gets paid first out of a paycheck, so it saves a new
+    plan version exactly like any other edit, and it is validated -- a drag
+    that puts the remainder rule somewhere other than last is rejected
+    rather than silently repaired.
+    """
+    plan = _own(db, SplitPlan, plan_id, user)
+    rows = db.scalars(
+        select(SplitRule).where(SplitRule.plan_id == plan.id)
+    ).all()
+    by_cat = {str(r.category_id): r for r in rows}
+
+    if set(body.category_ids) != set(by_cat):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "Reorder must list every category in the plan exactly once",
+        )
+
+    rules = [
+        SplitRuleIn(
+            category_id=cid, order_index=position + 1,
+            rule_type=by_cat[cid].rule_type, params=by_cat[cid].params or {},
+            enabled=by_cat[cid].enabled,
+        )
+        for position, cid in enumerate(body.category_ids)
+    ]
+    _validate_plan(rules)
+
+    plan.is_active = False
+    new = SplitPlan(user_id=user.id, name=plan.name,
+                    version=plan.version + 1, is_active=True)
+    db.add(new)
+    db.flush()
+    for r in rules:
+        db.add(SplitRule(plan_id=new.id, category_id=uuid.UUID(r.category_id),
+                         order_index=r.order_index, rule_type=r.rule_type,
+                         params=r.params, enabled=r.enabled))
+    db.commit()
+    return _plan_out(db, new)
+
+
+# --------------------------------------------------------------------------- #
+# Applying a single AI-designed category
+# --------------------------------------------------------------------------- #
+class ApplyCategoryIn(BaseModel):
+    """One reviewed category, optionally funded by one new rule.
+
+    Separate from /apply-proposal because adding a category should not
+    rewrite a split plan the user has already tuned. The rule, if given,
+    is INSERTED into the active plan -- everything else keeps its relative
+    funding priority.
+    """
+
+    category: ProposedCategoryIn
+    rule_type: str | None = None
+    params: dict = Field(default_factory=dict)
+    # Where in the funding order it lands. None means "last, but still
+    # ahead of the remainder" -- the safe default, since a new category
+    # jumping the queue would starve rent.
+    order_index: int | None = Field(default=None, ge=1)
+
+    # An optional matching rule, so future transactions land here without
+    # being reviewed by hand. The model suggests one; the user confirms it.
+    matcher: dict | None = None
+
+    @field_validator("matcher")
+    @classmethod
+    def _usable(cls, v: dict | None) -> dict | None:
+        if v is None:
+            return v
+        trimmed = {k: x for k, x in v.items() if x not in (None, "", [], {})}
+        if not trimmed:
+            # An empty matcher would claim every transaction.
+            return None
+        return trimmed
+
+    @field_validator("rule_type")
+    @classmethod
+    def _known(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if v == RuleType.REMAINDER.value:
+            raise ValueError(
+                "a single category cannot take the remainder; edit the plan instead"
+            )
+        if v not in {t.value for t in RuleType}:
+            raise ValueError(f"rule_type must be one of {[t.value for t in RuleType]}")
+        return v
+
+
+class ApplyCategoryOut(BaseModel):
+    category: CategoryOut
+    plan_id: str | None
+    plan_version: int | None
+    funding_position: int | None
+    matcher_rule_id: str | None = None
+
+
+@router.post("/apply-category", response_model=ApplyCategoryOut)
+def apply_category(
+    body: ApplyCategoryIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> ApplyCategoryOut:
+    spec = body.category
+    clash = db.scalars(
+        select(Category).where(
+            Category.user_id == user.id,
+            Category.name == spec.name,
+            Category.archived_at.is_(None),
+        )
+    ).first()
+    if clash is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"'{spec.name}' already exists"
+        )
+
+    # Resolve the plan BEFORE creating anything. Relying on the session
+    # rolling back a flushed category after a late failure works, but it
+    # makes the endpoint's correctness depend on teardown rather than on
+    # the code you can read here.
+    plan = None
+    if body.rule_type is not None:
+        plan = db.scalars(
+            select(SplitPlan).where(
+                SplitPlan.user_id == user.id, SplitPlan.is_active.is_(True)
+            )
+        ).first()
+        if plan is None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "There is no active split plan to add this rule to. Create a "
+                "budget plan first, or add the category without a funding rule.",
+            )
+
+    count = db.scalar(
+        select(func.count())
+        .select_from(Category)
+        .where(Category.user_id == user.id, Category.archived_at.is_(None))
+    )
+    cat = Category(
+        user_id=user.id, name=spec.name, kind=spec.kind,
+        description=spec.description, target_cents=spec.target_cents,
+        alert_at_cents=spec.alert_at_cents, sort_order=int(count or 0),
+    )
+    db.add(cat)
+    db.flush()
+
+    matcher_rule_id: str | None = None
+    if body.matcher:
+        rule = CategoryRule(user_id=user.id, category_id=cat.id,
+                            matcher=body.matcher, priority=100, enabled=True)
+        db.add(rule)
+        db.flush()
+        matcher_rule_id = str(rule.id)
+
+    if body.rule_type is None:
+        db.commit()
+        return ApplyCategoryOut(category=_cat_out(cat), plan_id=None,
+                                plan_version=None, funding_position=None,
+                                matcher_rule_id=matcher_rule_id)
+
+    assert plan is not None  # guaranteed above when rule_type is set
+    rows = db.scalars(
+        select(SplitRule).where(SplitRule.plan_id == plan.id)
+        .order_by(SplitRule.order_index)
+    ).all()
+    existing = [
+        SplitRuleIn(category_id=str(r.category_id), order_index=r.order_index,
+                    rule_type=r.rule_type, params=r.params or {}, enabled=r.enabled)
+        for r in rows
+    ]
+
+    new_rule = SplitRuleIn(
+        category_id=str(cat.id), order_index=0,
+        rule_type=body.rule_type, params=body.params,
+    )
+
+    # The remainder rule must stay last, so the furthest a new rule can go
+    # is immediately before it.
+    last_allowed = len(existing)
+    if existing and existing[-1].rule_type == RuleType.REMAINDER.value:
+        last_allowed = len(existing) - 1
+
+    position = last_allowed if body.order_index is None else min(
+        body.order_index - 1, last_allowed
+    )
+    ordered = existing[:position] + [new_rule] + existing[position:]
+    for i, r in enumerate(ordered):
+        r.order_index = i + 1
+    _validate_plan(ordered)
+
+    plan.is_active = False
+    new_plan = SplitPlan(user_id=user.id, name=plan.name,
+                         version=plan.version + 1, is_active=True)
+    db.add(new_plan)
+    db.flush()
+    for r in ordered:
+        db.add(SplitRule(plan_id=new_plan.id, category_id=uuid.UUID(r.category_id),
+                         order_index=r.order_index, rule_type=r.rule_type,
+                         params=r.params, enabled=r.enabled))
+    db.commit()
+    return ApplyCategoryOut(
+        category=_cat_out(cat), plan_id=str(new_plan.id),
+        plan_version=new_plan.version, funding_position=position + 1,
+        matcher_rule_id=matcher_rule_id,
+    )

@@ -85,6 +85,7 @@ async def refresh_accounts(db: Session, client: Any, item: PlaidItem,
         acct = db.scalars(
             select(Account).where(Account.plaid_account_id == a["account_id"])
         ).first()
+        is_new_account = acct is None
         if acct is None:
             acct = Account(
                 user_id=item.user_id, item_id=item.id, plaid_account_id=a["account_id"]
@@ -101,6 +102,14 @@ async def refresh_accounts(db: Session, client: Any, item: PlaidItem,
             to_cents(bal["available"]) if bal.get("available") is not None else None
         )
         acct.balance_as_of = now
+
+        # Linking a bank pulls in everything -- mortgage, 401k, auto loan --
+        # and most of it is noise on a budgeting home screen. Default to
+        # showing day-to-day accounts only; the user can change it. Only set
+        # on first sight, so a later refresh never overrides their choice.
+        if is_new_account:
+            acct.is_tracked = (acct.type or "") in {"depository", "credit"}
+
         n += 1
     db.flush()
     return n

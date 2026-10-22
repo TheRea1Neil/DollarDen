@@ -44,8 +44,19 @@ class HomeScreen extends ConsumerWidget {
                 const SizedBox(height: 12),
                 _DriftWarning(count: s.ledgerDrift.length),
               ],
-              if (s.cards.any((c) => c.owes)) ...[
+              if (s.cashAccounts.isNotEmpty) ...[
                 const SizedBox(height: 20),
+                _BalancesSection(
+                  title: 'In the bank',
+                  icon: Icons.savings_outlined,
+                  totalCents: s.cashCents,
+                  rows: [
+                    for (final a in s.cashAccounts) (a.label, a.balanceCents),
+                  ],
+                ),
+              ],
+              if (s.cards.any((c) => c.owes)) ...[
+                const SizedBox(height: 12),
                 _CardsSection(cards: s.cards, totalCents: s.cardDebtCents),
               ],
               const SizedBox(height: 20),
@@ -318,6 +329,74 @@ class _CardsSection extends StatelessWidget {
               style: theme.textTheme.bodySmall
                   ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+
+/// A labelled group of account balances with a total.
+class _BalancesSection extends StatelessWidget {
+  final String title;
+  final IconData icon;
+  final int totalCents;
+  final List<(String, int)> rows;
+
+  const _BalancesSection({
+    required this.title,
+    required this.icon,
+    required this.totalCents,
+    required this.rows,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, size: 18, color: theme.colorScheme.onSurfaceVariant),
+                const SizedBox(width: 8),
+                Text(title,
+                    style: theme.textTheme.labelLarge
+                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                const Spacer(),
+                Text(
+                  Money.format(totalCents),
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            for (final (label, cents) in rows)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(label,
+                          style: theme.textTheme.bodyMedium,
+                          overflow: TextOverflow.ellipsis),
+                    ),
+                    Text(
+                      Money.format(cents),
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
           ],
         ),
       ),

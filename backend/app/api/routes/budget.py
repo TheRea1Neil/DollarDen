@@ -759,6 +759,75 @@ def reclassify(
 
 
 # --------------------------------------------------------------------------- #
+# Accounts and balances
+# --------------------------------------------------------------------------- #
+class AccountOut(BaseModel):
+    id: str
+    name: str
+    official_name: str | None
+    mask: str | None
+    type: str | None
+    subtype: str | None
+    balance_cents: int
+    available_cents: int | None
+    is_tracked: bool
+    as_of: str | None
+
+    @property
+    def is_cash(self) -> bool:
+        return (self.type or "") == "depository"
+
+
+def _account_out(a: Account) -> AccountOut:
+    return AccountOut(
+        id=str(a.id), name=a.name or "Account", official_name=a.official_name,
+        mask=a.mask, type=a.type, subtype=a.subtype,
+        balance_cents=a.current_cents or 0, available_cents=a.available_cents,
+        is_tracked=a.is_tracked,
+        as_of=a.balance_as_of.isoformat() if a.balance_as_of else None,
+    )
+
+
+@router.get("/accounts", response_model=list[AccountOut])
+def list_accounts(
+    tracked_only: bool = False,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[AccountOut]:
+    """Every account from every linked institution.
+
+    Linking a bank brings in everything it exposes -- mortgages, 401ks, auto
+    loans -- most of which is noise for day-to-day budgeting. `is_tracked`
+    decides what appears on the home screen.
+    """
+    q = select(Account).where(Account.user_id == user.id)
+    if tracked_only:
+        q = q.where(Account.is_tracked.is_(True))
+    rows = db.scalars(q.order_by(Account.type, Account.name)).all()
+    return [_account_out(a) for a in rows]
+
+
+class TrackedIn(BaseModel):
+    is_tracked: bool
+
+
+@router.post("/accounts/{account_id}/tracked", response_model=AccountOut)
+def set_tracked(
+    account_id: str, body: TrackedIn,
+    user: User = Depends(current_user), db: Session = Depends(get_db),
+) -> AccountOut:
+    """Show or hide an account on the home screen.
+
+    Purely a display choice: transactions keep syncing either way, so hiding
+    an account never silently stops tracking its spending.
+    """
+    acct = _own(db, Account, account_id, user)
+    acct.is_tracked = body.is_tracked
+    db.commit()
+    return _account_out(acct)
+
+
+# --------------------------------------------------------------------------- #
 # Credit cards
 # --------------------------------------------------------------------------- #
 class CardOut(BaseModel):
@@ -814,6 +883,10 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
     )
     drift = audit_balances(db, user.id)
     cards = credit_cards(user=user, db=db)
+    cash = [
+        a for a in list_accounts(tracked_only=True, user=user, db=db)
+        if (a.type or "") == "depository"
+    ]
     excluded_count = len(
         db.scalars(
             select(Transaction).where(
@@ -826,6 +899,11 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
     return {
         "cards": [c.model_dump() for c in cards],
         "card_debt_cents": sum(c.balance_cents for c in cards),
+        "cash_accounts": [a.model_dump() for a in cash],
+        # Actual money in the bank. Deliberately separate from the category
+        # total, which is COMMITTED money and will not match: card purchases
+        # draw categories down before the cash leaves the account.
+        "cash_cents": sum(a.balance_cents for a in cash),
         "excluded_count": excluded_count,
         "categories": [_cat_out(c).model_dump() for c in cats],
         "total_allocated_cents": sum(c.balance_cents for c in cats),

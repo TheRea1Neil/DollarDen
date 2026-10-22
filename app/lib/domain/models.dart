@@ -120,6 +120,8 @@ class BudgetSummary {
   final List<dynamic> ledgerDrift;
   final List<CreditCard> cards;
   final int cardDebtCents;
+  final List<CashAccount> cashAccounts;
+  final int cashCents;
   final int excludedCount;
 
   const BudgetSummary({
@@ -132,6 +134,8 @@ class BudgetSummary {
     required this.ledgerDrift,
     required this.cards,
     required this.cardDebtCents,
+    required this.cashAccounts,
+    required this.cashCents,
     required this.excludedCount,
   });
 
@@ -154,6 +158,10 @@ class BudgetSummary {
             .map((e) => CreditCard.fromJson((e as Map).cast<String, dynamic>()))
             .toList(),
         cardDebtCents: j['card_debt_cents'] as int? ?? 0,
+        cashAccounts: (j['cash_accounts'] as List? ?? [])
+            .map((e) => CashAccount.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        cashCents: j['cash_cents'] as int? ?? 0,
         excludedCount: j['excluded_count'] as int? ?? 0,
       );
 }
@@ -243,4 +251,38 @@ class CreditCard {
 
   String get label => mask == null ? name : '$name ••$mask';
   bool get owes => balanceCents > 0;
+}
+
+/// A cash account — checking, savings. Real money in the bank.
+///
+/// Shown apart from category balances because the two answer different
+/// questions and will not match: card purchases draw categories down before
+/// the cash actually leaves.
+class CashAccount {
+  final String id;
+  final String name;
+  final String? mask;
+  final String? subtype;
+  final int balanceCents;
+  final int? availableCents;
+
+  const CashAccount({
+    required this.id,
+    required this.name,
+    required this.balanceCents,
+    this.mask,
+    this.subtype,
+    this.availableCents,
+  });
+
+  factory CashAccount.fromJson(Map<String, dynamic> j) => CashAccount(
+        id: j['id'] as String,
+        name: j['name'] as String? ?? 'Account',
+        mask: j['mask'] as String?,
+        subtype: j['subtype'] as String?,
+        balanceCents: j['balance_cents'] as int? ?? 0,
+        availableCents: j['available_cents'] as int?,
+      );
+
+  String get label => mask == null ? name : '$name ••$mask';
 }

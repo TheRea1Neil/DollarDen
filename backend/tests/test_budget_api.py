@@ -229,3 +229,77 @@ class TestRules:
         assert len(client.get("/api/budget/rules", headers=h).json()) == 1
         assert client.delete(f"/api/budget/rules/{rule['id']}", headers=h).status_code == 204
         assert client.get("/api/budget/rules", headers=h).json() == []
+
+
+@requires_db
+class TestAccountVisibility:
+    def _account(self, client, h, *, name, type_, balance):
+        """Insert an account directly: linking a real one needs Plaid."""
+        import uuid as _u
+
+        from app.core.security import hash_password
+        from app.db.models import Account, PlaidItem, User
+        from app.db.session import SessionLocal
+
+        me = client.get("/api/auth/me", headers=h).json()
+        with SessionLocal() as db:
+            user = db.get(User, _u.UUID(me["id"]))
+            assert user is not None
+            item = db.scalars(
+                __import__("sqlalchemy").select(PlaidItem).where(PlaidItem.user_id == user.id)
+            ).first()
+            if item is None:
+                item = PlaidItem(user_id=user.id,
+                                 plaid_item_id=f"it-{_u.uuid4().hex[:10]}",
+                                 access_token_encrypted=b"x")
+                db.add(item); db.flush()
+            a = Account(user_id=user.id, item_id=item.id,
+                        plaid_account_id=f"ac-{_u.uuid4().hex[:10]}",
+                        name=name, type=type_, current_cents=balance,
+                        is_tracked=type_ in {"depository", "credit"})
+            db.add(a); db.commit()
+            return str(a.id)
+
+    def test_cash_and_cards_are_reported_separately(self, client: TestClient) -> None:
+        h = _auth(client)
+        self._account(client, h, name="Checking", type_="depository", balance=250000)
+        self._account(client, h, name="Visa", type_="credit", balance=41000)
+
+        s = client.get("/api/budget/summary", headers=h).json()
+        assert s["cash_cents"] == 250000
+        assert s["card_debt_cents"] == 41000
+        assert [a["name"] for a in s["cash_accounts"]] == ["Checking"]
+        assert [c["name"] for c in s["cards"]] == ["Visa"]
+
+    def test_loans_and_investments_are_hidden_by_default(self, client: TestClient) -> None:
+        """A linked bank exposes everything; the home screen should not."""
+        h = _auth(client)
+        self._account(client, h, name="Checking", type_="depository", balance=100000)
+        self._account(client, h, name="Mortgage", type_="loan", balance=-5630206)
+        self._account(client, h, name="401k", type_="investment", balance=2363198)
+
+        s = client.get("/api/budget/summary", headers=h).json()
+        assert s["cash_cents"] == 100000, "a mortgage must not count as cash"
+        assert len(s["cash_accounts"]) == 1
+
+        every = client.get("/api/budget/accounts", headers=h).json()
+        assert len(every) == 3, "hidden accounts still exist and keep syncing"
+        hidden = {a["name"]: a["is_tracked"] for a in every}
+        assert hidden["Mortgage"] is False and hidden["401k"] is False
+
+    def test_visibility_can_be_toggled(self, client: TestClient) -> None:
+        h = _auth(client)
+        aid = self._account(client, h, name="Savings", type_="depository", balance=500000)
+        assert client.get("/api/budget/summary", headers=h).json()["cash_cents"] == 500000
+
+        r = client.post(f"/api/budget/accounts/{aid}/tracked",
+                        json={"is_tracked": False}, headers=h)
+        assert r.status_code == 200 and r.json()["is_tracked"] is False
+        assert client.get("/api/budget/summary", headers=h).json()["cash_cents"] == 0
+
+    def test_another_users_account_is_not_visible_or_editable(self, client: TestClient) -> None:
+        ha, hb = _auth(client), _auth(client)
+        aid = self._account(client, ha, name="Theirs", type_="depository", balance=999)
+        assert client.get("/api/budget/accounts", headers=hb).json() == []
+        assert client.post(f"/api/budget/accounts/{aid}/tracked",
+                           json={"is_tracked": False}, headers=hb).status_code == 404

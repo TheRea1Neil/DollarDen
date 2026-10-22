@@ -52,6 +52,8 @@ void main() {
     expect(withoutMerchant.title, 'SQ *COFFEE 1234');
   });
 
+  _proposalTests();
+
   test('summary tolerates missing optional sections', () {
     final s = BudgetSummary.fromJson({
       'categories': [_cat(balance: 100)],
@@ -63,5 +65,81 @@ void main() {
     expect(s.overspent, isEmpty);
     expect(s.pendingReview, 0);
     expect(s.nextPayday.known, isFalse);
+  });
+}
+
+void _proposalTests() {
+  group('ProposedRule.describe', () {
+    ProposedRule rule(String type, Map<String, dynamic> params) => ProposedRule(
+          categoryName: 'X', orderIndex: 1, ruleType: type, params: params, why: '');
+
+    test('renders each rule type in plain English', () {
+      expect(rule('percent', {'rate': '0.10', 'of': 'gross'}).describe(),
+          '10% of gross pay');
+      expect(rule('percent', {'rate': '0.05', 'of': 'remaining'}).describe(),
+          "5% of what's left");
+      expect(rule('fixed', {'amount_cents': 35000}).describe(), r'$350.00');
+      expect(rule('refill_to', {'target_cents': 30000}).describe(),
+          r'top up to $300.00');
+      expect(rule('remainder', {}).describe(), 'everything left over');
+    });
+
+    test('renders a conditional rule', () {
+      final r = rule('conditional', {
+        'when': {'field': 'balance', 'op': '<', 'value_cents': 45000},
+        'then': {'rule_type': 'fixed', 'params': {'amount_cents': 5000}},
+      });
+      expect(r.describe(), r'if below $450.00, add $50.00');
+    });
+
+    test('degrades gracefully on missing params rather than crashing', () {
+      // The model does sometimes omit params; the review screen must still
+      // render so the user can see and fix it.
+      expect(rule('fixed', {}).describe(), '—');
+      expect(rule('conditional', {}).describe(), contains('—'));
+    });
+  });
+
+  group('Proposal', () {
+    test('separates blocking problems from informational notices', () {
+      final p = Proposal.fromJson({
+        'categories': [
+          {'name': 'Food', 'kind': 'spending', 'description': 'x',
+           'already_exists': true},
+        ],
+        'split_rules': [],
+        'notes': 'n',
+        'problems': ['missing remainder'],
+        'notices': ["'Food' already exists and will be reused"],
+        'applicable': false,
+      });
+      expect(p.applicable, isFalse);
+      expect(p.problems, hasLength(1));
+      expect(p.notices, hasLength(1));
+      expect(p.categories.first.alreadyExists, isTrue);
+    });
+
+    test('round-trips an edited category back to JSON', () {
+      final c = ProposedCategory(
+          name: 'Food', kind: 'spending', description: 'd',
+          alreadyExists: false, targetCents: 30000);
+      c.name = 'Groceries';
+      c.targetCents = 25000;
+      expect(c.toJson(), {
+        'name': 'Groceries', 'kind': 'spending',
+        'description': 'd', 'target_cents': 25000,
+      });
+    });
+  });
+
+  group('AiJob', () {
+    test('names the waking stage, since a silent 10s looks like a hang', () {
+      AiJob j(String s) => AiJob(id: 'i', kind: 'k', status: s);
+      expect(j('waking').progressLabel, contains('Waking'));
+      expect(j('queued').finished, isFalse);
+      expect(j('done').ok, isTrue);
+      expect(j('failed').finished, isTrue);
+      expect(j('failed').ok, isFalse);
+    });
   });
 }

@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/theme.dart';
 import 'data/providers.dart';
 import 'ui/screens/home_screen.dart';
+import 'ui/screens/assistant_screen.dart';
 import 'ui/screens/connections_screen.dart';
 import 'ui/screens/login_screen.dart';
 import 'ui/screens/review_screen.dart';
@@ -61,7 +62,12 @@ class _ShellState extends ConsumerState<_Shell> {
     return Scaffold(
       body: IndexedStack(
         index: _tab,
-        children: const [HomeScreen(), ReviewScreen(), ConnectionsScreen()],
+        children: const [
+          HomeScreen(),
+          ReviewScreen(),
+          AssistantScreen(),
+          ConnectionsScreen(),
+        ],
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
@@ -80,6 +86,11 @@ class _ShellState extends ConsumerState<_Shell> {
             ),
             selectedIcon: const Icon(Icons.inbox),
             label: 'Review',
+          ),
+          const NavigationDestination(
+            icon: Icon(Icons.auto_awesome_outlined),
+            selectedIcon: Icon(Icons.auto_awesome),
+            label: 'Assistant',
           ),
           const NavigationDestination(
             icon: Icon(Icons.account_balance_outlined),

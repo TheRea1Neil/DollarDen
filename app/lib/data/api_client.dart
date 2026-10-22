@@ -328,6 +328,120 @@ class ApiClient {
     return (r.data as Map).cast<String, dynamic>();
   }
 
+  // ------------------------------------------------------------------ //
+  // ai
+  // ------------------------------------------------------------------ //
+  Future<String> getGoals() async {
+    final r = await _withRetry((o) => _dio.get('/ai/goals', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as Map)['body'] as String? ?? '';
+  }
+
+  Future<void> setGoals(String body) async {
+    final r = await _withRetry(
+        (o) => _dio.put('/ai/goals', data: {'body': body}, options: o));
+    if (r.statusCode != 200) _fail(r);
+  }
+
+  Future<AiJob> queueJob(String kind, [Map<String, dynamic>? request]) async {
+    final r = await _withRetry((o) => _dio.post(
+          '/ai/jobs',
+          data: {'kind': kind, 'request': request ?? {}},
+          options: o,
+        ));
+    if (r.statusCode != 202) _fail(r);
+    return AiJob.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
+  Future<AiJob> getJob(String id) async {
+    final r = await _withRetry((o) => _dio.get('/ai/jobs/$id', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return AiJob.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
+  /// Poll a job to completion.
+  ///
+  /// The host may be asleep, so the first response can take ~10s longer
+  /// than the inference itself. [onProgress] lets the UI say which stage
+  /// it is at rather than showing an opaque spinner.
+  Future<AiJob> awaitJob(
+    String id, {
+    Duration interval = const Duration(seconds: 3),
+    Duration timeout = const Duration(minutes: 3),
+    void Function(AiJob)? onProgress,
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      final job = await getJob(id);
+      onProgress?.call(job);
+      if (job.finished) return job;
+      await Future<void>.delayed(interval);
+    }
+    throw ApiException('The AI server did not respond in time.');
+  }
+
+  Future<Map<String, dynamic>> aiStatus() async {
+    final r = await _withRetry((o) => _dio.get('/ai/status', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as Map).cast<String, dynamic>();
+  }
+
+  // ------------------------------------------------------------------ //
+  // proposals, opening balances
+  // ------------------------------------------------------------------ //
+
+  /// Apply a proposal the user has reviewed. Sends the EDITED payload, not
+  /// a job id: what gets applied is what they approved on screen.
+  Future<Map<String, dynamic>> applyProposal({
+    required List<ProposedCategory> categories,
+    required List<ProposedRule> rules,
+    String planName = 'Standard',
+    bool categoriesOnly = false,
+  }) async {
+    final r = await _withRetry((o) => _dio.post('/budget/apply-proposal', data: {
+          'categories': [for (final c in categories) c.toJson()],
+          'split_rules': [for (final x in rules) x.toJson()],
+          'plan_name': planName,
+          'categories_only': categoriesOnly,
+        }, options: o));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as Map).cast<String, dynamic>();
+  }
+
+  Future<Map<String, dynamic>> reconciliation() async {
+    final r = await _withRetry((o) => _dio.get('/budget/reconciliation', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as Map).cast<String, dynamic>();
+  }
+
+  Future<Map<String, dynamic>> setOpeningBalance(
+    List<({String categoryId, int amountCents})> allocations,
+  ) async {
+    final r = await _withRetry((o) => _dio.post('/budget/opening-balance', data: {
+          'allocations': [
+            for (final a in allocations)
+              {'category_id': a.categoryId, 'amount_cents': a.amountCents}
+          ],
+        }, options: o));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as Map).cast<String, dynamic>();
+  }
+
+  Future<List<Map<String, dynamic>>> accounts() async {
+    final r = await _withRetry((o) => _dio.get('/budget/accounts', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return [for (final e in r.data as List) (e as Map).cast<String, dynamic>()];
+  }
+
+  Future<void> setAccountTracked(String id, bool tracked) async {
+    final r = await _withRetry((o) => _dio.post(
+          '/budget/accounts/$id/tracked',
+          data: {'is_tracked': tracked},
+          options: o,
+        ));
+    if (r.statusCode != 200) _fail(r);
+  }
+
   Future<bool> health() async {
     try {
       final r = await _dio.get('/health');

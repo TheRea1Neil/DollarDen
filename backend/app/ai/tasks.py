@@ -156,9 +156,27 @@ What the user wants:
 
 {request_block}
 
-Design categories and an ordered split plan that achieves this. Rules:
-- Put percentage-of-gross rules FIRST, before anything consumes the paycheck.
+Design categories and an ordered split plan that achieves this.
+
+ORDER MATTERS ENORMOUSLY. Each rule takes its money before the next one
+runs, so a rule placed too early starves everything after it. Use this
+order:
+
+  1. percent-of-gross rules (tithing) — before anything consumes the pay
+  2. fixed obligations that MUST be paid (rent, insurance, utilities)
+  3. refill_to for essentials you spend down (groceries, gas)
+  4. conditional top-ups
+  5. refill_to for savings GOALS (emergency fund, car fund) — these are
+     large and will consume everything if placed before the essentials
+  6. remainder, last
+
+A large refill_to target placed above rent will take the entire paycheck
+and leave rent unfunded. That is the single most common mistake here.
+
+More rules:
 - Give every spending category a sensible target_cents.
+- Use refill_to targets the user actually stated. Do not copy one goal's
+  target onto a different category.
 - End with exactly one remainder rule pointing at a real savings category.
 - EVERY rule must have filled params matching its type:
     percent   -> {{"rate": "0.10", "of": "gross"}}
@@ -213,7 +231,9 @@ def _parse_json(content: str) -> dict[str, Any]:
 
 
 def _validate_design(
-    proposal: dict[str, Any], existing: list[Category]
+    proposal: dict[str, Any],
+    existing: list[Category],
+    typical_gross_cents: int = 200000,
 ) -> dict[str, Any]:
     """Check a proposal before a human ever sees it.
 
@@ -276,8 +296,16 @@ def _validate_design(
             "why": str(r.get("why", "")).strip(),
         })
 
-    # The engine refuses a plan without exactly one trailing remainder, so
-    # catch it here where it can be explained rather than at apply time.
+    # Structural repair, not retrying.
+    #
+    # Measured: asking the model to fix its own output does not help -- see
+    # experiments/selfcheck_strategies.py and docs/05. But some faults have
+    # exactly one correct fix, and applying it in code is both faster and
+    # more reliable than another 15-second round trip. Repairs are reported
+    # as notices so nothing changes silently.
+    clean_rules, repairs = _repair_remainders(clean_rules)
+    notices.extend(repairs)
+
     remainders = [r for r in clean_rules if r["rule_type"] == "remainder"]
     if len(remainders) == 0:
         problems.append("no remainder rule — add one for whatever is left over")
@@ -286,12 +314,26 @@ def _validate_design(
     elif clean_rules and clean_rules[-1]["rule_type"] != "remainder":
         problems.append("the remainder rule must be last")
 
+    # Dry-run the plan against a representative paycheck.
+    #
+    # Structural validation cannot catch an ORDERING mistake: a plan can be
+    # perfectly well-formed and still starve rent, because a large
+    # refill_to above it consumed everything. Observed exactly that -- an
+    # Emergency Fund refill to $6,000 sat at position 2 and took the whole
+    # paycheck. Simulating is the only way to see it.
+    # Only simulate a plan that is otherwise sound. Running the engine over
+    # rules with missing params raises, and a plan already known to be
+    # broken has nothing useful to say about ordering anyway.
+    warnings = _simulate(clean_rules, typical_gross_cents) if not problems else []
+
     return {
         "categories": clean_cats,
         "split_rules": clean_rules,
         "notes": str(proposal.get("notes", "")).strip(),
         "problems": problems,
         "notices": notices,
+        "warnings": warnings,
+        "simulated_gross_cents": typical_gross_cents,
         # Only real problems block applying. The proposal is editable either
         # way -- the user can fix what the model got wrong.
         "applicable": not problems,
@@ -316,6 +358,104 @@ def _missing_params(rule_type: str, params: dict[str, Any]) -> str:
     needed = _REQUIRED_PARAMS.get(rule_type, ())
     absent = [k for k in needed if params.get(k) in (None, "", {})]
     return ", ".join(absent)
+
+
+def _simulate(rules: list[dict[str, Any]], gross_cents: int) -> list[str]:
+    """Run the plan against a representative paycheck and report starvation.
+
+    Returns warnings, not problems: the plan is legal, and the user may
+    genuinely intend it. But being told "with a $2,000 paycheck this leaves
+    Rent with nothing" is the difference between catching the mistake now
+    and discovering it on payday.
+    """
+    from app.budget.split import RuleType
+    from app.budget.split import SplitRule as EngineRule
+    from app.budget.split import SplitPlanError, apply_split
+
+    if not rules:
+        return []
+
+    engine = [
+        EngineRule(
+            category_id=r["category_name"],
+            order_index=r["order_index"],
+            rule_type=RuleType(r["rule_type"]),
+            params=r["params"],
+        )
+        for r in rules
+    ]
+    try:
+        # Balances start at zero: a brand-new budget is the worst case, and
+        # the case the assistant is usually being asked about.
+        result = apply_split(gross_cents, engine, {r["category_name"]: 0 for r in rules})
+    except (SplitPlanError, KeyError, TypeError, ValueError):
+        # Structural and param faults are reported separately. A simulation
+        # must never be the thing that breaks validation.
+        return []
+
+    warnings: list[str] = []
+    funded = {a.category_id: a.amount_cents for a in result.allocations}
+
+    starved = [
+        r["category_name"] for r in rules
+        if r["rule_type"] != "remainder" and funded.get(r["category_name"], 0) == 0
+    ]
+    if starved:
+        warnings.append(
+            f"With a ${gross_cents / 100:,.0f} paycheck, these get nothing because "
+            f"earlier rules use it all: {', '.join(starved)}. "
+            f"Move large savings goals below your essentials."
+        )
+
+    for name, short in result.unfunded:
+        warnings.append(
+            f"'{name}' would be short ${short / 100:,.2f} of what its rule asks for."
+        )
+
+    return warnings
+
+
+def _repair_remainders(
+    rules: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Fix remainder-rule faults that have exactly one correct resolution.
+
+    Two faults are mechanical:
+
+    * More than one remainder rule. Only the LAST can receive what is left,
+      because everything before it would consume the whole paycheck. The
+      earlier ones are dropped.
+    * The remainder rule is not last. It is moved to the end, which is the
+      only position where it means anything.
+
+    Both are reported, never applied silently. Anything ambiguous is left
+    alone and surfaces as a problem for the user to resolve.
+    """
+    notes: list[str] = []
+    remainder_idx = [i for i, r in enumerate(rules) if r["rule_type"] == "remainder"]
+
+    if len(remainder_idx) > 1:
+        keep = remainder_idx[-1]
+        dropped = [rules[i]["category_name"] for i in remainder_idx[:-1]]
+        rules = [r for i, r in enumerate(rules) if i == keep or i not in remainder_idx]
+        notes.append(
+            f"the model proposed {len(remainder_idx)} remainder rules; kept the "
+            f"last one and dropped {', '.join(dropped)} — only one rule can "
+            f"receive what is left over"
+        )
+        remainder_idx = [i for i, r in enumerate(rules) if r["rule_type"] == "remainder"]
+
+    if remainder_idx and remainder_idx[-1] != len(rules) - 1:
+        rule = rules.pop(remainder_idx[-1])
+        rules.append(rule)
+        notes.append(
+            f"moved the remainder rule ('{rule['category_name']}') to last, "
+            f"where it is the only thing it can mean"
+        )
+
+    for n, r in enumerate(rules, start=1):
+        r["order_index"] = n
+    return rules, notes
 
 
 def _as_int(v: Any) -> int | None:

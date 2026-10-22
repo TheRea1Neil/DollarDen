@@ -57,18 +57,28 @@ class TestProposalValidation:
         assert out["applicable"] is False
         assert any("remainder" in x for x in out["problems"])
 
-    def test_remainder_not_last_is_caught(self) -> None:
+    def test_remainder_not_last_is_repaired_not_rejected(self) -> None:
+        """Behaviour changed deliberately: this fault has exactly one
+        correct fix, so it is repaired in code and reported, rather than
+        handed back to the user to sort out. See TestDeterministicRepair."""
         p = self._good()
         p["split_rules"][0]["order_index"] = 5  # pushes remainder off the end
         out = _validate_design(p, [])
-        assert any("last" in x for x in out["problems"])
+        assert out["applicable"] is True
+        assert out["split_rules"][-1]["rule_type"] == "remainder"
+        assert any("moved the remainder" in n for n in out["notices"])
 
-    def test_two_remainders_rejected(self) -> None:
+    def test_two_remainders_are_repaired_not_rejected(self) -> None:
+        """Also changed deliberately: only the last remainder can receive
+        anything, so the earlier ones are dropped and reported."""
         p = self._good()
         p["split_rules"].append({"category_name": "Food", "order_index": 3,
                                  "rule_type": "remainder", "params": {}, "why": "x"})
         out = _validate_design(p, [])
-        assert any("only one" in x for x in out["problems"])
+        assert out["applicable"] is True
+        kinds = [r["rule_type"] for r in out["split_rules"]]
+        assert kinds.count("remainder") == 1
+        assert any("remainder rules" in n for n in out["notices"])
 
     def test_rule_for_an_unknown_category_is_dropped(self) -> None:
         p = self._good()
@@ -282,3 +292,146 @@ class TestSchemaCompleteness:
                   ["properties"]["params"]["properties"])
         assert set(params["when"]["properties"]) >= {"field", "op", "value_cents"}
         assert set(params["then"]["properties"]) >= {"rule_type", "params"}
+
+
+class TestDeterministicRepair:
+    """Faults with exactly one correct fix are repaired in code.
+
+    Measured (experiments/selfcheck_strategies.py): asking the model to fix
+    its own output does not help. But a mechanical fault has a mechanical
+    fix, and applying it is faster and more reliable than another round
+    trip. Repairs are reported, never silent.
+    """
+
+    def _cats(self) -> list[dict]:
+        return [
+            {"name": "A", "kind": "spending", "description": "x"},
+            {"name": "B", "kind": "savings_bucket", "description": "y"},
+            {"name": "C", "kind": "savings_bucket", "description": "z"},
+        ]
+
+    def test_two_remainders_keeps_the_last_and_reports_it(self) -> None:
+        """Observed from the live model: it proposed two remainder rules."""
+        out = _validate_design({
+            "categories": self._cats(),
+            "split_rules": [
+                {"category_name": "A", "order_index": 1, "rule_type": "fixed",
+                 "params": {"amount_cents": 1000}, "why": ""},
+                {"category_name": "B", "order_index": 2, "rule_type": "remainder",
+                 "params": {}, "why": ""},
+                {"category_name": "C", "order_index": 3, "rule_type": "remainder",
+                 "params": {}, "why": ""},
+            ],
+            "notes": "",
+        }, [])
+        assert out["applicable"] is True, out["problems"]
+        kinds = [r["rule_type"] for r in out["split_rules"]]
+        assert kinds.count("remainder") == 1
+        assert out["split_rules"][-1]["category_name"] == "C", "the LAST one survives"
+        assert any("remainder rules" in n for n in out["notices"])
+
+    def test_remainder_not_last_is_moved_and_reported(self) -> None:
+        out = _validate_design({
+            "categories": self._cats(),
+            "split_rules": [
+                {"category_name": "B", "order_index": 1, "rule_type": "remainder",
+                 "params": {}, "why": ""},
+                {"category_name": "A", "order_index": 2, "rule_type": "fixed",
+                 "params": {"amount_cents": 1000}, "why": ""},
+            ],
+            "notes": "",
+        }, [])
+        assert out["applicable"] is True, out["problems"]
+        assert out["split_rules"][-1]["rule_type"] == "remainder"
+        assert any("moved the remainder" in n for n in out["notices"])
+
+    def test_order_indexes_renumbered_after_repair(self) -> None:
+        out = _validate_design({
+            "categories": self._cats(),
+            "split_rules": [
+                {"category_name": "B", "order_index": 9, "rule_type": "remainder",
+                 "params": {}, "why": ""},
+                {"category_name": "A", "order_index": 3, "rule_type": "fixed",
+                 "params": {"amount_cents": 1000}, "why": ""},
+            ],
+            "notes": "",
+        }, [])
+        assert [r["order_index"] for r in out["split_rules"]] == [1, 2]
+
+    def test_no_remainder_at_all_is_still_a_problem(self) -> None:
+        """Inventing one would mean guessing where the money should go."""
+        out = _validate_design({
+            "categories": self._cats(),
+            "split_rules": [
+                {"category_name": "A", "order_index": 1, "rule_type": "fixed",
+                 "params": {"amount_cents": 1000}, "why": ""},
+            ],
+            "notes": "",
+        }, [])
+        assert out["applicable"] is False
+        assert any("no remainder" in p for p in out["problems"])
+
+
+class TestPlanSimulation:
+    """Ordering faults are invisible to structural validation.
+
+    Observed live: the model placed an Emergency Fund refill to $6,000 at
+    position 2, above rent. The plan was perfectly well-formed and starved
+    rent, health and groceries completely. Only simulating it reveals that.
+    """
+
+    def _plan(self, rules: list[dict]) -> dict:
+        names = {r["category_name"] for r in rules}
+        return {
+            "categories": [
+                {"name": n, "kind": "spending", "description": ""} for n in names
+            ],
+            "split_rules": rules,
+            "notes": "",
+        }
+
+    def test_a_savings_goal_above_rent_is_warned_about(self) -> None:
+        out = _validate_design(self._plan([
+            {"category_name": "Emergency Fund", "order_index": 1,
+             "rule_type": "refill_to", "params": {"target_cents": 600000}, "why": ""},
+            {"category_name": "Rent", "order_index": 2,
+             "rule_type": "fixed", "params": {"amount_cents": 35000}, "why": ""},
+            {"category_name": "Left", "order_index": 3,
+             "rule_type": "remainder", "params": {}, "why": ""},
+        ]), [], typical_gross_cents=200000)
+
+        # Structurally fine -- which is exactly the danger.
+        assert out["applicable"] is True
+        assert out["warnings"], "starving rent must be surfaced"
+        assert any("Rent" in w for w in out["warnings"])
+
+    def test_a_sensible_order_produces_no_warnings(self) -> None:
+        out = _validate_design(self._plan([
+            {"category_name": "Tithing", "order_index": 1, "rule_type": "percent",
+             "params": {"rate": "0.10", "of": "gross"}, "why": ""},
+            {"category_name": "Rent", "order_index": 2, "rule_type": "fixed",
+             "params": {"amount_cents": 35000}, "why": ""},
+            {"category_name": "Groceries", "order_index": 3, "rule_type": "refill_to",
+             "params": {"target_cents": 30000}, "why": ""},
+            {"category_name": "Emergency Fund", "order_index": 4,
+             "rule_type": "remainder", "params": {}, "why": ""},
+        ]), [], typical_gross_cents=200000)
+        assert out["applicable"] is True
+        assert out["warnings"] == [], out["warnings"]
+
+    def test_the_simulated_amount_is_reported(self) -> None:
+        """So the user knows what assumption the warning rests on."""
+        out = _validate_design(self._plan([
+            {"category_name": "A", "order_index": 1, "rule_type": "remainder",
+             "params": {}, "why": ""},
+        ]), [], typical_gross_cents=150000)
+        assert out["simulated_gross_cents"] == 150000
+
+    def test_an_unfunded_fixed_rule_reports_the_shortfall(self) -> None:
+        out = _validate_design(self._plan([
+            {"category_name": "Rent", "order_index": 1, "rule_type": "fixed",
+             "params": {"amount_cents": 500000}, "why": ""},
+            {"category_name": "Left", "order_index": 2, "rule_type": "remainder",
+             "params": {}, "why": ""},
+        ]), [], typical_gross_cents=200000)
+        assert any("short" in w for w in out["warnings"])

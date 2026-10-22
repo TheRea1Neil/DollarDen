@@ -286,3 +286,173 @@ class CashAccount {
 
   String get label => mask == null ? name : '$name ••$mask';
 }
+
+
+/// A queued AI job. Inference runs on a host that sleeps, so every call is
+/// a job with a persisted result rather than a blocking request.
+class AiJob {
+  final String id;
+  final String kind;
+  final String status; // queued | waking | running | done | failed
+  final Map<String, dynamic>? result;
+  final String? error;
+
+  const AiJob({
+    required this.id,
+    required this.kind,
+    required this.status,
+    this.result,
+    this.error,
+  });
+
+  factory AiJob.fromJson(Map<String, dynamic> j) => AiJob(
+        id: j['id'] as String,
+        kind: j['kind'] as String,
+        status: j['status'] as String,
+        result: (j['result'] as Map?)?.cast<String, dynamic>(),
+        error: j['error'] as String?,
+      );
+
+  bool get finished => status == 'done' || status == 'failed';
+  bool get ok => status == 'done';
+
+  /// What to tell the user while they wait. "Waking" is worth saying out
+  /// loud: a ten second pause looks like a hang otherwise.
+  String get progressLabel => switch (status) {
+        'queued' => 'Queued…',
+        'waking' => 'Waking the AI server…',
+        'running' => 'Thinking…',
+        'failed' => 'Failed',
+        _ => 'Done',
+      };
+}
+
+/// A proposed category from the assistant. Editable before it is applied.
+class ProposedCategory {
+  String name;
+  String kind;
+  String description;
+  int? targetCents;
+  final bool alreadyExists;
+
+  ProposedCategory({
+    required this.name,
+    required this.kind,
+    required this.description,
+    required this.alreadyExists,
+    this.targetCents,
+  });
+
+  factory ProposedCategory.fromJson(Map<String, dynamic> j) => ProposedCategory(
+        name: j['name'] as String,
+        kind: j['kind'] as String? ?? 'spending',
+        description: j['description'] as String? ?? '',
+        targetCents: j['target_cents'] as int?,
+        alreadyExists: j['already_exists'] as bool? ?? false,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'kind': kind,
+        if (description.isNotEmpty) 'description': description,
+        if (targetCents != null) 'target_cents': targetCents,
+      };
+}
+
+/// A proposed split rule, with the model's own one-line reasoning.
+class ProposedRule {
+  String categoryName;
+  int orderIndex;
+  String ruleType;
+  Map<String, dynamic> params;
+  final String why;
+
+  ProposedRule({
+    required this.categoryName,
+    required this.orderIndex,
+    required this.ruleType,
+    required this.params,
+    required this.why,
+  });
+
+  factory ProposedRule.fromJson(Map<String, dynamic> j) => ProposedRule(
+        categoryName: j['category_name'] as String,
+        orderIndex: j['order_index'] as int? ?? 0,
+        ruleType: j['rule_type'] as String,
+        params: (j['params'] as Map?)?.cast<String, dynamic>() ?? {},
+        why: j['why'] as String? ?? '',
+      );
+
+  Map<String, dynamic> toJson() => {
+        'category_name': categoryName,
+        'order_index': orderIndex,
+        'rule_type': ruleType,
+        'params': params,
+      };
+
+  /// Plain-English rendering, so the plan is readable without knowing the
+  /// rule vocabulary.
+  String describe() {
+    switch (ruleType) {
+      case 'percent':
+        final rate = double.tryParse('${params['rate'] ?? 0}') ?? 0;
+        final of = params['of'] == 'remaining' ? "what's left" : 'gross pay';
+        return '${(rate * 100).toStringAsFixed(0)}% of $of';
+      case 'fixed':
+        return _money(params['amount_cents']);
+      case 'refill_to':
+        return 'top up to ${_money(params['target_cents'])}';
+      case 'conditional':
+        final when = (params['when'] as Map?)?.cast<String, dynamic>() ?? {};
+        final then = (params['then'] as Map?)?.cast<String, dynamic>() ?? {};
+        final amount = (then['params'] as Map?)?['amount_cents'];
+        return 'if below ${_money(when['value_cents'])}, '
+            'add ${_money(amount)}';
+      case 'remainder':
+        return 'everything left over';
+      default:
+        return ruleType;
+    }
+  }
+
+  static String _money(dynamic cents) {
+    if (cents is! int) return '—';
+    return '\$${(cents / 100).toStringAsFixed(2)}';
+  }
+}
+
+class Proposal {
+  final List<ProposedCategory> categories;
+  final List<ProposedRule> rules;
+  final String notes;
+  final List<String> problems;
+  final List<String> notices;
+  /// Legal but probably unintended — e.g. a savings goal ordered above
+  /// rent, which starves it. Worth showing prominently; not a blocker.
+  final List<String> warnings;
+  final bool applicable;
+
+  const Proposal({
+    required this.categories,
+    required this.rules,
+    required this.notes,
+    required this.problems,
+    required this.notices,
+    required this.warnings,
+    required this.applicable,
+  });
+
+  factory Proposal.fromJson(Map<String, dynamic> j) => Proposal(
+        categories: (j['categories'] as List? ?? [])
+            .map((e) => ProposedCategory.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        rules: (j['split_rules'] as List? ?? [])
+            .map((e) => ProposedRule.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        notes: j['notes'] as String? ?? '',
+        problems: (j['problems'] as List? ?? []).map((e) => '$e').toList(),
+        notices: (j['notices'] as List? ?? []).map((e) => '$e').toList(),
+        warnings: (j['warnings'] as List? ?? []).map((e) => '$e').toList(),
+        applicable: j['applicable'] as bool? ?? false,
+      );
+}

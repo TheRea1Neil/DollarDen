@@ -397,3 +397,106 @@ class TestOpeningBalance:
                           headers=h).json()["unallocated_cents"] == 80000
         r = client.post("/api/budget/reconcile", headers=h).json()
         assert r["moved_cents"] == 80000 and r["balanced"] is True
+
+
+@requires_db
+class TestApplyProposal:
+    """Applying a reviewed AI proposal.
+
+    The proposal is whatever the USER approved on screen, so the endpoint
+    takes the edited payload rather than a job id. A proposal gets no more
+    trust than a hand-made plan.
+    """
+
+    def _proposal(self) -> dict:
+        return {
+            "categories": [
+                {"name": "Tithing", "kind": "obligation", "description": "10% first"},
+                {"name": "Groceries", "kind": "spending", "target_cents": 30000},
+                {"name": "Car Fund", "kind": "savings_bucket"},
+            ],
+            "split_rules": [
+                {"category_name": "Tithing", "order_index": 1, "rule_type": "percent",
+                 "params": {"rate": "0.10", "of": "gross"}},
+                {"category_name": "Groceries", "order_index": 2, "rule_type": "refill_to",
+                 "params": {"target_cents": 30000}},
+                {"category_name": "Car Fund", "order_index": 3, "rule_type": "remainder",
+                 "params": {}},
+            ],
+        }
+
+    def test_creates_categories_and_an_active_plan(self, client: TestClient) -> None:
+        h = _auth(client)
+        r = client.post("/api/budget/apply-proposal", json=self._proposal(), headers=h)
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert sorted(out["created_categories"]) == ["Car Fund", "Groceries", "Tithing"]
+        assert out["plan_version"] == 1
+
+        plans = client.get("/api/budget/plans", headers=h).json()
+        assert len(plans) == 1 and plans[0]["is_active"] is True
+        assert [x["rule_type"] for x in plans[0]["rules"]] == \
+            ["percent", "refill_to", "remainder"]
+
+    def test_applying_twice_reuses_rather_than_duplicating(self, client: TestClient) -> None:
+        """Otherwise the user ends up with Food and Food (2)."""
+        h = _auth(client)
+        client.post("/api/budget/apply-proposal", json=self._proposal(), headers=h)
+        second = client.post("/api/budget/apply-proposal",
+                             json=self._proposal(), headers=h).json()
+        assert second["created_categories"] == []
+        assert sorted(second["reused_categories"]) == ["Car Fund", "Groceries", "Tithing"]
+        assert len(client.get("/api/budget/categories", headers=h).json()) == 3
+        assert second["plan_version"] == 2, "a re-apply should version the plan"
+
+    def test_existing_user_edits_are_not_overwritten(self, client: TestClient) -> None:
+        """A proposal fills gaps; it must not undo the user's own choices."""
+        h = _auth(client)
+        _cat(client, h, "Groceries", target_cents=99999)
+        client.post("/api/budget/apply-proposal", json=self._proposal(), headers=h)
+        cats = {c["name"]: c for c in client.get("/api/budget/categories", headers=h).json()}
+        assert cats["Groceries"]["target_cents"] == 99999
+
+    def test_a_structurally_invalid_proposal_is_refused(self, client: TestClient) -> None:
+        """A model's plan earns no special trust."""
+        h = _auth(client)
+        p = self._proposal()
+        p["split_rules"] = p["split_rules"][:2]   # drop the remainder
+        r = client.post("/api/budget/apply-proposal", json=p, headers=h)
+        assert r.status_code == 422
+        assert "remainder" in r.text.lower()
+
+    def test_rule_naming_an_absent_category_is_refused(self, client: TestClient) -> None:
+        h = _auth(client)
+        p = self._proposal()
+        p["split_rules"].insert(0, {"category_name": "Ghost", "order_index": 0,
+                                    "rule_type": "fixed",
+                                    "params": {"amount_cents": 100}})
+        r = client.post("/api/budget/apply-proposal", json=p, headers=h)
+        assert r.status_code == 422 and "Ghost" in r.text
+
+    def test_categories_only_skips_the_plan(self, client: TestClient) -> None:
+        h = _auth(client)
+        p = dict(self._proposal(), categories_only=True)
+        out = client.post("/api/budget/apply-proposal", json=p, headers=h).json()
+        assert out["plan_id"] is None
+        assert client.get("/api/budget/plans", headers=h).json() == []
+
+    def test_requires_auth(self, client: TestClient) -> None:
+        assert client.post("/api/budget/apply-proposal",
+                           json=self._proposal()).status_code in (401, 403)
+
+    def test_the_applied_plan_actually_splits_a_paycheck(self, client: TestClient) -> None:
+        """End to end: proposal -> plan -> real allocations."""
+        h = _auth(client)
+        client.post("/api/budget/apply-proposal", json=self._proposal(), headers=h)
+        pc = client.post("/api/budget/paychecks",
+                         json={"gross_cents": 200000}, headers=h)
+        assert pc.status_code == 201, pc.text
+        assert pc.json()["allocated_cents"] == 200000
+
+        bal = {c["name"]: c["balance_cents"]
+               for c in client.get("/api/budget/categories", headers=h).json()}
+        assert bal["Tithing"] == 20000       # 10% of gross, first
+        assert bal["Groceries"] == 30000     # refilled to target
+        assert bal["Car Fund"] == 150000     # remainder

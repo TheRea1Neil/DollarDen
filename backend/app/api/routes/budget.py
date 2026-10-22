@@ -876,6 +876,153 @@ def credit_cards(
 
 
 # --------------------------------------------------------------------------- #
+# Applying an AI proposal
+# --------------------------------------------------------------------------- #
+class ProposedCategoryIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    kind: str
+    description: str | None = None
+    target_cents: int | None = Field(default=None, ge=0)
+    alert_at_cents: int | None = Field(default=None, ge=0)
+
+    @field_validator("kind")
+    @classmethod
+    def _kind(cls, v: str) -> str:
+        if v not in KINDS:
+            raise ValueError(f"kind must be one of {sorted(KINDS)}")
+        return v
+
+
+class ProposedRuleIn(BaseModel):
+    category_name: str
+    order_index: int
+    rule_type: str
+    params: dict = Field(default_factory=dict)
+
+    @field_validator("rule_type")
+    @classmethod
+    def _known(cls, v: str) -> str:
+        if v not in {t.value for t in RuleType}:
+            raise ValueError(f"rule_type must be one of {[t.value for t in RuleType]}")
+        return v
+
+
+class ApplyProposalIn(BaseModel):
+    """Apply a proposal the user has reviewed and possibly edited.
+
+    Deliberately takes the full edited payload rather than a job id: what
+    gets applied is whatever the user approved on screen, not whatever the
+    model originally said.
+    """
+
+    categories: list[ProposedCategoryIn] = Field(default_factory=list)
+    split_rules: list[ProposedRuleIn] = Field(default_factory=list)
+    plan_name: str = Field(default="Standard", min_length=1, max_length=120)
+    # Create categories without touching the split plan.
+    categories_only: bool = False
+
+
+class ApplyProposalOut(BaseModel):
+    created_categories: list[str]
+    reused_categories: list[str]
+    plan_id: str | None
+    plan_version: int | None
+
+
+@router.post("/apply-proposal", response_model=ApplyProposalOut)
+def apply_proposal(
+    body: ApplyProposalIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> ApplyProposalOut:
+    """Turn a reviewed proposal into real categories and a split plan.
+
+    Existing categories are REUSED by name, never duplicated, so applying a
+    proposal twice does not leave the user with "Food" and "Food (2)".
+    """
+    existing = {
+        c.name: c
+        for c in db.scalars(
+            select(Category).where(
+                Category.user_id == user.id, Category.archived_at.is_(None)
+            )
+        ).all()
+    }
+
+    created: list[str] = []
+    reused: list[str] = []
+    by_name: dict[str, Category] = dict(existing)
+
+    for spec in body.categories:
+        found = existing.get(spec.name)
+        if found is not None:
+            reused.append(spec.name)
+            # Only fill gaps. Overwriting a target the user already set
+            # would quietly undo their own decision.
+            if found.target_cents is None and spec.target_cents is not None:
+                found.target_cents = spec.target_cents
+            if found.alert_at_cents is None and spec.alert_at_cents is not None:
+                found.alert_at_cents = spec.alert_at_cents
+            continue
+
+        cat = Category(
+            user_id=user.id, name=spec.name, kind=spec.kind,
+            description=spec.description, target_cents=spec.target_cents,
+            alert_at_cents=spec.alert_at_cents, sort_order=len(by_name),
+        )
+        db.add(cat)
+        db.flush()
+        by_name[spec.name] = cat
+        created.append(spec.name)
+
+    if body.categories_only or not body.split_rules:
+        db.commit()
+        return ApplyProposalOut(created_categories=created, reused_categories=reused,
+                                plan_id=None, plan_version=None)
+
+    rules_in: list[SplitRuleIn] = []
+    for r in sorted(body.split_rules, key=lambda x: x.order_index):
+        cat = by_name.get(r.category_name)
+        if cat is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"Rule references '{r.category_name}', which is not among the "
+                f"categories being created or already present",
+            )
+        rules_in.append(SplitRuleIn(
+            category_id=str(cat.id), order_index=len(rules_in) + 1,
+            rule_type=r.rule_type, params=r.params,
+        ))
+
+    # Same structural validation as a hand-made plan: a proposal gets no
+    # special trust just because a model produced it.
+    _validate_plan(rules_in)
+
+    for p in db.scalars(
+        select(SplitPlan).where(SplitPlan.user_id == user.id, SplitPlan.is_active.is_(True))
+    ).all():
+        p.is_active = False
+
+    prior = db.scalars(
+        select(SplitPlan).where(SplitPlan.user_id == user.id).order_by(SplitPlan.version.desc())
+    ).first()
+    plan = SplitPlan(user_id=user.id, name=body.plan_name,
+                     version=(prior.version + 1) if prior else 1, is_active=True)
+    db.add(plan)
+    db.flush()
+    for r in rules_in:
+        db.add(SplitRule(plan_id=plan.id, category_id=uuid.UUID(r.category_id),
+                         order_index=r.order_index, rule_type=r.rule_type,
+                         params=r.params, enabled=True))
+    db.commit()
+
+    return ApplyProposalOut(
+        created_categories=created, reused_categories=reused,
+        plan_id=str(plan.id), plan_version=plan.version,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Opening balances and reconciliation
 # --------------------------------------------------------------------------- #
 @router.get("/reconciliation")

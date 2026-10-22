@@ -11,6 +11,10 @@ app/api/routes/backup.py
 app/api/routes/health.py
 app/api/routes/plaid.py
 app/budget/__init__.py
+app/budget/categorize.py
+app/budget/ledger.py
+app/budget/paycheck.py
+app/budget/rules.py
 app/budget/split.py
 app/core/__init__.py
 app/core/config.py
@@ -31,6 +35,8 @@ nnf_backend.egg-info/dependency_links.txt
 nnf_backend.egg-info/requires.txt
 nnf_backend.egg-info/top_level.txt
 tests/test_auth_and_isolation.py
+tests/test_budget_flow.py
+tests/test_ledger.py
 tests/test_plaid_sync.py
 tests/test_plaid_webhook.py
 tests/test_ratelimit.py

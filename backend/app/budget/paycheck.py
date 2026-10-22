@@ -52,12 +52,29 @@ def _engine_rules(db: Session, plan: SplitPlan) -> list[EngineRule]:
 
 
 def apply_plan(
-    db: Session, user_id: uuid.UUID, paycheck: Paycheck, plan: SplitPlan
+    db: Session,
+    user_id: uuid.UUID,
+    paycheck: Paycheck,
+    plan: SplitPlan,
+    *,
+    rules: list[EngineRule] | None = None,
+    manual: list[tuple[uuid.UUID, int]] | None = None,
 ) -> ApplyResult:
     """Split a paycheck across categories and post the allocations.
 
     Re-applying an already-applied paycheck is refused rather than
     double-allocating: webhooks and manual retries can both land here.
+
+    `rules` overrides the plan's own rules for THIS paycheck only. A
+    one-off reorder is a normal thing to want -- a cheque that includes a
+    refund should not be tithed on like ordinary income -- and it must
+    not quietly rewrite the plan that runs every other payday. Making a
+    change permanent is a separate, deliberate act on the category.
+
+    `manual` allocations are taken off the top, before any rule runs, and
+    the rules then divide what is LEFT. That ordering is the point: money
+    you have already decided about should not also be counted as income
+    by a percentage rule.
     """
     if paycheck.applied_at is not None:
         raise ValueError("this paycheck has already been applied")
@@ -69,11 +86,31 @@ def apply_plan(
         ).all()
     }
 
-    result = apply_split(paycheck.gross_cents, _engine_rules(db, plan), balances)
+    entries: list[Entry] = []
+    manual_total = 0
+    for cat_id, amount in (manual or []):
+        if amount <= 0:
+            continue
+        manual_total += amount
+        entries.append(Entry(cat_id, amount, "paycheck_manual", None,
+                             "set aside before the rules ran"))
+        key = str(cat_id)
+        balances[key] = balances.get(key, 0) + amount
 
-    entries = [
+    if manual_total > paycheck.gross_cents:
+        raise ValueError(
+            f"manual allocations (${manual_total / 100:,.2f}) exceed the "
+            f"paycheck (${paycheck.gross_cents / 100:,.2f})"
+        )
+
+    remaining_gross = paycheck.gross_cents - manual_total
+    engine = rules if rules is not None else _engine_rules(db, plan)
+    result = apply_split(remaining_gross, engine, balances)
+
+    entries += [
         Entry(uuid.UUID(a.category_id), a.amount_cents, "paycheck_rule",
-              None, f"{a.rule_type} from plan {plan.name} v{plan.version}")
+              None, f"{a.rule_type} from plan {plan.name} v{plan.version}"
+                    + (" (adjusted for this paycheck)" if rules is not None else ""))
         for a in result.allocations
     ]
     post(db, user_id, entries, paycheck_id=paycheck.id)
@@ -89,7 +126,7 @@ def apply_plan(
 
     return ApplyResult(
         paycheck_id=paycheck.id,
-        allocated_cents=result.total_cents,
+        allocated_cents=result.total_cents + manual_total,
         unfunded=result.unfunded,
         allocations=len(result.allocations),
     )
@@ -102,7 +139,11 @@ def unapply(db: Session, user_id: uuid.UUID, paycheck: Paycheck) -> int:
     allocs = list(
         db.scalars(select(Allocation).where(Allocation.paycheck_id == paycheck.id)).all()
     )
-    live = [a for a in allocs if a.source == "paycheck_rule"]
+    # Both kinds: money the rules allocated AND money set aside by hand
+    # during the review. Undoing a paycheck must leave nothing behind, or
+    # the hand-placed part silently survives and the balances drift.
+    live = [a for a in allocs
+            if a.source in ("paycheck_rule", "paycheck_manual")]
     if not live:
         return 0
     reverse(db, user_id, live, f"undo paycheck {paycheck.id}")

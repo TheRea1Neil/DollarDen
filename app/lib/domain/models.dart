@@ -821,6 +821,8 @@ class PreviewLine {
   final Map<String, dynamic> params;
   final int balanceCents;
   final int allocatedCents;
+  /// Set aside by hand this paycheck, before the rules ran.
+  final int manualCents;
   final int afterCents;
   final int shortCents;
 
@@ -835,6 +837,7 @@ class PreviewLine {
     required this.allocatedCents,
     required this.afterCents,
     required this.shortCents,
+    this.manualCents = 0,
   });
 
   factory PreviewLine.fromJson(Map<String, dynamic> j) => PreviewLine(
@@ -846,11 +849,16 @@ class PreviewLine {
         params: (j['params'] as Map?)?.cast<String, dynamic>() ?? {},
         balanceCents: j['balance_cents'] as int? ?? 0,
         allocatedCents: j['allocated_cents'] as int? ?? 0,
+        manualCents: j['manual_cents'] as int? ?? 0,
         afterCents: j['after_cents'] as int? ?? 0,
         shortCents: j['short_cents'] as int? ?? 0,
       );
 
-  bool get gotNothing => allocatedCents == 0;
+  bool get gotNothing => allocatedCents == 0 && manualCents == 0;
+
+  /// A row that exists only because money was set aside by hand; it has
+  /// no rule in the plan.
+  bool get isManualOnly => ruleType == 'manual';
 
   /// The shape the preview endpoint wants back when proposing a change.
   Map<String, dynamic> toRuleJson(int orderIndex) => {
@@ -870,6 +878,7 @@ class PreviewLine {
         params: newParams,
         balanceCents: balanceCents,
         allocatedCents: allocatedCents,
+        manualCents: manualCents,
         afterCents: afterCents,
         shortCents: shortCents,
       );
@@ -882,6 +891,9 @@ class PaycheckPreview {
   final int planVersion;
   final List<PreviewLine> lines;
   final int totalAllocatedCents;
+  final int manualTotalCents;
+  /// What the rules actually divided: gross minus the set-asides.
+  final int rulesGrossCents;
   final int leftoverCents;
   final List<String> starved;
   final List<String> warnings;
@@ -897,6 +909,8 @@ class PaycheckPreview {
     required this.lines,
     required this.totalAllocatedCents,
     required this.leftoverCents,
+    this.manualTotalCents = 0,
+    this.rulesGrossCents = 0,
     required this.starved,
     required this.warnings,
     this.isSavedPlan = true,
@@ -910,6 +924,8 @@ class PaycheckPreview {
             .map((e) => PreviewLine.fromJson((e as Map).cast<String, dynamic>()))
             .toList(),
         totalAllocatedCents: j['total_allocated_cents'] as int? ?? 0,
+        manualTotalCents: j['manual_total_cents'] as int? ?? 0,
+        rulesGrossCents: j['rules_gross_cents'] as int? ?? 0,
         leftoverCents: j['leftover_cents'] as int? ?? 0,
         starved: ((j['starved'] as List?) ?? const []).cast<String>(),
         warnings: ((j['warnings'] as List?) ?? const []).cast<String>(),

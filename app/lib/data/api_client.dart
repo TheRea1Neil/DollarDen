@@ -532,12 +532,15 @@ class ApiClient {
   /// without saving anything — the order of the list IS the funding
   /// order.
   Future<PaycheckPreview> previewPaycheck(int grossCents,
-      {String? planId, List<Map<String, dynamic>>? rules}) async {
+      {String? planId,
+      List<Map<String, dynamic>>? rules,
+      List<Map<String, dynamic>>? manual}) async {
     final r = await _withRetry((o) => _dio.post('/budget/paychecks/preview',
         data: {
           'gross_cents': grossCents,
           if (planId != null) 'plan_id': planId,
           if (rules != null) 'rules': rules,
+          if (manual != null && manual.isNotEmpty) 'manual': manual,
         },
         options: o));
     if (r.statusCode != 200) _fail(r);
@@ -545,10 +548,21 @@ class ApiClient {
   }
 
   /// Record a paycheck and split it. This one does write.
+  ///
+  /// [rules] applies to THIS paycheck only and never rewrites the saved
+  /// plan; [manual] amounts are taken off the top before the rules run.
   Future<Map<String, dynamic>> recordPaycheck(int grossCents,
-      {bool apply = true}) async {
+      {bool apply = true,
+      List<Map<String, dynamic>>? rules,
+      List<Map<String, dynamic>>? manual}) async {
     final r = await _withRetry((o) => _dio.post('/budget/paychecks',
-        data: {'gross_cents': grossCents, 'apply': apply}, options: o));
+        data: {
+          'gross_cents': grossCents,
+          'apply': apply,
+          if (rules != null) 'rules': rules,
+          if (manual != null && manual.isNotEmpty) 'manual': manual,
+        },
+        options: o));
     if (r.statusCode != 201) _fail(r);
     return (r.data as Map).cast<String, dynamic>();
   }

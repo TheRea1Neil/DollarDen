@@ -1174,6 +1174,179 @@ class TestPaycheckPreview:
         save = next(l for l in pv["lines"] if l["name"] == "Savings")
         assert save["params"]["target_cents"] == 500000
 
+    def test_set_aside_comes_off_the_top_before_any_rule(self, client) -> None:
+        """A refund you do not tithe on must not be counted as income."""
+        h, c = self._plan(client)
+        pv = client.post("/api/budget/paychecks/preview", json={
+            "gross_cents": 200000,
+            "manual": [{"category_id": c["fun"]["id"], "amount_cents": 20000}],
+        }, headers=h).json()
+
+        # Tithing is 10% of gross -- of the $1,800 the rules actually saw.
+        tithe = next(l for l in pv["lines"] if l["name"] == "Tithing")
+        assert tithe["allocated_cents"] == 18000
+        assert pv["rules_gross_cents"] == 180000
+        assert pv["manual_total_cents"] == 20000
+
+        fun = next(l for l in pv["lines"] if l["name"] == "Fun")
+        assert fun["manual_cents"] == 20000
+        # Everything still adds up to the whole cheque.
+        assert pv["total_allocated_cents"] + pv["leftover_cents"] == 200000
+
+    def test_set_aside_raises_the_balance_the_rules_see(self, client) -> None:
+        """Hand-filling a refill target means the rule adds nothing after."""
+        h, c = self._plan(client)
+        pv = client.post("/api/budget/paychecks/preview", json={
+            "gross_cents": 200000,
+            "manual": [{"category_id": c["fun"]["id"], "amount_cents": 5000}],
+        }, headers=h).json()
+        fun = next(l for l in pv["lines"] if l["name"] == "Fun")
+        assert fun["manual_cents"] == 5000
+        assert fun["allocated_cents"] == 0      # refill_to 5000 already met
+        assert fun["after_cents"] == 5000
+
+    def test_set_aside_to_a_category_with_no_rule_still_shows(self, client) -> None:
+        h, c = self._plan(client)
+        extra = _cat(client, h, "Dog Vet", kind="savings_bucket")
+        pv = client.post("/api/budget/paychecks/preview", json={
+            "gross_cents": 200000,
+            "manual": [{"category_id": extra["id"], "amount_cents": 7500}],
+        }, headers=h).json()
+        line = next(l for l in pv["lines"] if l["name"] == "Dog Vet")
+        assert line["manual_cents"] == 7500 and line["rule_type"] == "manual"
+
+    def test_set_aside_cannot_exceed_the_paycheck(self, client) -> None:
+        h, c = self._plan(client)
+        r = client.post("/api/budget/paychecks/preview", json={
+            "gross_cents": 10000,
+            "manual": [{"category_id": c["fun"]["id"], "amount_cents": 20000}],
+        }, headers=h)
+        assert r.status_code == 422
+        assert "exceed" in r.json()["detail"]
+
+@requires_db
+class TestOneOffPaycheckAdjustments:
+    """Changes made while reviewing apply to that paycheck only."""
+
+    def _plan(self, client: TestClient):
+        return TestPaycheckPreview()._plan(client)
+
+    def test_a_one_off_reorder_does_not_touch_the_saved_plan(self, client) -> None:
+        h, c = self._plan(client)
+        before = client.get("/api/budget/plans", headers=h).json()[0]
+
+        reordered = [
+            {"category_id": c["tithe"]["id"], "order_index": 1,
+             "rule_type": "percent", "params": {"rate": "0.10", "of": "gross"}},
+            {"category_id": c["fun"]["id"], "order_index": 2,
+             "rule_type": "refill_to", "params": {"target_cents": 5000}},
+            {"category_id": c["rent"]["id"], "order_index": 3,
+             "rule_type": "fixed", "params": {"amount_cents": 35000}},
+            {"category_id": c["save"]["id"], "order_index": 4,
+             "rule_type": "refill_to", "params": {"target_cents": 500000}},
+            {"category_id": c["left"]["id"], "order_index": 5,
+             "rule_type": "remainder", "params": {}},
+        ]
+        r = client.post("/api/budget/paychecks", json={
+            "gross_cents": 200000, "apply": True, "rules": reordered,
+        }, headers=h)
+        assert r.status_code == 201, r.text
+
+        bal = {x["name"]: x["balance_cents"]
+               for x in client.get("/api/budget/summary", headers=h).json()["categories"]}
+        assert bal["Fun"] == 5000          # funded, because it moved up
+
+        after = client.get("/api/budget/plans", headers=h).json()
+        active = [p for p in after if p["is_active"]][0]
+        assert active["version"] == before["version"], "a one-off rewrote the plan"
+        assert [x["category_id"] for x in active["rules"]] == \
+               [x["category_id"] for x in before["rules"]]
+
+    def test_a_one_off_rule_change_applies_once(self, client) -> None:
+        """Health as a flat amount this time, still refill_to next time."""
+        h = _auth(client)
+        health = _cat(client, h, "Health", kind="obligation")
+        left = _cat(client, h, "Leftover", kind="savings_bucket")
+        client.post("/api/budget/plans", json={"name": "S", "rules": [
+            {"category_id": health["id"], "order_index": 1,
+             "rule_type": "refill_to", "params": {"target_cents": 15000}},
+            {"category_id": left["id"], "order_index": 2,
+             "rule_type": "remainder", "params": {}},
+        ]}, headers=h)
+        client.post("/api/budget/paychecks",
+                    json={"gross_cents": 100000, "apply": True}, headers=h)
+
+        # Second cheque, one-off fixed rule: adds $150 on top of the $150.
+        client.post("/api/budget/paychecks", json={
+            "gross_cents": 100000, "apply": True,
+            "rules": [
+                {"category_id": health["id"], "order_index": 1,
+                 "rule_type": "fixed", "params": {"amount_cents": 15000}},
+                {"category_id": left["id"], "order_index": 2,
+                 "rule_type": "remainder", "params": {}},
+            ],
+        }, headers=h)
+        bal = {x["name"]: x["balance_cents"]
+               for x in client.get("/api/budget/summary", headers=h).json()["categories"]}
+        assert bal["Health"] == 30000
+
+        # The saved rule is still refill_to, so a third cheque adds nothing.
+        client.post("/api/budget/paychecks",
+                    json={"gross_cents": 100000, "apply": True}, headers=h)
+        bal = {x["name"]: x["balance_cents"]
+               for x in client.get("/api/budget/summary", headers=h).json()["categories"]}
+        assert bal["Health"] == 30000, "the one-off leaked into the saved plan"
+
+    def test_manual_allocations_are_posted_and_come_first(self, client) -> None:
+        h, c = self._plan(client)
+        r = client.post("/api/budget/paychecks", json={
+            "gross_cents": 200000, "apply": True,
+            "manual": [{"category_id": c["fun"]["id"], "amount_cents": 20000}],
+        }, headers=h)
+        assert r.status_code == 201, r.text
+        assert r.json()["allocated_cents"] == 200000
+
+        bal = {x["name"]: x["balance_cents"]
+               for x in client.get("/api/budget/summary", headers=h).json()["categories"]}
+        assert bal["Fun"] == 20000
+        assert bal["Tithing"] == 18000      # 10% of $1,800, not $2,000
+
+    def test_manual_over_the_paycheck_is_refused(self, client) -> None:
+        h, c = self._plan(client)
+        r = client.post("/api/budget/paychecks", json={
+            "gross_cents": 10000, "apply": True,
+            "manual": [{"category_id": c["fun"]["id"], "amount_cents": 50000}],
+        }, headers=h)
+        assert r.status_code == 422
+        assert "exceed" in r.json()["detail"]
+
+    def test_an_unsaveable_one_off_is_refused(self, client) -> None:
+        h, c = self._plan(client)
+        r = client.post("/api/budget/paychecks", json={
+            "gross_cents": 200000, "apply": True,
+            "rules": [
+                {"category_id": c["left"]["id"], "order_index": 1,
+                 "rule_type": "remainder", "params": {}},
+                {"category_id": c["rent"]["id"], "order_index": 2,
+                 "rule_type": "fixed", "params": {"amount_cents": 35000}},
+            ],
+        }, headers=h)
+        assert r.status_code == 422
+
+    def test_undo_reverses_manual_allocations_too(self, client) -> None:
+        h, c = self._plan(client)
+        r = client.post("/api/budget/paychecks", json={
+            "gross_cents": 200000, "apply": True,
+            "manual": [{"category_id": c["fun"]["id"], "amount_cents": 20000}],
+        }, headers=h)
+        pid = r.json()["id"]
+        assert client.post(f"/api/budget/paychecks/{pid}/unapply",
+                           headers=h).status_code == 200
+        bal = {x["name"]: x["balance_cents"]
+               for x in client.get("/api/budget/summary", headers=h).json()["categories"]}
+        assert bal["Fun"] == 0 and bal["Tithing"] == 0
+
+
 @requires_db
 class TestTransactionHistory:
     """Every transaction and where its money actually went."""

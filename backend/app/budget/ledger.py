@@ -40,6 +40,10 @@ class Entry:
 
 VALID_SOURCES = {
     "paycheck_rule",
+    # Set aside by hand during a paycheck review, before any rule ran.
+    # Distinct from "manual" so the history can say which it was: this
+    # one is tied to a paycheck and is reversed by unapplying it.
+    "paycheck_manual",
     "auto_categorise",
     "manual",
     "receipt_split",

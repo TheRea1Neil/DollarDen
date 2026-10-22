@@ -489,12 +489,27 @@ def paycheck_candidates(
     ]
 
 
+class ManualAllocationIn(BaseModel):
+    """Money set aside before any rule runs."""
+
+    category_id: str
+    amount_cents: int = Field(gt=0)
+
+
 class PaycheckIn(BaseModel):
     transaction_id: str | None = None
     gross_cents: int | None = Field(default=None, gt=0)
     received_on: date | None = None
     plan_id: str | None = None
     apply: bool = True
+
+    # A one-off funding order or rule change, for THIS paycheck only.
+    # The saved plan is untouched; making a change permanent is done on
+    # the category itself.
+    rules: list[SplitRuleIn] | None = None
+
+    # Taken off the top, before the rules divide what is left.
+    manual: list[ManualAllocationIn] = Field(default_factory=list)
 
 
 class PaycheckOut(BaseModel):
@@ -556,9 +571,43 @@ def record_paycheck(
                     status.HTTP_422_UNPROCESSABLE_CONTENT,
                     "No active split plan. Create one, or pass apply=false.",
                 )
+        # A one-off override for this paycheck only. Validated exactly as
+        # a saved plan would be, so "just this once" cannot smuggle in a
+        # plan shape the engine would reject.
+        override = None
+        if body.rules is not None:
+            if not body.rules:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    "A plan needs at least one rule.",
+                )
+            for r in body.rules:
+                _own(db, Category, r.category_id, user)
+            proposed = [
+                SplitRuleIn(category_id=r.category_id, order_index=i + 1,
+                            rule_type=r.rule_type, params=r.params,
+                            enabled=r.enabled)
+                for i, r in enumerate(body.rules)
+            ]
+            _validate_plan(proposed)
+            override = [
+                EngineRule(category_id=r.category_id, order_index=r.order_index,
+                           rule_type=RuleType(r.rule_type), params=r.params,
+                           enabled=r.enabled)
+                for r in proposed
+            ]
+
+        manual: list[tuple[uuid.UUID, int]] = []
+        for m in body.manual:
+            cat = _own(db, Category, m.category_id, user)
+            manual.append((cat.id, m.amount_cents))
+
         try:
-            res = apply_plan(db, user.id, pc, plan)
+            res = apply_plan(db, user.id, pc, plan,
+                             rules=override, manual=manual)
         except (SplitPlanError, LedgerError) as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+        except ValueError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
         out.applied = True
         out.allocated_cents = res.allocated_cents
@@ -1821,6 +1870,9 @@ class PreviewIn(BaseModel):
     # order of this list IS the funding order.
     rules: list[SplitRuleIn] | None = None
 
+    # Taken off the top, before the rules divide what is left.
+    manual: list[ManualAllocationIn] = Field(default_factory=list)
+
     # Count a paycheck the user has not recorded yet against the
     # transaction it came from, so reviewing it twice is not possible.
     transaction_id: str | None = None
@@ -1836,7 +1888,9 @@ class PreviewLine(BaseModel):
     # round trip to fetch what it already showed.
     params: dict = Field(default_factory=dict)
     balance_cents: int        # before
-    allocated_cents: int      # what this paycheck adds
+    allocated_cents: int      # what the RULES add
+    # Set aside by hand before the rules ran, for this paycheck only.
+    manual_cents: int = 0
     after_cents: int
     # How much the rule asked for but could not get, because the money
     # ran out before its turn.
@@ -1849,6 +1903,9 @@ class PreviewOut(BaseModel):
     plan_version: int
     lines: list[PreviewLine]
     total_allocated_cents: int
+    manual_total_cents: int = 0
+    # What the rules actually had to divide: gross minus the set-asides.
+    rules_gross_cents: int = 0
     leftover_cents: int
     # Categories that got nothing at all because something above them
     # consumed the paycheck first. This is the failure mode a split plan
@@ -1923,13 +1980,32 @@ def preview_paycheck(
     balances = {str(cid): cats[cid].balance_cents
                 for cid, *_ in shape if cid in cats}
 
+    # Manual allocations come off the top and raise the category's
+    # balance before the rules look at it -- so a refill target already
+    # met by hand correctly adds nothing afterwards.
+    manual_by_cat: dict[str, int] = {}
+    manual_total = 0
+    for m in body.manual:
+        cat = _own(db, Category, m.category_id, user)
+        manual_by_cat[str(cat.id)] = manual_by_cat.get(str(cat.id), 0) + m.amount_cents
+        manual_total += m.amount_cents
+        balances[str(cat.id)] = balances.get(str(cat.id), 0) + m.amount_cents
+        if cat.id not in cats:
+            cats[cat.id] = cat
+    if manual_total > body.gross_cents:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Set-aside amounts (${manual_total / 100:,.2f}) exceed the "
+            f"paycheck (${body.gross_cents / 100:,.2f}).",
+        )
+
     engine = [
         EngineRule(category_id=str(cid), order_index=idx,
                    rule_type=RuleType(rt), params=params or {}, enabled=en)
         for cid, rt, params, en, idx in shape
     ]
     try:
-        res = apply_split(body.gross_cents, engine, dict(balances))
+        res = apply_split(body.gross_cents - manual_total, engine, dict(balances))
     except SplitPlanError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
@@ -1945,17 +2021,34 @@ def preview_paycheck(
         c = cats.get(cat_uuid)
         if c is None:
             continue
-        allocated = got.get(cid, 0)
-        if allocated == 0:
+        by_rule = got.get(cid, 0)
+        by_hand = manual_by_cat.get(cid, 0)
+        if by_rule == 0 and by_hand == 0:
             starved.append(c.name)
         lines.append(PreviewLine(
             category_id=cid, name=c.name, order_index=order_index,
             rule_type=rule_type,
             rule_summary=_describe_rule(rule_type, params or {}),
             params=params or {},
-            balance_cents=c.balance_cents, allocated_cents=allocated,
-            after_cents=c.balance_cents + allocated,
+            balance_cents=c.balance_cents,
+            allocated_cents=by_rule, manual_cents=by_hand,
+            after_cents=c.balance_cents + by_rule + by_hand,
             short_cents=short.get(cid, 0),
+        ))
+
+    # A category funded only by hand has no rule and so no line above.
+    for cid, amount in manual_by_cat.items():
+        if any(ln.category_id == cid for ln in lines):
+            continue
+        c = cats.get(uuid.UUID(cid))
+        if c is None:
+            continue
+        lines.insert(0, PreviewLine(
+            category_id=cid, name=c.name, order_index=0,
+            rule_type="manual", rule_summary="set aside by hand this time",
+            params={}, balance_cents=c.balance_cents,
+            allocated_cents=0, manual_cents=amount,
+            after_cents=c.balance_cents + amount, short_cents=0,
         ))
 
     warnings: list[str] = []
@@ -1979,7 +2072,9 @@ def preview_paycheck(
     return PreviewOut(
         gross_cents=body.gross_cents, plan_id=str(plan.id),
         plan_version=plan.version, lines=lines,
-        total_allocated_cents=res.total_cents,
+        total_allocated_cents=res.total_cents + manual_total,
+        manual_total_cents=manual_total,
+        rules_gross_cents=body.gross_cents - manual_total,
         leftover_cents=res.remaining_cents,
         starved=starved, warnings=warnings,
         is_saved_plan=body.rules is None,

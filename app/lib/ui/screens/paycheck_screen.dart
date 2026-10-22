@@ -35,7 +35,9 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
   /// saved"; non-null means the user has dragged or edited something and
   /// the numbers on screen describe a plan that is not saved yet.
   List<PreviewLine>? _draft;
-  bool _saving = false;
+
+  /// Money set aside before the rules run, for this paycheck only.
+  final Map<String, (String name, int cents)> _manual = {};
 
   @override
   void initState() {
@@ -63,21 +65,24 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
       if (using == null) _preview = null;
     });
     try {
-      final rules = using == null
+      final source = using ?? _draft;
+      final rules = source == null
           ? null
           : [
-              for (var i = 0; i < using.length; i++)
-                using[i].toRuleJson(i + 1)
+              for (var i = 0; i < source.length; i++)
+                if (!source[i].isManualOnly) source[i].toRuleJson(i + 1)
             ];
-      final p = await ref
-          .read(apiProvider)
-          .previewPaycheck(cents, rules: rules);
+      final p = await ref.read(apiProvider).previewPaycheck(
+            cents,
+            rules: rules,
+            manual: _manualJson,
+          );
       if (mounted) {
         setState(() {
           _preview = p;
           // Keep the draft in step with what came back, so a later drag
           // builds on the recalculated rules rather than stale ones.
-          if (using != null) _draft = p.lines;
+          if (_draft != null || using != null) _draft = p.lines;
         });
       }
     } on ApiException catch (e) {
@@ -115,37 +120,28 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
     await _previewIt(using: lines);
   }
 
-  /// Commit the dragged order and edited rules as a new plan version.
-  Future<void> _saveChanges() async {
-    final p = _preview;
-    final lines = _draft;
-    if (p == null || lines == null) return;
-    setState(() => _saving = true);
-    try {
-      await ref.read(apiProvider).revisePlan(
-            p.planId,
-            'Standard',
-            [for (var i = 0; i < lines.length; i++) lines[i].toRuleJson(i + 1)],
-          );
-      ref.invalidate(summaryProvider);
-      ref.invalidate(categoriesProvider);
-      if (!mounted) return;
-      setState(() {
-        _saving = false;
-        _draft = null;
-      });
-      await _previewIt();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Saved. These rules apply from now on.')),
-      );
-    } on ApiException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _saving = false;
-        _error = e.message;
-      });
-    }
+  List<Map<String, dynamic>> get _manualJson => [
+        for (final e in _manual.entries)
+          {'category_id': e.key, 'amount_cents': e.value.$2}
+      ];
+
+  Future<void> _addSetAside() async {
+    final cats = await ref.read(categoriesProvider.future);
+    if (!mounted) return;
+    final picked = await showModalBottomSheet<(String, String, int)>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => _SetAsideSheet(categories: cats),
+    );
+    if (picked == null) return;
+    setState(() => _manual[picked.$1] = (picked.$2, picked.$3));
+    await _previewIt(using: _draft);
+  }
+
+  Future<void> _removeSetAside(String categoryId) async {
+    setState(() => _manual.remove(categoryId));
+    await _previewIt(using: _draft);
   }
 
   Future<void> _apply() async {
@@ -153,7 +149,19 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
     if (p == null) return;
     setState(() => _busy = true);
     try {
-      final out = await ref.read(apiProvider).recordPaycheck(p.grossCents);
+      final lines = _draft;
+      final out = await ref.read(apiProvider).recordPaycheck(
+            p.grossCents,
+            // One-off: this never rewrites the saved plan. Making a
+            // change stick is done on the category itself.
+            rules: lines == null
+                ? null
+                : [
+                    for (var i = 0; i < lines.length; i++)
+                      if (!lines[i].isManualOnly) lines[i].toRuleJson(i + 1)
+                  ],
+            manual: _manualJson,
+          );
       ref.invalidate(summaryProvider);
       ref.invalidate(categoriesProvider);
       if (!mounted) return;
@@ -193,181 +201,217 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Record a paycheck')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          if (widget.sourceLabel != null) ...[
-            Card(
-              child: ListTile(
-                leading: const Icon(Icons.account_balance),
-                title: Text(widget.sourceLabel!),
-                subtitle: const Text('Detected deposit'),
-              ),
-            ),
-            const SizedBox(height: 12),
-          ],
-          TextField(
-            controller: _amount,
-            autofocus: true,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            onChanged: (_) => setState(() => _preview = null),
-            onSubmitted: (_) => _previewIt(),
-            decoration: const InputDecoration(
-              labelText: 'Amount',
-              prefixText: '\$',
-              hintText: '2,000.00',
-              helperText: 'Gross — what the split rules are calculated from.',
-            ),
-          ),
-          const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: _busy || _cents == null ? null : _previewIt,
-            icon: _busy
-                ? const SizedBox(
-                    height: 18, width: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.visibility_outlined),
-            label: const Text('Show me what it does'),
-          ),
-          if (_error != null) ...[
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.errorContainer,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(_error!,
-                  style: TextStyle(color: theme.colorScheme.onErrorContainer)),
-            ),
-          ],
-          if (p != null) ...[
-            const SizedBox(height: 24),
-            for (final w in p.warnings)
-              Container(
-                width: double.infinity,
-                margin: const EdgeInsets.only(bottom: 12),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.errorContainer,
-                  borderRadius: BorderRadius.circular(12),
+      body: CustomScrollView(
+        // A CustomScrollView with a SliverReorderableList is what makes
+        // dragging auto-scroll. A ReorderableListView nested in a
+        // ListView with NeverScrollableScrollPhysics cannot: there is no
+        // scrollable for the drag to drive, so a category at the bottom
+        // can never be dragged to the top.
+        slivers: [
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+            sliver: SliverList(
+              delegate: SliverChildListDelegate([
+                if (widget.sourceLabel != null) ...[
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.account_balance),
+                      title: Text(widget.sourceLabel!),
+                      subtitle: const Text('Detected deposit'),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                TextField(
+                  controller: _amount,
+                  autofocus: widget.initialCents == null,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  onChanged: (_) => setState(() {
+                    _preview = null;
+                    _draft = null;
+                  }),
+                  onSubmitted: (_) => _previewIt(),
+                  decoration: const InputDecoration(
+                    labelText: 'Amount',
+                    prefixText: '\$',
+                    hintText: '2,000.00',
+                    helperText: 'Gross — what the split rules work from.',
+                  ),
                 ),
-                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Icon(Icons.warning_amber_rounded,
-                      size: 18, color: theme.colorScheme.onErrorContainer),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(w,
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: _busy || _cents == null ? null : () => _previewIt(),
+                  icon: _busy
+                      ? const SizedBox(
+                          height: 18, width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.visibility_outlined),
+                  label: const Text('Show me what it does'),
+                ),
+                if (_error != null) ...[
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.errorContainer,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(_error!,
                         style: TextStyle(
                             color: theme.colorScheme.onErrorContainer)),
                   ),
-                ]),
-              ),
-            if (!p.isSavedPlan)
-              Container(
-                width: double.infinity,
-                margin: const EdgeInsets.only(bottom: 12),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.tertiaryContainer,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(children: [
-                  Icon(Icons.science_outlined,
-                      size: 18, color: theme.colorScheme.onTertiaryContainer),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Trying something out. Your saved plan has not '
-                      'changed.',
-                      style: TextStyle(
-                          color: theme.colorScheme.onTertiaryContainer),
-                    ),
+                ],
+                if (p != null) ...[
+                  const SizedBox(height: 24),
+                  // Set-asides come first on screen because they come
+                  // first in the maths.
+                  _SetAsideSection(
+                    entries: _manual,
+                    busy: _busy,
+                    onAdd: _addSetAside,
+                    onRemove: _removeSetAside,
+                    rulesGrossCents: p.rulesGrossCents,
+                    grossCents: p.grossCents,
                   ),
-                ]),
-              ),
-            Text('Drag to change who gets paid first. Tap a row to change '
-                'its rule.',
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-            const SizedBox(height: 8),
-            Card(
-              child: ReorderableListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                buildDefaultDragHandles: false,
+                  const SizedBox(height: 16),
+                  for (final w in p.warnings)
+                    Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.errorContainer,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(Icons.warning_amber_rounded,
+                                size: 18,
+                                color: theme.colorScheme.onErrorContainer),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(w,
+                                  style: TextStyle(
+                                      color: theme
+                                          .colorScheme.onErrorContainer)),
+                            ),
+                          ]),
+                    ),
+                  if (_draft != null)
+                    Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.tertiaryContainer,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(children: [
+                        Icon(Icons.history_toggle_off,
+                            size: 18,
+                            color: theme.colorScheme.onTertiaryContainer),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Just for this paycheck. Your saved plan is '
+                            'unchanged — edit the category itself to make '
+                            'it permanent.',
+                            style: TextStyle(
+                                color:
+                                    theme.colorScheme.onTertiaryContainer),
+                          ),
+                        ),
+                      ]),
+                    ),
+                  Text(
+                      'Drag to change who gets paid first. Tap a row to '
+                      'change its rule for this paycheck.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant)),
+                  const SizedBox(height: 8),
+                ],
+              ]),
+            ),
+          ),
+          if (p != null)
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              sliver: SliverReorderableList(
                 itemCount: (_draft ?? p.lines).length,
-                onReorder: _busy ? (_, __) {} : _reorder,
+                onReorder: _reorder,
                 itemBuilder: (context, i) {
                   final line = (_draft ?? p.lines)[i];
-                  return _PreviewRow(
+                  return Material(
                     key: ValueKey(line.categoryId),
-                    index: i,
-                    line: line,
-                    onTap: _busy ? null : () => _editRule(line),
+                    color: theme.colorScheme.surfaceContainerLow,
+                    child: Column(children: [
+                      if (i > 0) const Divider(height: 1),
+                      _PreviewRow(
+                        index: i,
+                        line: line,
+                        onTap: _busy || line.isManualOnly
+                            ? null
+                            : () => _editRule(line),
+                      ),
+                    ]),
                   );
                 },
               ),
             ),
-            if (_draft != null) ...[
-              const SizedBox(height: 12),
-              Row(children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: _saving || _busy
-                        ? null
-                        : () {
-                            setState(() => _draft = null);
-                            _previewIt();
-                          },
-                    child: const Text('Discard changes'),
+          if (p != null)
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+              sliver: SliverList(
+                delegate: SliverChildListDelegate([
+                  if (_draft != null) ...[
+                    OutlinedButton(
+                      onPressed: _busy
+                          ? null
+                          : () {
+                              setState(() => _draft = null);
+                              _previewIt();
+                            },
+                      child: const Text('Reset to my saved plan'),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  Row(children: [
+                    Text('Allocated',
+                        style: theme.textTheme.titleSmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant)),
+                    const Spacer(),
+                    Text(Money.format(p.totalAllocatedCents),
+                        style: theme.textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w700)),
+                  ]),
+                  if (p.leftoverCents != 0)
+                    Row(children: [
+                      Text('Not allocated',
+                          style: theme.textTheme.titleSmall
+                              ?.copyWith(color: theme.colorScheme.error)),
+                      const Spacer(),
+                      Text(Money.format(p.leftoverCents),
+                          style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              color: theme.colorScheme.error)),
+                    ]),
+                  const SizedBox(height: 20),
+                  FilledButton(
+                    onPressed: _busy ? null : _apply,
+                    child: Text('Apply ${Money.format(p.grossCents)}'),
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton.tonal(
-                    onPressed: _saving || _busy ? null : _saveChanges,
-                    child: _saving
-                        ? const SizedBox(
-                            height: 16, width: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Text('Save these rules'),
-                  ),
-                ),
-              ]),
-            ],
-            const SizedBox(height: 12),
-            Row(children: [
-              Text('Allocated',
-                  style: theme.textTheme.titleSmall
-                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-              const Spacer(),
-              Text(Money.format(p.totalAllocatedCents),
-                  style: theme.textTheme.titleMedium
-                      ?.copyWith(fontWeight: FontWeight.w700)),
-            ]),
-            if (p.leftoverCents != 0)
-              Row(children: [
-                Text('Not allocated',
-                    style: theme.textTheme.titleSmall
-                        ?.copyWith(color: theme.colorScheme.error)),
-                const Spacer(),
-                Text(Money.format(p.leftoverCents),
-                    style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                        color: theme.colorScheme.error)),
-              ]),
-            const SizedBox(height: 20),
-            FilledButton(
-              onPressed: _busy ? null : _apply,
-              child: Text('Apply ${Money.format(p.grossCents)}'),
+                  const SizedBox(height: 4),
+                  Text(
+                      'Nothing has changed yet. You can undo this '
+                      'afterwards.',
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant)),
+                ]),
+              ),
             ),
-            const SizedBox(height: 4),
-            Text('Nothing has changed yet. You can undo this afterwards.',
-                textAlign: TextAlign.center,
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-          ],
         ],
       ),
     );
@@ -380,7 +424,6 @@ class _PreviewRow extends StatelessWidget {
   final VoidCallback? onTap;
 
   const _PreviewRow({
-    super.key,
     required this.line,
     required this.index,
     this.onTap,
@@ -436,7 +479,9 @@ class _PreviewRow extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
-                nothing ? '—' : '+${Money.format(line.allocatedCents)}',
+                nothing
+                    ? '—'
+                    : '+${Money.format(line.allocatedCents + line.manualCents)}',
                 style: theme.textTheme.titleMedium?.copyWith(
                   fontWeight: FontWeight.w700,
                   color: nothing
@@ -444,6 +489,10 @@ class _PreviewRow extends StatelessWidget {
                       : AppTheme.positive(context),
                 ),
               ),
+              if (line.manualCents > 0 && line.allocatedCents > 0)
+                Text('${Money.format(line.manualCents)} by hand',
+                    style: theme.textTheme.labelSmall
+                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
               Text('${Money.format(line.balanceCents)} → '
                   '${Money.format(line.afterCents)}',
                   style: theme.textTheme.bodySmall
@@ -535,6 +584,170 @@ class _RuleSheetState extends State<_RuleSheet> {
                 child: FilledButton(
                   onPressed: () => Navigator.pop(context, (_type, _params)),
                   child: const Text('Try it'),
+                ),
+              ),
+            ]),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+
+/// Money taken off the top, before any rule runs.
+///
+/// The ordering is the whole point: a refund you do not tithe on should
+/// not be counted as income by a percentage rule. Setting it aside first
+/// shrinks what the rules divide.
+class _SetAsideSection extends StatelessWidget {
+  final Map<String, (String, int)> entries;
+  final bool busy;
+  final VoidCallback onAdd;
+  final void Function(String categoryId) onRemove;
+  final int rulesGrossCents;
+  final int grossCents;
+
+  const _SetAsideSection({
+    required this.entries,
+    required this.busy,
+    required this.onAdd,
+    required this.onRemove,
+    required this.rulesGrossCents,
+    required this.grossCents,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(children: [
+          Text('Set aside first',
+              style: theme.textTheme.titleSmall
+                  ?.copyWith(fontWeight: FontWeight.w600)),
+          const Spacer(),
+          TextButton.icon(
+            onPressed: busy ? null : onAdd,
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('Add'),
+          ),
+        ]),
+        if (entries.isEmpty)
+          Text(
+            'Money that skips the rules entirely — a refund you do not '
+            'tithe on, say. The rules then divide what is left.',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          )
+        else ...[
+          for (final e in entries.entries)
+            Card(
+              margin: const EdgeInsets.only(bottom: 4),
+              child: ListTile(
+                dense: true,
+                leading: const Icon(Icons.push_pin_outlined, size: 18),
+                title: Text(e.value.$1),
+                trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Text(Money.format(e.value.$2),
+                      style: theme.textTheme.titleSmall
+                          ?.copyWith(fontWeight: FontWeight.w700)),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: busy ? null : () => onRemove(e.key),
+                  ),
+                ]),
+              ),
+            ),
+          const SizedBox(height: 4),
+          Text(
+            'Rules divide the remaining ${Money.format(rulesGrossCents)}, '
+            'not the full ${Money.format(grossCents)}.',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// Pick a category and an amount to set aside.
+class _SetAsideSheet extends StatefulWidget {
+  final List<Category> categories;
+  const _SetAsideSheet({required this.categories});
+
+  @override
+  State<_SetAsideSheet> createState() => _SetAsideSheetState();
+}
+
+class _SetAsideSheetState extends State<_SetAsideSheet> {
+  final _amount = TextEditingController();
+  Category? _chosen;
+
+  @override
+  void dispose() {
+    _amount.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cents = Money.parse(_amount.text);
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          16, 0, 16, MediaQuery.of(context).viewInsets.bottom + 24),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Set aside first',
+                style: theme.textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text('This goes straight into the category before any rule runs.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<Category>(
+              initialValue: _chosen,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: 'Into'),
+              items: [
+                for (final c in widget.categories)
+                  DropdownMenuItem(value: c, child: Text(c.name)),
+              ],
+              onChanged: (v) => setState(() => _chosen = v),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _amount,
+              autofocus: true,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(
+                  labelText: 'Amount', prefixText: '\$'),
+            ),
+            const SizedBox(height: 20),
+            Row(children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton(
+                  onPressed: _chosen == null || cents == null || cents <= 0
+                      ? null
+                      : () => Navigator.pop(
+                          context, (_chosen!.id, _chosen!.name, cents)),
+                  child: const Text('Set aside'),
                 ),
               ),
             ]),

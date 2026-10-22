@@ -1,0 +1,562 @@
+[
+ {
+  "name": "typical",
+  "gross": 200000,
+  "balances": {
+   "food": 12000
+  },
+  "rules": [
+   {
+    "category_id": "tithe",
+    "rule_type": "percent",
+    "params": {
+     "rate": "0.10",
+     "of": "gross"
+    }
+   },
+   {
+    "category_id": "rent",
+    "rule_type": "fixed",
+    "params": {
+     "amount_cents": 35000
+    }
+   },
+   {
+    "category_id": "food",
+    "rule_type": "refill_to",
+    "params": {
+     "target_cents": 30000
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   }
+  ],
+  "expect": {
+   "allocations": {
+    "tithe": 20000,
+    "rent": 35000,
+    "food": 18000,
+    "rest": 127000
+   },
+   "remaining": 0,
+   "unfunded": []
+  }
+ },
+ {
+  "name": "odd cents rounding",
+  "gross": 183733,
+  "balances": {
+   "food": 29999
+  },
+  "rules": [
+   {
+    "category_id": "tithe",
+    "rule_type": "percent",
+    "params": {
+     "rate": "0.10",
+     "of": "gross"
+    }
+   },
+   {
+    "category_id": "rent",
+    "rule_type": "fixed",
+    "params": {
+     "amount_cents": 35000
+    }
+   },
+   {
+    "category_id": "food",
+    "rule_type": "refill_to",
+    "params": {
+     "target_cents": 30000
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   }
+  ],
+  "expect": {
+   "allocations": {
+    "tithe": 18373,
+    "rent": 35000,
+    "food": 1,
+    "rest": 130359
+   },
+   "remaining": 0,
+   "unfunded": []
+  }
+ },
+ {
+  "name": "half-up at exactly .5",
+  "gross": 100005,
+  "balances": {},
+  "rules": [
+   {
+    "category_id": "tithe",
+    "rule_type": "percent",
+    "params": {
+     "rate": "0.10",
+     "of": "gross"
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   }
+  ],
+  "expect": {
+   "allocations": {
+    "tithe": 10001,
+    "rest": 90004
+   },
+   "remaining": 0,
+   "unfunded": []
+  }
+ },
+ {
+  "name": "refill already full",
+  "gross": 200000,
+  "balances": {
+   "food": 35000
+  },
+  "rules": [
+   {
+    "category_id": "tithe",
+    "rule_type": "percent",
+    "params": {
+     "rate": "0.10",
+     "of": "gross"
+    }
+   },
+   {
+    "category_id": "rent",
+    "rule_type": "fixed",
+    "params": {
+     "amount_cents": 35000
+    }
+   },
+   {
+    "category_id": "food",
+    "rule_type": "refill_to",
+    "params": {
+     "target_cents": 30000
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   }
+  ],
+  "expect": {
+   "allocations": {
+    "tithe": 20000,
+    "rent": 35000,
+    "rest": 145000
+   },
+   "remaining": 0,
+   "unfunded": []
+  }
+ },
+ {
+  "name": "refill with a cap",
+  "gross": 200000,
+  "balances": {},
+  "rules": [
+   {
+    "category_id": "food",
+    "rule_type": "refill_to",
+    "params": {
+     "target_cents": 50000,
+     "max_contribution_cents": 10000
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   }
+  ],
+  "expect": {
+   "allocations": {
+    "food": 10000,
+    "rest": 190000
+   },
+   "remaining": 0,
+   "unfunded": []
+  }
+ },
+ {
+  "name": "runs out mid-plan",
+  "gross": 40000,
+  "balances": {},
+  "rules": [
+   {
+    "category_id": "tithe",
+    "rule_type": "percent",
+    "params": {
+     "rate": "0.10",
+     "of": "gross"
+    }
+   },
+   {
+    "category_id": "rent",
+    "rule_type": "fixed",
+    "params": {
+     "amount_cents": 35000
+    }
+   },
+   {
+    "category_id": "food",
+    "rule_type": "refill_to",
+    "params": {
+     "target_cents": 30000
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   }
+  ],
+  "expect": {
+   "allocations": {
+    "tithe": 4000,
+    "rent": 35000,
+    "food": 1000
+   },
+   "remaining": 0,
+   "unfunded": [
+    [
+     "food",
+     29000
+    ]
+   ]
+  }
+ },
+ {
+  "name": "exact fit, zero remainder",
+  "gross": 35000,
+  "balances": {},
+  "rules": [
+   {
+    "category_id": "rent",
+    "rule_type": "fixed",
+    "params": {
+     "amount_cents": 35000
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   }
+  ],
+  "expect": {
+   "allocations": {
+    "rent": 35000
+   },
+   "remaining": 0,
+   "unfunded": []
+  }
+ },
+ {
+  "name": "percent of remaining",
+  "gross": 100000,
+  "balances": {},
+  "rules": [
+   {
+    "category_id": "rent",
+    "rule_type": "fixed",
+    "params": {
+     "amount_cents": 35000
+    }
+   },
+   {
+    "category_id": "house",
+    "rule_type": "percent",
+    "params": {
+     "rate": "0.60",
+     "of": "remaining"
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   }
+  ],
+  "expect": {
+   "allocations": {
+    "rent": 35000,
+    "house": 39000,
+    "rest": 26000
+   },
+   "remaining": 0,
+   "unfunded": []
+  }
+ },
+ {
+  "name": "conditional fires",
+  "gross": 200000,
+  "balances": {
+   "ins": 40000
+  },
+  "rules": [
+   {
+    "category_id": "ins",
+    "rule_type": "conditional",
+    "params": {
+     "when": {
+      "field": "balance",
+      "op": "<",
+      "value_cents": 45000
+     },
+     "then": {
+      "rule_type": "fixed",
+      "params": {
+       "amount_cents": 5000
+      }
+     }
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   }
+  ],
+  "expect": {
+   "allocations": {
+    "ins": 5000,
+    "rest": 195000
+   },
+   "remaining": 0,
+   "unfunded": []
+  }
+ },
+ {
+  "name": "conditional does not fire",
+  "gross": 200000,
+  "balances": {
+   "ins": 46000
+  },
+  "rules": [
+   {
+    "category_id": "ins",
+    "rule_type": "conditional",
+    "params": {
+     "when": {
+      "field": "balance",
+      "op": "<",
+      "value_cents": 45000
+     },
+     "then": {
+      "rule_type": "fixed",
+      "params": {
+       "amount_cents": 5000
+      }
+     }
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   }
+  ],
+  "expect": {
+   "allocations": {
+    "rest": 200000
+   },
+   "remaining": 0,
+   "unfunded": []
+  }
+ },
+ {
+  "name": "conditional on another category",
+  "gross": 200000,
+  "balances": {
+   "food": 500
+  },
+  "rules": [
+   {
+    "category_id": "ins",
+    "rule_type": "conditional",
+    "params": {
+     "when": {
+      "field": "balance",
+      "op": ">",
+      "value_cents": 100,
+      "category_id": "food"
+     },
+     "then": {
+      "rule_type": "fixed",
+      "params": {
+       "amount_cents": 5000
+      }
+     }
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   }
+  ],
+  "expect": {
+   "allocations": {
+    "ins": 5000,
+    "rest": 195000
+   },
+   "remaining": 0,
+   "unfunded": []
+  }
+ },
+ {
+  "name": "zero gross",
+  "gross": 0,
+  "balances": {},
+  "rules": [
+   {
+    "category_id": "rent",
+    "rule_type": "fixed",
+    "params": {
+     "amount_cents": 35000
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   }
+  ],
+  "expect": {
+   "allocations": {},
+   "remaining": 0,
+   "unfunded": [
+    [
+     "rent",
+     35000
+    ]
+   ]
+  }
+ },
+ {
+  "name": "overspent category refills from negative",
+  "gross": 200000,
+  "balances": {
+   "food": -23266
+  },
+  "rules": [
+   {
+    "category_id": "food",
+    "rule_type": "refill_to",
+    "params": {
+     "target_cents": 30000
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   }
+  ],
+  "expect": {
+   "allocations": {
+    "food": 53266,
+    "rest": 146734
+   },
+   "remaining": 0,
+   "unfunded": []
+  }
+ },
+ {
+  "name": "no remainder",
+  "gross": 200000,
+  "balances": {},
+  "rules": [
+   {
+    "category_id": "rent",
+    "rule_type": "fixed",
+    "params": {
+     "amount_cents": 35000
+    }
+   }
+  ],
+  "error": "a split plan needs exactly one remainder rule, found 0"
+ },
+ {
+  "name": "two remainders",
+  "gross": 200000,
+  "balances": {},
+  "rules": [
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   },
+   {
+    "category_id": "other",
+    "rule_type": "remainder",
+    "params": {}
+   }
+  ],
+  "error": "a split plan needs exactly one remainder rule, found 2"
+ },
+ {
+  "name": "remainder not last",
+  "gross": 200000,
+  "balances": {},
+  "rules": [
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   },
+   {
+    "category_id": "rent",
+    "rule_type": "fixed",
+    "params": {
+     "amount_cents": 35000
+    }
+   }
+  ],
+  "error": "the remainder rule must be last"
+ },
+ {
+  "name": "conditional with no threshold",
+  "gross": 200000,
+  "balances": {},
+  "rules": [
+   {
+    "category_id": "ins",
+    "rule_type": "conditional",
+    "params": {
+     "when": {
+      "field": "balance",
+      "op": "<"
+     },
+     "then": {
+      "rule_type": "fixed",
+      "params": {
+       "amount_cents": 5000
+      }
+     }
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   }
+  ],
+  "error": "conditional rule is missing 'value_cents'; it cannot be evaluated"
+ }
+]

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/money.dart';
+import '../../core/split_engine.dart' as engine;
 import '../../core/theme.dart';
 import '../../data/api_client.dart';
 import '../../data/providers.dart';
@@ -38,37 +39,34 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
   final _amount = TextEditingController();
   bool _busy = false;
   String? _error;
-  PaycheckPreview? _preview;
-
-  /// The order and rules currently being tried. Null means "whatever is
-  /// saved"; non-null means the user has dragged or edited something and
-  /// the numbers on screen describe a plan that is not saved yet.
-  /// The saved plan's rules, as the last preview reported them. Rule
-  /// EDITS are permanent, so this is refreshed from the server whenever
-  /// one is made rather than patched locally.
+  /// The saved plan's rules and balances, fetched once. Rule EDITS are
+  /// permanent, so this is refreshed from the server when one is made.
   List<PreviewLine>? _baseLines;
+  String? _planId;
 
-  /// The order the user has dragged things into, by category id. This is
-  /// the only thing that is one-off: dragging is exploration, so it
-  /// never touches the saved plan. Null means "whatever the plan says".
+  /// The locally computed split. Everything on screen comes from here.
+  PaycheckPreview? _computed;
+
+  /// The order the user has dragged things into, by category id. The
+  /// only one-off thing: dragging is exploration and never touches the
+  /// saved plan.
   List<String>? _order;
 
   /// Money set aside before the rules run, for this paycheck only.
   final Map<String, (String name, int cents)> _manual = {};
 
-  /// The saved rules arranged into the dragged order, or null if nothing
-  /// has been dragged.
-  List<PreviewLine>? get _ordered {
-    final base = _baseLines;
+  /// The rules in the order they will be funded.
+  List<PreviewLine> get _effective {
+    final base = _baseLines ?? const <PreviewLine>[];
     final order = _order;
-    if (base == null || order == null) return null;
+    if (order == null) return base;
     final byId = {for (final l in base) l.categoryId: l};
     final out = [
       for (final id in order)
         if (byId.containsKey(id)) byId[id]!
     ];
-    // Anything the plan gained since the drag keeps its own place at the
-    // end rather than vanishing.
+    // Anything the plan gained since the drag keeps a place rather than
+    // vanishing.
     out.addAll(base.where((l) => !order.contains(l.categoryId)));
     return out;
   }
@@ -78,7 +76,7 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
     super.initState();
     if (widget.initialCents != null) {
       _amount.text = (widget.initialCents! / 100).toStringAsFixed(2);
-      WidgetsBinding.instance.addPostFrameCallback((_) => _previewIt());
+      WidgetsBinding.instance.addPostFrameCallback((_) => _loadPlan());
     }
   }
 
@@ -90,44 +88,21 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
 
   int? get _cents => Money.parse(_amount.text);
 
-  /// [refreshBase] re-reads the saved plan, after a permanent rule edit.
-  Future<void> _previewIt({bool refreshBase = false}) async {
+  /// Fetch the saved plan's rules and balances. One call, on open and
+  /// after a permanent rule edit — never on a drag.
+  Future<void> _loadPlan() async {
     final cents = _cents;
     if (cents == null || cents <= 0) return;
     setState(() {
       _busy = true;
       _error = null;
-      if (_baseLines == null) _preview = null;
     });
     try {
-      if (refreshBase || _baseLines == null) {
-        // One call against the saved plan, to learn what its rules now
-        // are. The dragged order is then applied on top of that.
-        final base = await ref.read(apiProvider).previewPaycheck(
-              cents,
-              manual: _manualJson,
-            );
-        if (!mounted) return;
-        _baseLines = base.lines.where((l) => !l.isManualOnly).toList();
-        if (_order == null) {
-          setState(() => _preview = base);
-          return;
-        }
-      }
-
-      final source = _ordered;
-      final rules = source == null
-          ? null
-          : [
-              for (var i = 0; i < source.length; i++)
-                source[i].toRuleJson(i + 1)
-            ];
-      final p = await ref.read(apiProvider).previewPaycheck(
-            cents,
-            rules: rules,
-            manual: _manualJson,
-          );
-      if (mounted) setState(() => _preview = p);
+      final base = await ref.read(apiProvider).previewPaycheck(cents);
+      if (!mounted) return;
+      _baseLines = base.lines.where((l) => !l.isManualOnly).toList();
+      _planId = base.planId;
+      _recompute();
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } catch (e) {
@@ -137,13 +112,134 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
     }
   }
 
+  /// Recalculate entirely on the device.
+  ///
+  /// Dragging has to feel immediate, and a round trip per drag also let
+  /// the list on screen and the rules the next request assumed drift
+  /// apart. `core/split_engine.dart` is a port of the server's engine
+  /// held to it by golden tests, so this is the same arithmetic the
+  /// server will do when the paycheck is applied.
+  void _recompute() {
+    final gross = _cents;
+    final lines = _effective;
+    if (gross == null || lines.isEmpty) return;
+
+    final manualTotal = _manual.values.fold(0, (sum, e) => sum + e.$2);
+    if (manualTotal > gross) {
+      setState(() {
+        _error = 'Set-aside amounts (${Money.format(manualTotal)}) exceed '
+            'the paycheck (${Money.format(gross)}).';
+        _computed = null;
+      });
+      return;
+    }
+
+    // Set-asides land first and raise the balance the rules then see.
+    final balances = <String, int>{
+      for (final l in lines) l.categoryId: l.balanceCents,
+    };
+    for (final e in _manual.entries) {
+      balances[e.key] = (balances[e.key] ?? 0) + e.value.$2;
+    }
+
+    final engineRules = [
+      for (var i = 0; i < lines.length; i++)
+        engine.SplitRule(
+          categoryId: lines[i].categoryId,
+          orderIndex: i + 1,
+          ruleType: engine.splitRuleTypeFrom(lines[i].ruleType)!,
+          params: lines[i].params,
+        )
+    ];
+
+    try {
+      final res = engine.applySplit(gross - manualTotal, engineRules, balances);
+      final got = res.byCategory;
+      final short = {for (final u in res.unfunded) u.$1: u.$2};
+
+      final out = <PreviewLine>[];
+      final starved = <String>[];
+      for (var i = 0; i < lines.length; i++) {
+        final l = lines[i];
+        final byRule = got[l.categoryId] ?? 0;
+        final byHand = _manual[l.categoryId]?.$2 ?? 0;
+        if (byRule == 0 && byHand == 0) starved.add(l.name);
+        out.add(PreviewLine(
+          categoryId: l.categoryId, name: l.name, orderIndex: i + 1,
+          ruleType: l.ruleType, ruleSummary: l.ruleSummary, params: l.params,
+          balanceCents: l.balanceCents,
+          allocatedCents: byRule, manualCents: byHand,
+          afterCents: l.balanceCents + byRule + byHand,
+          shortCents: short[l.categoryId] ?? 0,
+        ));
+      }
+      // Set-asides into a category with no rule still have to be shown.
+      for (final e in _manual.entries) {
+        if (out.any((l) => l.categoryId == e.key)) continue;
+        out.insert(0, PreviewLine(
+          categoryId: e.key, name: e.value.$1, orderIndex: 0,
+          ruleType: 'manual', ruleSummary: 'set aside by hand this time',
+          params: const {}, balanceCents: 0,
+          allocatedCents: 0, manualCents: e.value.$2,
+          afterCents: e.value.$2, shortCents: 0,
+        ));
+      }
+
+      setState(() {
+        _error = null;
+        _computed = PaycheckPreview(
+          grossCents: gross,
+          planId: _planId ?? '',
+          planVersion: 0,
+          lines: out,
+          totalAllocatedCents: res.totalCents + manualTotal,
+          manualTotalCents: manualTotal,
+          rulesGrossCents: gross - manualTotal,
+          leftoverCents: res.remainingCents,
+          starved: starved,
+          warnings: _warningsFor(out, starved, res.remainingCents),
+          isSavedPlan: _order == null,
+        );
+      });
+    } on engine.SplitPlanError catch (e) {
+      setState(() {
+        _error = e.message;
+        _computed = null;
+      });
+    }
+  }
+
+  List<String> _warningsFor(
+      List<PreviewLine> lines, List<String> starved, int leftover) {
+    final out = <String>[];
+    if (starved.isNotEmpty) {
+      // Name the culprit, not just the victims.
+      final funded = lines.where((l) => l.allocatedCents > 0).toList();
+      final culprit = funded.isEmpty ? null : funded.last;
+      out.add(
+        '${starved.length} categor${starved.length == 1 ? "y" : "ies"} got '
+        'nothing: ${starved.join(", ")}.'
+        '${culprit == null ? "" : " ${culprit.name} is last to be funded and "
+            "took ${Money.format(culprit.allocatedCents)}, leaving nothing "
+            "for the ones below it."}',
+      );
+    }
+    if (leftover > 0) {
+      out.add('${Money.format(leftover)} was not allocated at all.');
+    }
+    return out;
+  }
+
   void _reorder(int from, int to) {
-    final current = _ordered ?? _preview!.lines.where((l) => !l.isManualOnly).toList();
-    final ids = [for (final l in current) l.categoryId];
+    // Indices come from the list being displayed, which is exactly
+    // `_effective`. Previously they were applied to a differently
+    // filtered list, so after one drag the mapping was wrong and
+    // nothing could be moved again.
+    final ids = [for (final l in _effective) l.categoryId];
     if (to > from) to -= 1;
     ids.insert(to, ids.removeAt(from));
     setState(() => _order = ids);
-    _previewIt();
+    _recompute();
   }
 
   Future<void> _editRule(PreviewLine line) async {
@@ -181,7 +277,7 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
       ref.invalidate(summaryProvider);
       ref.invalidate(categoriesProvider);
       if (!mounted) return;
-      await _previewIt(refreshBase: true);
+      await _loadPlan();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text('${line.name} saved — this applies from now on.'),
@@ -224,20 +320,20 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
     );
     if (picked == null) return;
     setState(() => _manual[picked.$1] = (picked.$2, picked.$3));
-    await _previewIt(refreshBase: true);
+    _recompute();
   }
 
   Future<void> _removeSetAside(String categoryId) async {
     setState(() => _manual.remove(categoryId));
-    await _previewIt(refreshBase: true);
+    _recompute();
   }
 
   Future<void> _apply() async {
-    final p = _preview;
+    final p = _computed;
     if (p == null) return;
     setState(() => _busy = true);
     try {
-      final lines = _ordered;
+      final lines = _order == null ? null : _effective;
       await ref.read(apiProvider).recordPaycheck(
             p.grossCents,
             transactionId: widget.transactionId,
@@ -282,7 +378,7 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final p = _preview;
+    final p = _computed;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Record a paycheck')),
@@ -313,10 +409,10 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
                   onChanged: (_) => setState(() {
-                    _preview = null;
+                    _computed = null;
                     _baseLines = null;
                   }),
-                  onSubmitted: (_) => _previewIt(),
+                  onSubmitted: (_) => _loadPlan(),
                   decoration: const InputDecoration(
                     labelText: 'Amount',
                     prefixText: '\$',
@@ -326,7 +422,7 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
                 ),
                 const SizedBox(height: 16),
                 FilledButton.icon(
-                  onPressed: _busy || _cents == null ? null : () => _previewIt(),
+                  onPressed: _busy || _cents == null ? null : () => _loadPlan(),
                   icon: _busy
                       ? const SizedBox(
                           height: 18, width: 18,
@@ -456,7 +552,7 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
                           ? null
                           : () {
                               setState(() => _order = null);
-                              _previewIt();
+                              _recompute();
                             },
                       child: const Text("Back to my plan's order"),
                     ),

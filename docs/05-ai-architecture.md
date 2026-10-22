@@ -212,6 +212,54 @@ Two failure modes that persist and must be caught in validation:
    Worth considering later: flag proposed values that differ by ~10× from
    an existing category's value, as a hint rather than a block.
 
+### Measured: does an agentic self-check improve results?
+
+Tested directly. Three strategies, same prompt and model, 8 trials each, on
+a hard task: no existing categories, six numeric constraints stated
+verbatim, and a conditional rule. Harness in `experiments/`.
+
+| strategy | applicable | facts correct | avg sec | calls |
+|---|---|---|---|---|
+| single pass | **8/8** | 40/40 (100%) | **15.7** | 1 |
+| self-critique | 8/8 | 40/40 (100%) | 31.6 | 2 |
+| validator feedback loop | 8/8 | 40/40 (100%) | 15.7 | 1 |
+
+**Conclusion: no. Single pass plus a deterministic validator is enough.**
+
+Self-critique doubled latency and changed nothing: the model reviewed
+correct work and found nothing to fix. The validator loop cost nothing
+because it only retries on failure and there were none — worth keeping as
+a safety net precisely because it is free when things work.
+
+### What the experiment actually caught
+
+The first run of this experiment failed **24 out of 24 trials across all
+three strategies**, with the identical single error every time. That
+consistency was the tell: a careless model varies, a structural fault does
+not.
+
+The cause was a bug in our own schema. `params` declared `rate`, `of`,
+`amount_cents` and `target_cents` — and **no `when` or `then`**. A
+JSON-schema-constrained model cannot emit a property the schema does not
+name, so conditional rules were impossible to express. The model did the
+best available thing and put the threshold into `target_cents`.
+
+Strategy C fed the model its exact error three times with no effect, which
+gives the rule worth remembering:
+
+> **A feedback loop cannot fix what the schema forbids.** Before reaching
+> for agentic retries, check the model is *capable* of producing the
+> correct output at all.
+
+This would have shipped silently: the normal prompt never exercises
+conditional rules, so it looked fine. `test_ai.py` now asserts that every
+param any rule type requires is declarable in the schema, so this class of
+bug fails in CI rather than in a 24-trial experiment.
+
+Also measured: with the schema fixed, the 10x dollars/cents error did not
+recur in 24 further trials. The earlier instance was inside the broken
+conditional path.
+
 ### Problems versus notices
 
 Validation separates what blocks applying from what is merely worth saying.

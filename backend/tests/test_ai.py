@@ -252,3 +252,33 @@ class TestExistingCategoriesDoNotBlock:
         assert out["applicable"] is True, out["problems"]
         assert any("already exists" in n for n in out["notices"])
         assert not any("already exists" in p for p in out["problems"])
+
+
+class TestSchemaCompleteness:
+    """A JSON-schema-constrained model cannot emit a property the schema
+    does not declare. Omitting `when`/`then` made conditional rules
+    impossible to express and failed 24 out of 24 measured trials, with
+    retries unable to help. Every field any rule type needs must be
+    declared."""
+
+    def test_every_required_param_is_declarable(self) -> None:
+        from app.ai.tasks import DESIGN_SCHEMA, _REQUIRED_PARAMS
+
+        declared = set(
+            DESIGN_SCHEMA["properties"]["split_rules"]["items"]
+            ["properties"]["params"]["properties"]
+        )
+        for rule_type, needed in _REQUIRED_PARAMS.items():
+            for field in needed:
+                assert field in declared, (
+                    f"'{rule_type}' requires '{field}' but the schema does not "
+                    f"declare it — the model could never produce a valid rule"
+                )
+
+    def test_conditional_nested_shape_is_declared(self) -> None:
+        from app.ai.tasks import DESIGN_SCHEMA
+
+        params = (DESIGN_SCHEMA["properties"]["split_rules"]["items"]
+                  ["properties"]["params"]["properties"])
+        assert set(params["when"]["properties"]) >= {"field", "op", "value_cents"}
+        assert set(params["then"]["properties"]) >= {"rule_type", "params"}

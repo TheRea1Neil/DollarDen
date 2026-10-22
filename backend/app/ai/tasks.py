@@ -71,6 +71,13 @@ DESIGN_SCHEMA = {
                     # A bare {"type": "object"} gives the model no shape to
                     # fill, and it returned empty params every time. Naming
                     # the fields explicitly is what makes them appear.
+                    # Every field a rule type can need MUST be declared here.
+                    # A JSON-schema-constrained model cannot emit a property
+                    # the schema does not name: omitting `when`/`then` made
+                    # conditional rules impossible to express, and the model
+                    # fell back to stuffing the threshold into target_cents
+                    # on 24 out of 24 trials. No amount of retrying fixes
+                    # output the schema forbids.
                     "params": {
                         "type": "object",
                         "properties": {
@@ -81,6 +88,32 @@ DESIGN_SCHEMA = {
                                              "description": "fixed rules, in cents"},
                             "target_cents": {"type": "integer",
                                              "description": "refill_to rules, in cents"},
+                            "when": {
+                                "type": "object",
+                                "description": "conditional rules: the test to apply",
+                                "properties": {
+                                    "field": {"type": "string", "enum": ["balance"]},
+                                    "op": {"type": "string",
+                                           "enum": ["<", "<=", ">", ">=", "=="]},
+                                    "value_cents": {"type": "integer"},
+                                },
+                            },
+                            "then": {
+                                "type": "object",
+                                "description": "conditional rules: what to do if true",
+                                "properties": {
+                                    "rule_type": {"type": "string",
+                                                  "enum": ["fixed", "refill_to", "percent"]},
+                                    "params": {
+                                        "type": "object",
+                                        "properties": {
+                                            "amount_cents": {"type": "integer"},
+                                            "target_cents": {"type": "integer"},
+                                            "rate": {"type": "string"},
+                                        },
+                                    },
+                                },
+                            },
                         },
                     },
                     "why": {"type": "string"},

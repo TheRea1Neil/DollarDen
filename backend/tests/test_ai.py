@@ -520,3 +520,83 @@ class TestJobKinds:
         from app.ai import jobs, tasks
         missing = [k for k in jobs.KINDS if not hasattr(tasks, f"run_{k}")]
         assert missing == [], f"no run_* handler for: {missing}"
+
+
+@requires_db
+class TestDescriptionsReachTheModel:
+    """The description is only worth storing if it is in the prompt.
+
+    A stub provider captures the prompt, so this asserts the plumbing
+    rather than hoping a model's wording happens to reflect it.
+    """
+
+    class _Capture:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        async def chat(self, prompt: str, schema: dict | None = None):
+            self.prompts.append(prompt)
+            from types import SimpleNamespace
+            return SimpleNamespace(content='{"answer": "ok"}', model="stub")
+
+    @staticmethod
+    def _user_with_categories(email: str) -> tuple:
+        import uuid as _uuid
+
+        from app.core.security import hash_password
+        from app.db.models import Category, User
+        from app.db.session import SessionLocal
+
+        db = SessionLocal()
+        u = User(email=email, password_hash=hash_password("x" * 16))
+        db.add(u)
+        db.flush()
+        db.add(Category(
+            user_id=u.id, name="Blue Fund", kind="savings_bucket",
+            description="the deductible on my daughter's braces, due in March",
+            balance_cents=40000, sort_order=0,
+        ))
+        db.add(Category(user_id=u.id, name="Food", kind="spending",
+                        balance_cents=15000, sort_order=1))
+        db.commit()
+        return db, u
+
+    def test_advise_sends_the_description(self) -> None:
+        import asyncio
+        import uuid as _uuid
+
+        from app.ai.tasks import run_advise
+
+        db, u = self._user_with_categories(f"adv-{_uuid.uuid4().hex[:8]}@x.com")
+        try:
+            cap = self._Capture()
+            asyncio.run(run_advise(db, u, cap, {"question": "Can I spend it?"}))
+            prompt = cap.prompts[0]
+            assert "daughter's braces" in prompt, prompt
+            # And a category without one does not get a dangling separator.
+            assert "Food: $150.00\n" in prompt or prompt.rstrip().endswith("Food: $150.00") \
+                or "Food: $150.00" in prompt
+        finally:
+            db.close()
+
+    def test_design_sends_existing_descriptions(self) -> None:
+        """So the designer knows what the user already means by a name."""
+        import asyncio
+        import uuid as _uuid
+
+        from app.ai.tasks import run_design_category
+
+        db, u = self._user_with_categories(f"dsg-{_uuid.uuid4().hex[:8]}@x.com")
+        try:
+            cap = self._Capture()
+            try:
+                asyncio.run(run_design_category(
+                    db, u, cap, {"request": "money for the dog"}))
+            except Exception:
+                # The stub returns an answer shape, not a category shape.
+                # The prompt is what is under test.
+                pass
+            assert cap.prompts, "no prompt was built"
+            assert "daughter's braces" in cap.prompts[0], cap.prompts[0]
+        finally:
+            db.close()

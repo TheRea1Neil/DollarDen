@@ -199,6 +199,18 @@ def archive_category(
     new allocations.
     """
     c = _own(db, Category, category_id, user)
+
+    # Archiving the sink does not remove it, it HIDES it: the next call to
+    # ensure_unallocated() finds nothing and creates a second one, leaving
+    # the archived original holding money that no longer reconciles
+    # against any account. There is no legitimate reason to archive it.
+    if c.is_unallocated:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Unallocated is where money with no purpose yet is held, so it "
+            "cannot be archived. Allocate what is in it instead.",
+        )
+
     if c.archived_at is None:
         c.archived_at = datetime.now(UTC)
         db.commit()

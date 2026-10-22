@@ -744,3 +744,41 @@ class TestApplySingleCategory:
         assert r.status_code == 200, r.text
         assert r.json()["matcher_rule_id"] is None
         assert client.get("/api/budget/rules", headers=h).json() == []
+
+
+@requires_db
+class TestSinkIsProtected:
+    """Archiving the sink would fork it, not remove it."""
+
+    def test_unallocated_cannot_be_archived(self, client: TestClient) -> None:
+        from app.budget.reconcile import ensure_unallocated
+        from app.db.session import SessionLocal
+
+        h = _auth(client)
+        me = client.get("/api/auth/me", headers=h).json()
+        # The sink is normally created by an opening-balance remainder.
+        # Calling the function under protection directly is the point here.
+        with SessionLocal() as db:
+            ensure_unallocated(db, uuid.UUID(me["id"]))
+            db.commit()
+
+        cats = client.get("/api/budget/categories", headers=h).json()
+        sink = next(c for c in cats if c["is_unallocated"])
+
+        r = client.delete(f"/api/budget/categories/{sink['id']}", headers=h)
+        assert r.status_code == 409
+        assert "cannot be archived" in r.json()["detail"]
+
+        # And it is still the one and only sink.
+        after = client.get("/api/budget/categories?include_archived=true",
+                           headers=h).json()
+        assert len([c for c in after if c["is_unallocated"]]) == 1
+        assert not next(c for c in after if c["is_unallocated"])["archived"]
+
+    def test_an_ordinary_category_still_archives(self, client: TestClient) -> None:
+        h = _auth(client)
+        r = client.post("/api/budget/categories",
+                        json={"name": "Food", "kind": "spending"}, headers=h)
+        cid = r.json()["id"]
+        assert client.delete(f"/api/budget/categories/{cid}",
+                             headers=h).status_code == 200

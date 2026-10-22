@@ -154,3 +154,4 @@ class TestUnallocatedSink:
             sweep_to_unallocated(db, u.id)
             assert sweep_to_unallocated(db, u.id) == 0
             db.rollback()
+

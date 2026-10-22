@@ -16,7 +16,7 @@ import argparse, json, pathlib, sys, time
 import urllib.request as u
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from fixtures import CASES, CATEGORIES, NAMES
+from fixtures import CASES, NAMES, categories
 
 OLLAMA = "http://192.168.86.196:11434/api/chat"
 
@@ -52,15 +52,11 @@ uninformative.
 Return JSON only."""
 
 
-def render(c: dict, *, rich: bool) -> str:
-    if not rich:
-        return f"  - {c['name']}"
-    bits = [f"  - {c['name']} ({c['kind']})"]
+def render(c: dict) -> str:
+    line = f"  - {c['name']} ({c['kind']})"
     if c["description"]:
-        bits.append(f": {c['description']}")
-    if c["matchers"]:
-        bits.append(f" Already catches: {', '.join(c['matchers'])}.")
-    return "".join(bits)
+        line += f": {c['description']}"
+    return line
 
 
 def ask(model: str, prompt: str) -> tuple[dict | None, float, str]:
@@ -90,16 +86,15 @@ def ask(model: str, prompt: str) -> tuple[dict | None, float, str]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="qwen2.5vl:7b")
-    ap.add_argument("--plain", action="store_true",
-                    help="names only, no descriptions or matchers")
+    ap.add_argument("--arm", default="nuanced",
+                    choices=["plain", "generic", "nuanced"])
     a = ap.parse_args()
 
-    cats = "\n".join(render(c, rich=not a.plain) for c in CATEGORIES)
-    label = "names only" if a.plain else "with descriptions + matchers"
-    print(f"model={a.model}  context={label}\n")
+    cats = "\n".join(render(c) for c in categories(a.arm))
+    print(f"model={a.model}  arm={a.arm}\n")
 
     tally = {d: {"right": 0, "wrong": 0, "declined": 0, "n": 0}
-             for d in ("clear", "defensible", "ambiguous")}
+             for d in ("clear", "needs_desc", "conflict", "ambiguous")}
     secs, wrongs, errors = [], [], []
 
     print(f"  {'merchant':28}{'picked':<20}{'verdict':<10} conf")
@@ -150,7 +145,7 @@ def main() -> None:
         for e in errors[:4]:
             print(f"     {e}")
         print()
-    for d in ("clear", "defensible", "ambiguous"):
+    for d in ("clear", "needs_desc", "conflict", "ambiguous"):
         t = tally[d]
         if not t["n"]:
             continue

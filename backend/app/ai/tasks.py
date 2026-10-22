@@ -1,0 +1,397 @@
+"""AI task handlers.
+
+Every handler follows the same shape: gather context, ask the model for a
+constrained JSON shape, then VALIDATE before returning. The model proposes;
+deterministic code disposes (ADR 0003). Nothing here writes to the ledger.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.budget.reconcile import compute as compute_reconciliation
+from app.db.models import Category, User, UserGoal
+
+log = logging.getLogger("nnf.ai.tasks")
+
+VALID_KINDS = {"spending", "savings_bucket", "obligation"}
+VALID_RULE_TYPES = {"percent", "fixed", "refill_to", "conditional", "remainder"}
+
+
+def _goals(db: Session, user: User) -> str:
+    row = db.scalars(select(UserGoal).where(UserGoal.user_id == user.id)).first()
+    return (row.body if row else "").strip()
+
+
+def _categories(db: Session, user: User) -> list[Category]:
+    return list(
+        db.scalars(
+            select(Category)
+            .where(Category.user_id == user.id, Category.archived_at.is_(None))
+            .order_by(Category.sort_order, Category.name)
+        ).all()
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Designing categories and a split plan
+# --------------------------------------------------------------------------- #
+DESIGN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "categories": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "kind": {"type": "string",
+                             "enum": ["spending", "savings_bucket", "obligation"]},
+                    "description": {"type": "string"},
+                    "target_cents": {"type": "integer"},
+                    "alert_at_cents": {"type": "integer"},
+                },
+                "required": ["name", "kind", "description"],
+            },
+        },
+        "split_rules": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "category_name": {"type": "string"},
+                    "order_index": {"type": "integer"},
+                    "rule_type": {"type": "string",
+                                  "enum": ["percent", "fixed", "refill_to",
+                                           "conditional", "remainder"]},
+                    # A bare {"type": "object"} gives the model no shape to
+                    # fill, and it returned empty params every time. Naming
+                    # the fields explicitly is what makes them appear.
+                    "params": {
+                        "type": "object",
+                        "properties": {
+                            "rate": {"type": "string",
+                                     "description": "percent rules: '0.10' for 10%"},
+                            "of": {"type": "string", "enum": ["gross", "remaining"]},
+                            "amount_cents": {"type": "integer",
+                                             "description": "fixed rules, in cents"},
+                            "target_cents": {"type": "integer",
+                                             "description": "refill_to rules, in cents"},
+                        },
+                    },
+                    "why": {"type": "string"},
+                },
+                "required": ["category_name", "order_index", "rule_type", "params", "why"],
+            },
+        },
+        "notes": {"type": "string"},
+    },
+    "required": ["categories", "split_rules", "notes"],
+}
+
+DESIGN_PROMPT = """You design budget categories for an envelope-style budgeting app.
+
+How this budget works:
+- A category is a BALANCE, not a report line. It holds money.
+- Each paycheck is split across categories by ORDERED rules.
+- Rule types:
+    percent     {{"rate": "0.10", "of": "gross"}}   a share, e.g. tithing
+    fixed       {{"amount_cents": 35000}}            a set amount, e.g. rent
+    refill_to   {{"target_cents": 30000}}            top back up to a target
+    conditional {{"when": {{"field": "balance", "op": "<", "value_cents": 45000}},
+                 "then": {{"rule_type": "fixed", "params": {{"amount_cents": 5000}}}}}}
+    remainder   {{}}                                 everything left over
+- Rules run in order. EXACTLY ONE remainder rule, and it MUST be last.
+- "remainder" is a RULE TYPE, never a category name. The remainder rule
+  names a real category to receive whatever is left, e.g.
+  {{"category_name": "New Car Fund", "rule_type": "remainder", "params": {{}}}}
+- All money is INTEGER CENTS. $350.00 is 35000.
+
+Category kinds:
+    spending        refilled each paycheck and spent down (groceries, gas)
+    savings_bucket  accumulates toward something (emergency fund, new car)
+    obligation      accrues toward a known payment (rent, tithing, insurance)
+
+{existing_block}
+
+What the user wants:
+{goals}
+
+{request_block}
+
+Design categories and an ordered split plan that achieves this. Rules:
+- Put percentage-of-gross rules FIRST, before anything consumes the paycheck.
+- Give every spending category a sensible target_cents.
+- End with exactly one remainder rule pointing at a real savings category.
+- EVERY rule must have filled params matching its type:
+    percent   -> {{"rate": "0.10", "of": "gross"}}
+    fixed     -> {{"amount_cents": 35000}}
+    refill_to -> {{"target_cents": 30000}}
+    remainder -> {{}}
+  A rule with empty params is unusable.
+- Explain each rule in one short sentence in "why".
+- Prefer few, meaningful categories over many fine-grained ones.
+
+Return JSON only."""
+
+
+async def run_design_categories(
+    db: Session, user: User, provider: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    existing = _categories(db, user)
+    goals = request.get("goals") or _goals(db, user) or "(none stated)"
+
+    if existing:
+        lines = "\n".join(
+            f"  - {c.name} ({c.kind})"
+            + (f", target ${c.target_cents / 100:.2f}" if c.target_cents else "")
+            for c in existing
+        )
+        existing_block = (
+            f"The user ALREADY has these categories. Reuse them by name where they "
+            f"fit, and only add what is missing:\n{lines}"
+        )
+    else:
+        existing_block = "The user has no categories yet. Design a full set."
+
+    extra = (request.get("instructions") or "").strip()
+    request_block = f"Additional instructions:\n{extra}" if extra else ""
+
+    prompt = DESIGN_PROMPT.format(
+        existing_block=existing_block, goals=goals, request_block=request_block
+    )
+
+    res = await provider.chat(prompt, schema=DESIGN_SCHEMA)
+    proposal = _parse_json(res.content)
+    return _validate_design(proposal, existing)
+
+
+def _parse_json(content: str) -> dict[str, Any]:
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as exc:
+        # Schema-constrained output should be valid JSON; if it is not, the
+        # proposal is unusable and saying so beats half-parsing it.
+        raise ValueError(f"model returned unparseable JSON: {exc}") from exc
+
+
+def _validate_design(
+    proposal: dict[str, Any], existing: list[Category]
+) -> dict[str, Any]:
+    """Check a proposal before a human ever sees it.
+
+    A proposal that cannot be applied is worse than none: the user would
+    accept it and hit an error. Problems are reported alongside the
+    proposal rather than silently repaired, so the draft stays editable.
+    """
+    problems: list[str] = []   # block applying
+    notices: list[str] = []    # worth saying, but harmless
+    cats = proposal.get("categories") or []
+    rules = proposal.get("split_rules") or []
+
+    names: set[str] = {c.name for c in existing}
+    clean_cats = []
+    for c in cats:
+        name = str(c.get("name", "")).strip()
+        kind = c.get("kind")
+        if not name:
+            problems.append("a category had no name and was dropped")
+            continue
+        if kind not in VALID_KINDS:
+            problems.append(f"'{name}' had invalid kind '{kind}', defaulted to spending")
+            kind = "spending"
+        if name in names:
+            # Informational. Reusing an existing category is the desired
+            # behaviour, not a reason to block the whole proposal.
+            notices.append(f"'{name}' already exists and will be reused")
+        names.add(name)
+        clean_cats.append({
+            "name": name,
+            "kind": kind,
+            "description": str(c.get("description", "")).strip(),
+            "target_cents": _as_int(c.get("target_cents")),
+            "alert_at_cents": _as_int(c.get("alert_at_cents")),
+            "already_exists": name in {e.name for e in existing},
+        })
+
+    clean_rules = []
+    for r in sorted(rules, key=lambda x: x.get("order_index", 0)):
+        cname = str(r.get("category_name", "")).strip()
+        rtype = r.get("rule_type")
+        if rtype not in VALID_RULE_TYPES:
+            problems.append(f"rule for '{cname}' had invalid type '{rtype}' and was dropped")
+            continue
+        if cname not in names:
+            problems.append(f"rule references unknown category '{cname}' and was dropped")
+            continue
+        params = r.get("params") or {}
+        missing = _missing_params(rtype, params)
+        if missing:
+            problems.append(
+                f"rule {len(clean_rules) + 1} ('{cname}', {rtype}) is missing "
+                f"{missing} — fill it in before applying"
+            )
+        clean_rules.append({
+            "category_name": cname,
+            "order_index": len(clean_rules) + 1,
+            "rule_type": rtype,
+            "params": params,
+            "why": str(r.get("why", "")).strip(),
+        })
+
+    # The engine refuses a plan without exactly one trailing remainder, so
+    # catch it here where it can be explained rather than at apply time.
+    remainders = [r for r in clean_rules if r["rule_type"] == "remainder"]
+    if len(remainders) == 0:
+        problems.append("no remainder rule — add one for whatever is left over")
+    elif len(remainders) > 1:
+        problems.append(f"{len(remainders)} remainder rules — only one is allowed")
+    elif clean_rules and clean_rules[-1]["rule_type"] != "remainder":
+        problems.append("the remainder rule must be last")
+
+    return {
+        "categories": clean_cats,
+        "split_rules": clean_rules,
+        "notes": str(proposal.get("notes", "")).strip(),
+        "problems": problems,
+        "notices": notices,
+        # Only real problems block applying. The proposal is editable either
+        # way -- the user can fix what the model got wrong.
+        "applicable": not problems,
+    }
+
+
+_REQUIRED_PARAMS = {
+    "percent": ("rate",),
+    "fixed": ("amount_cents",),
+    "refill_to": ("target_cents",),
+    "conditional": ("when", "then"),
+    "remainder": (),
+}
+
+
+def _missing_params(rule_type: str, params: dict[str, Any]) -> str:
+    """Which required params a rule lacks.
+
+    A `percent` rule with no rate is unusable, and the engine would reject
+    it at apply time -- better to say so while the draft is still editable.
+    """
+    needed = _REQUIRED_PARAMS.get(rule_type, ())
+    absent = [k for k in needed if params.get(k) in (None, "", {})]
+    return ", ".join(absent)
+
+
+def _as_int(v: Any) -> int | None:
+    if v is None:
+        return None
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
+
+
+# --------------------------------------------------------------------------- #
+# Spending summary, written against the user's own goals
+# --------------------------------------------------------------------------- #
+SUMMARY_PROMPT = """You are reviewing someone's spending for the period just ended.
+
+Their stated goals:
+{goals}
+
+Where their money currently sits:
+{balances}
+
+Money position:
+  in the bank      ${cash:.2f}
+  owed on cards    ${debt:.2f}
+  allocated        ${allocated:.2f}
+
+Spending this period, largest first:
+{spending}
+
+Write a short review, at most 200 words:
+1. What actually happened, in plain language and specific numbers.
+2. Where the money went that they may not have noticed.
+3. Two or three concrete suggestions, tied to THEIR stated goals above.
+
+Be direct and specific. No generic advice about budgeting. If their goals
+say nothing relevant, say what you would need to know. Do not invent
+numbers that are not shown above."""
+
+
+async def run_summary(
+    db: Session, user: User, provider: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    from app.db.models import Allocation, Transaction
+
+    goals = _goals(db, user) or "(the user has not written any goals yet)"
+    cats = _categories(db, user)
+    rec = compute_reconciliation(db, user.id)
+
+    balances = "\n".join(
+        f"  {c.name}: ${c.balance_cents / 100:.2f}"
+        + (f" of ${c.target_cents / 100:.2f}" if c.target_cents else "")
+        for c in cats
+    ) or "  (no categories yet)"
+
+    rows = db.execute(
+        select(Category.name, Allocation.amount_cents, Transaction.name)
+        .join(Category, Category.id == Allocation.category_id)
+        .join(Transaction, Transaction.id == Allocation.transaction_id)
+        .where(
+            Allocation.user_id == user.id,
+            Allocation.amount_cents < 0,
+            Transaction.removed_at.is_(None),
+        )
+        .order_by(Allocation.amount_cents)
+        .limit(25)
+    ).all()
+    spending = "\n".join(
+        f"  ${abs(amt) / 100:.2f}  {txn[:36]}  -> {cat}" for cat, amt, txn in rows
+    ) or "  (no categorised spending yet)"
+
+    prompt = SUMMARY_PROMPT.format(
+        goals=goals, balances=balances, spending=spending,
+        cash=rec.cash_cents / 100, debt=rec.card_debt_cents / 100,
+        allocated=rec.allocated_cents / 100,
+    )
+    res = await provider.chat(prompt)
+    return {
+        "summary": res.content.strip(),
+        "model": res.model,
+        "tokens_per_second": res.tokens_per_second,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Goal-aware advice
+# --------------------------------------------------------------------------- #
+async def run_advise(
+    db: Session, user: User, provider: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    question = (request.get("question") or "").strip()
+    if not question:
+        raise ValueError("advise requires a question")
+
+    goals = _goals(db, user) or "(none stated)"
+    cats = _categories(db, user)
+    rec = compute_reconciliation(db, user.id)
+    balances = "\n".join(f"  {c.name}: ${c.balance_cents / 100:.2f}" for c in cats)
+
+    prompt = (
+        f"Someone is asking about their own budget.\n\n"
+        f"Their goals:\n{goals}\n\n"
+        f"Their categories:\n{balances or '  (none yet)'}\n\n"
+        f"In the bank ${rec.cash_cents / 100:.2f}, owed on cards "
+        f"${rec.card_debt_cents / 100:.2f}.\n\n"
+        f"Their question:\n{question}\n\n"
+        f"Answer directly in under 150 words, using their actual numbers. "
+        f"Do not invent figures that are not shown above."
+    )
+    res = await provider.chat(prompt)
+    return {"answer": res.content.strip(), "model": res.model}

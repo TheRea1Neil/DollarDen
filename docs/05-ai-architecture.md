@@ -179,6 +179,46 @@ no feature at all.
 Store the image on disk (path in `receipts.image_path`), never in the DB, and
 keep the model's raw response in `ai_jobs` for debugging.
 
+## What the model gets wrong, measured
+
+From real runs of `design_categories` against `qwen2.5vl:7b`:
+
+| Attempt | Result |
+|---|---|
+| First, with `"params": {"type": "object"}` | **every rule had empty params** |
+| After naming the fields in the schema | all params correctly filled |
+
+A bare `{"type": "object"}` gives the model nothing to fill. Naming `rate`,
+`of`, `amount_cents` and `target_cents` explicitly is what makes them
+appear. This is the single highest-value fix found so far.
+
+Two failure modes that persist and must be caught in validation:
+
+1. **Rule type confused for a category name.** The model emitted a rule
+   whose `category_name` was `"remainder"`. Fixed by stating in the prompt
+   that remainder is a rule type and showing an example — but still
+   validated, because a prompt is not a guarantee.
+
+2. **Dollars/cents magnitude errors.** The existing Short-Term Savings
+   target is `200000` cents ($2,000); the model proposed `20000` ($200), a
+   clean factor of ten. The prompt states cents and shows examples, and it
+   still happened.
+
+   This one is **not reliably fixable by prompting**, and it is why
+   proposals land as editable drafts rather than being applied. A 10×
+   error on a savings target is obvious to a human reading it and invisible
+   to a schema validator, since both values are structurally valid.
+
+   Worth considering later: flag proposed values that differ by ~10× from
+   an existing category's value, as a hint rather than a block.
+
+### Problems versus notices
+
+Validation separates what blocks applying from what is merely worth saying.
+Reusing a category the user already has is the *desired* outcome, and an
+early version reported it as a problem — which made correct proposals look
+broken. `problems` block; `notices` inform.
+
 ## Prompting
 
 - For `categorise`, send the user's category list **with descriptions and

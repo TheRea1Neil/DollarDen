@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
+import contextlib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api.routes import auth, backup, budget, health, plaid
+from app.api.routes import ai, auth, backup, budget, health, plaid
 from app.core.config import get_settings
 
 logging.basicConfig(
@@ -28,7 +29,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     if s.plaid_env == "production":
         log.warning("PLAID IS IN PRODUCTION MODE - linking consumes connection credits")
-    yield
+
+    # Drain the AI job queue in the background. Jobs are persisted, so a
+    # restart loses nothing: in-flight rows are reconciled by the worker.
+    import asyncio
+
+    from app.ai.jobs import worker_loop
+
+    task = asyncio.create_task(worker_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 def create_app() -> FastAPI:
@@ -47,6 +61,7 @@ def create_app() -> FastAPI:
     app.include_router(plaid.router, prefix="/api")
     app.include_router(backup.router, prefix="/api")
     app.include_router(budget.router, prefix="/api")
+    app.include_router(ai.router, prefix="/api")
     return app
 
 

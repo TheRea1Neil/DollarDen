@@ -59,6 +59,10 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str | None] = mapped_column(String(120))
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="America/Denver")
+    # NULL means follow the server default. "none" disables AI entirely,
+    # which is a supported configuration rather than a degraded one.
+    ai_provider: Mapped[str | None] = mapped_column(String(16))
+    ai_base_url: Mapped[str | None] = mapped_column(String(300))
     created_at: Mapped[datetime] = _now()
 
 

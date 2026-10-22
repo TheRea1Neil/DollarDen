@@ -2,10 +2,13 @@ pyproject.toml
 app/__init__.py
 app/main.py
 app/ai/__init__.py
+app/ai/jobs.py
 app/ai/provider.py
+app/ai/tasks.py
 app/api/__init__.py
 app/api/deps.py
 app/api/routes/__init__.py
+app/api/routes/ai.py
 app/api/routes/auth.py
 app/api/routes/backup.py
 app/api/routes/budget.py
@@ -37,6 +40,7 @@ nnf_backend.egg-info/SOURCES.txt
 nnf_backend.egg-info/dependency_links.txt
 nnf_backend.egg-info/requires.txt
 nnf_backend.egg-info/top_level.txt
+tests/test_ai.py
 tests/test_auth_and_isolation.py
 tests/test_budget_api.py
 tests/test_budget_flow.py

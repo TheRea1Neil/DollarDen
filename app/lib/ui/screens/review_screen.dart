@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/money.dart';
+import '../../core/theme.dart';
 import '../../data/api_client.dart';
 import '../../data/providers.dart';
 import '../../domain/models.dart';
@@ -99,13 +100,7 @@ class _ReviewCard extends ConsumerWidget {
                 ),
               ),
               const SizedBox(width: 12),
-              Text(
-                Money.format(item.amountCents),
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
-              ),
+              _FlowAmount(signedCents: item.amountCents),
               const Icon(Icons.chevron_right),
             ],
           ),
@@ -259,9 +254,28 @@ class _CategoryPickerState extends State<_CategoryPicker> {
             Text(widget.item.title,
                 style: theme.textTheme.titleLarge
                     ?.copyWith(fontWeight: FontWeight.w700)),
-            Text(Money.format(widget.item.amountCents),
-                style: theme.textTheme.titleMedium
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            const SizedBox(height: 8),
+            _FlowAmount(signedCents: widget.item.amountCents, compact: false),
+            const SizedBox(height: 8),
+            // Say the consequence outright. This is the moment the choice
+            // is made, and "adds to" vs "takes out of" is the whole
+            // difference between a refund and a charge.
+            Builder(builder: (_) {
+              final flow = MoneyFlow.ofSigned(widget.item.amountCents);
+              final amount = Money.format(widget.item.amountCents.abs());
+              return Text(
+                flow.isInto
+                    ? 'Picking a category ADDS $amount to it.'
+                    : 'Picking a category TAKES $amount OUT of it.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: flow.isInto
+                      ? AppTheme.positive(context)
+                      : theme.colorScheme.onSurfaceVariant,
+                  fontWeight: flow.isInto ? FontWeight.w600 : null,
+                ),
+              );
+            }),
             const SizedBox(height: 12),
             Flexible(
               child: ListView(
@@ -388,6 +402,64 @@ class _NewCategoryDialogState extends State<_NewCategoryDialog> {
           },
           child: const Text('Create & assign'),
         ),
+      ],
+    );
+  }
+}
+
+
+/// A budget-signed amount, shown so the direction is unmistakable.
+///
+/// A leading minus alone is not enough: the backend stores spending as
+/// POSITIVE, so a raw render shows a refund as "-$20.00" and reads like a
+/// loss. Colour, an arrow and a word all say the same thing here, because
+/// filing a refund as if it were spending is a mistake the user cannot
+/// see once it is made.
+class _FlowAmount extends StatelessWidget {
+  final int signedCents;
+  final bool compact;
+
+  const _FlowAmount({required this.signedCents, this.compact = true});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final flow = MoneyFlow.ofSigned(signedCents);
+    final colour = switch (flow) {
+      MoneyFlow.out => theme.colorScheme.onSurface,
+      MoneyFlow.into => AppTheme.positive(context),
+      MoneyFlow.none => theme.colorScheme.onSurfaceVariant,
+    };
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (flow != MoneyFlow.none)
+              Icon(
+                flow.isOut ? Icons.arrow_outward : Icons.south_west,
+                size: 16,
+                color: colour,
+              ),
+            const SizedBox(width: 4),
+            Text(
+              MoneyFlowFormat.flow(signedCents),
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: colour,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ],
+        ),
+        if (!compact || flow.isInto)
+          Text(
+            flow.isInto ? 'money in' : 'spent',
+            style: theme.textTheme.labelSmall?.copyWith(color: colour),
+          ),
       ],
     );
   }

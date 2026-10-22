@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nnf/core/money.dart';
 import 'package:nnf/domain/models.dart';
 
 Map<String, dynamic> _cat({
@@ -21,6 +22,7 @@ Map<String, dynamic> _cat({
     };
 
 void main() {
+  _activityTests();
   _suggestedCategoryTests();
   group('Category.fillRatio', () {
     test('is null without a target to measure against', () {
@@ -198,6 +200,51 @@ void _suggestedCategoryTests() {
         'description': 'vet bills', 'applicable': true,
       });
       expect(s.toProposed().toJson()['description'], 'vet bills');
+    });
+  });
+}
+
+void _activityTests() {
+  group('Activity', () {
+    test('translates the ledger sign into the budget sign', () {
+      // The ledger stores +500 when the category GAINED $5.
+      final gained = Activity.fromJson(
+          {'amount_cents': 500, 'source': 'paycheck_split'});
+      expect(gained.budgetSignedCents, -500);
+      expect(MoneyFlow.ofSigned(gained.budgetSignedCents), MoneyFlow.into);
+
+      // And -1450 when $14.50 was spent out of it.
+      final spent = Activity.fromJson(
+          {'amount_cents': -1450, 'source': 'auto_categorise'});
+      expect(spent.budgetSignedCents, 1450);
+      expect(MoneyFlow.ofSigned(spent.budgetSignedCents), MoneyFlow.out);
+    });
+
+    test('prefers the merchant, falls back to a readable source', () {
+      expect(
+          Activity.fromJson({
+            'amount_cents': -1, 'source': 'auto_categorise',
+            'merchant': 'KROGER #512',
+          }).title,
+          'KROGER #512');
+      expect(
+          Activity.fromJson(
+              {'amount_cents': 1, 'source': 'paycheck_split'}).title,
+          'From a paycheck');
+    });
+
+    test('an unknown source is still readable, not raw', () {
+      expect(Activity.fromJson({'amount_cents': 1, 'source': 'some_new_thing'})
+          .title, 'some new thing');
+    });
+
+    test('tolerates a missing date', () {
+      expect(Activity.fromJson({'amount_cents': 1, 'source': 'x'}).shortDate, '');
+      expect(
+          Activity.fromJson({
+            'amount_cents': 1, 'source': 'x', 'at': '2026-10-22T13:04:11',
+          }).shortDate,
+          '2026-10-22');
     });
   });
 }

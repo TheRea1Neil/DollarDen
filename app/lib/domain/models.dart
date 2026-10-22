@@ -638,12 +638,70 @@ class Matcher {
       );
 }
 
+/// One line of a category's ledger: what moved, when, and which way.
+class Activity {
+  final int amountCents;   // +into the category, -out of it
+  final String source;
+  final String? note;
+  final String? merchant;
+  final String? at;
+  final String? transactionId;
+
+  const Activity({
+    required this.amountCents,
+    required this.source,
+    this.note,
+    this.merchant,
+    this.at,
+    this.transactionId,
+  });
+
+  factory Activity.fromJson(Map<String, dynamic> j) => Activity(
+        amountCents: j['amount_cents'] as int? ?? 0,
+        source: j['source'] as String? ?? '',
+        note: j['note'] as String?,
+        merchant: j['merchant'] as String?,
+        at: j['at'] as String?,
+        transactionId: j['transaction_id'] as String?,
+      );
+
+  /// NOTE the inversion. A ledger entry is stored from the CATEGORY's
+  /// point of view: positive means the category gained. A review item is
+  /// stored from the BUDGET's point of view: positive means money left.
+  /// Two opposite conventions for the same idea, so this is the one place
+  /// the ledger sign is translated for display.
+  int get budgetSignedCents => -amountCents;
+
+  String get title => merchant ?? _sourceLabel;
+
+  String get _sourceLabel => switch (source) {
+        'paycheck_split' => 'From a paycheck',
+        'auto_categorise' => 'Filed automatically',
+        'manual' => 'Filed by hand',
+        'opening_balance' => 'Opening balance',
+        'reconcile' => 'Reconciliation',
+        'unallocated_sweep' => 'Swept to unallocated',
+        _ => source.isEmpty ? '—' : source.replaceAll('_', ' '),
+      };
+
+  /// What to show under the title: the note if there is one, else how it
+  /// got here.
+  String get subtitle =>
+      (note != null && note!.isNotEmpty) ? note! : _sourceLabel;
+
+  String get shortDate {
+    final v = at;
+    if (v == null || v.length < 10) return '';
+    return v.substring(0, 10);
+  }
+}
+
 /// Everything about one category, for the screen that edits it.
 class CategoryDetail {
   final Category category;
   final Funding? funding;
   final List<Matcher> matchers;
-  final List<Map<String, dynamic>> recent;
+  final List<Activity> recent;
 
   const CategoryDetail({
     required this.category,
@@ -661,7 +719,7 @@ class CategoryDetail {
             .map((e) => Matcher.fromJson((e as Map).cast<String, dynamic>()))
             .toList(),
         recent: ((j['recent'] as List?) ?? const [])
-            .map((e) => (e as Map).cast<String, dynamic>())
+            .map((e) => Activity.fromJson((e as Map).cast<String, dynamic>()))
             .toList(),
       );
 }

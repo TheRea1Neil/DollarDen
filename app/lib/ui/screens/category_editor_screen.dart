@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/money.dart';
+import '../../core/theme.dart';
 import '../../data/api_client.dart';
 import '../../data/providers.dart';
 import '../../domain/models.dart';
@@ -24,7 +25,9 @@ class CategoryEditorScreen extends ConsumerStatefulWidget {
       _CategoryEditorScreenState();
 }
 
-class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen> {
+class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
+    with SingleTickerProviderStateMixin {
+  TabController? _tabs;
   final _form = GlobalKey<FormState>();
   late final TextEditingController _name;
   late final TextEditingController _description;
@@ -63,7 +66,12 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen> {
             ? ''
             : (c!.alertAtCents! / 100).toStringAsFixed(2));
     _kind = c?.kind ?? 'spending';
-    if (!_isNew) _loadDetail();
+    // Activity first: opening a category is almost always "what happened
+    // here lately", not "let me change the rules".
+    if (!_isNew) {
+      _tabs = TabController(length: 2, vsync: this);
+      _loadDetail();
+    }
   }
 
   Future<void> _loadDetail() async {
@@ -92,6 +100,7 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen> {
 
   @override
   void dispose() {
+    _tabs?.dispose();
     _name.dispose();
     _description.dispose();
     _target.dispose();
@@ -269,7 +278,6 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final c = widget.existing;
 
     return Scaffold(
@@ -289,34 +297,74 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen> {
               onPressed: _busy ? null : _archive,
             ),
         ],
+        bottom: _isNew
+            ? null
+            : TabBar(controller: _tabs, tabs: const [
+                Tab(text: 'Activity', icon: Icon(Icons.receipt_long, size: 20)),
+                Tab(text: 'Settings', icon: Icon(Icons.tune, size: 20)),
+              ]),
       ),
-      body: Form(
+      body: _isNew
+          ? _settingsTab(context)
+          : TabBarView(
+              controller: _tabs,
+              children: [_activityTab(context), _settingsTab(context)],
+            ),
+    );
+  }
+
+  /// What has actually moved in and out. The first thing shown, because
+  /// it is what people open a category to find out.
+  Widget _activityTab(BuildContext context) {
+    final theme = Theme.of(context);
+    final c = _detail?.category ?? widget.existing!;
+
+    if (_loadingDetail && _detail == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    final rows = _detail?.recent ?? const <Activity>[];
+
+    return RefreshIndicator(
+      onRefresh: _loadDetail,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+        children: [
+          _BalanceCard(category: c, funding: _detail?.funding),
+          const SizedBox(height: 20),
+          if (rows.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 48),
+              child: Column(children: [
+                Icon(Icons.receipt_long_outlined,
+                    size: 40, color: theme.colorScheme.onSurfaceVariant),
+                const SizedBox(height: 12),
+                Text('Nothing has moved here yet.',
+                    style: theme.textTheme.bodyMedium
+                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+              ]),
+            )
+          else
+            Card(
+              child: Column(children: [
+                for (var i = 0; i < rows.length; i++) ...[
+                  if (i > 0)
+                    const Divider(height: 1, indent: 16, endIndent: 16),
+                  _ActivityRow(activity: rows[i]),
+                ],
+              ]),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _settingsTab(BuildContext context) {
+    final theme = Theme.of(context);
+    return Form(
         key: _form,
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            if (c != null) ...[
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Row(
-                    children: [
-                      Text('Balance',
-                          style: theme.textTheme.labelLarge?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant)),
-                      const Spacer(),
-                      Text(Money.format(c.balanceCents),
-                          style: theme.textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.w600,
-                              color: c.overspent
-                                  ? theme.colorScheme.error
-                                  : null)),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-            ],
             TextFormField(
               controller: _name,
               textCapitalization: TextCapitalization.words,
@@ -464,31 +512,6 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen> {
                 label: const Text('Add a rule'),
               ),
 
-              if ((_detail?.recent ?? const []).isNotEmpty) ...[
-                const SizedBox(height: 28),
-                _SectionHeader(
-                  title: 'Recent activity',
-                  subtitle: 'What has actually moved in and out, which is '
-                      'the real test of whether the rules above are right.',
-                ),
-                for (final a in _detail!.recent.take(6))
-                  ListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    title: Text((a['merchant'] as String?) ??
-                        _sourceLabel(a['source'] as String?)),
-                    subtitle: Text((a['note'] as String?) ??
-                        _sourceLabel(a['source'] as String?)),
-                    trailing: Text(
-                      Money.formatSigned(a['amount_cents'] as int? ?? 0),
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: (a['amount_cents'] as int? ?? 0) < 0
-                            ? theme.colorScheme.error
-                            : null,
-                      ),
-                    ),
-                  ),
-              ],
             ],
 
             const SizedBox(height: 24),
@@ -501,7 +524,67 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen> {
                       child: CircularProgressIndicator(strokeWidth: 2))
                   : Text(_isNew ? 'Create' : 'Save'),
             ),
+          ],
+        ));
+  }
+}
 
+
+/// The headline for a category: what it holds, and how it is funded.
+class _BalanceCard extends StatelessWidget {
+  final Category category;
+  final Funding? funding;
+  const _BalanceCard({required this.category, this.funding});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final ratio = category.fillRatio;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Holds now',
+                style: theme.textTheme.labelLarge
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            const SizedBox(height: 4),
+            Text(
+              Money.format(category.balanceCents),
+              style: theme.textTheme.displaySmall?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: category.overspent ? theme.colorScheme.error : null,
+              ),
+            ),
+            if (category.targetCents != null) ...[
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: LinearProgressIndicator(
+                  value: ratio ?? 0,
+                  minHeight: 8,
+                  backgroundColor: theme.colorScheme.surfaceContainerHighest,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text('of ${Money.format(category.targetCents!)} when full',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            ],
+            if (funding != null) ...[
+              const SizedBox(height: 12),
+              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Icon(Icons.savings_outlined,
+                    size: 16, color: theme.colorScheme.onSurfaceVariant),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(funding!.summary,
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                ),
+              ]),
+            ],
           ],
         ),
       ),
@@ -509,17 +592,67 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen> {
   }
 }
 
+/// One ledger entry, with the direction made obvious.
+///
+/// The ledger stores a category-relative sign and the review queue stores
+/// a budget-relative one, which are opposites. `budgetSignedCents` does
+/// the translation so both screens colour and label money the same way.
+class _ActivityRow extends StatelessWidget {
+  final Activity activity;
+  const _ActivityRow({required this.activity});
 
-/// Turn a ledger `source` into something readable.
-String _sourceLabel(String? source) => switch (source) {
-      'paycheck_split' => 'From a paycheck',
-      'auto_categorise' => 'Filed automatically',
-      'manual' => 'Filed by hand',
-      'opening_balance' => 'Opening balance',
-      'reconcile' => 'Reconciliation',
-      null => '—',
-      _ => source.replaceAll('_', ' '),
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final signed = activity.budgetSignedCents;
+    final flow = MoneyFlow.ofSigned(signed);
+    final colour = switch (flow) {
+      MoneyFlow.out => theme.colorScheme.onSurface,
+      MoneyFlow.into => AppTheme.positive(context),
+      MoneyFlow.none => theme.colorScheme.onSurfaceVariant,
     };
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          Icon(flow.isInto ? Icons.south_west : Icons.arrow_outward,
+              size: 18, color: colour),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(activity.title,
+                    style: theme.textTheme.bodyLarge
+                        ?.copyWith(fontWeight: FontWeight.w500),
+                    overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 2),
+                Text(
+                  [activity.shortDate, activity.subtitle]
+                      .where((x) => x.isNotEmpty)
+                      .join(' · '),
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            MoneyFlowFormat.flow(signed),
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+              color: colour,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class _SectionHeader extends StatelessWidget {
   final String title;

@@ -51,3 +51,55 @@ class Money {
     return negative ? -cents : cents;
   }
 }
+
+/// Which way money moved, for a *budget-signed* amount.
+///
+/// The backend's convention is `positive == money OUT` (outflow - inflow),
+/// which is the opposite of what a person expects from a leading minus
+/// sign: a $20 refund arrives as `-2000` and would render as "-$20.00",
+/// reading like a loss. Every screen that shows one of these amounts goes
+/// through here so the convention is inverted in exactly one place.
+enum MoneyFlow {
+  /// Spending. Reduces the category it is filed against.
+  out,
+
+  /// A refund, or income. Increases the category.
+  into,
+
+  /// Exactly zero — rare, but it must not be coloured as either.
+  none;
+
+  static MoneyFlow ofSigned(int signedCents) => signedCents > 0
+      ? MoneyFlow.out
+      : signedCents < 0
+          ? MoneyFlow.into
+          : MoneyFlow.none;
+
+  bool get isOut => this == MoneyFlow.out;
+  bool get isInto => this == MoneyFlow.into;
+
+  /// "takes out of" / "adds to" — the phrase a category screen needs.
+  String get verb => switch (this) {
+        MoneyFlow.out => 'takes out of',
+        MoneyFlow.into => 'adds to',
+        MoneyFlow.none => 'does not change',
+      };
+
+  String get noun => switch (this) {
+        MoneyFlow.out => 'Spending',
+        MoneyFlow.into => 'Money in',
+        MoneyFlow.none => 'No change',
+      };
+}
+
+extension MoneyFlowFormat on Money {
+  /// A budget-signed amount rendered the way a person reads it:
+  /// spending as `−$14.50`, a refund as `+$20.00`.
+  static String flow(int signedCents) {
+    if (signedCents == 0) return Money.format(0);
+    final magnitude = Money.format(signedCents.abs());
+    // Minus for money leaving, plus for money arriving — the inverse of
+    // the stored sign.
+    return signedCents > 0 ? '−$magnitude' : '+$magnitude';
+  }
+}

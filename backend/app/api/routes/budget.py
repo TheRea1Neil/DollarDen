@@ -5,7 +5,7 @@ import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -1633,6 +1633,8 @@ def _describe_matcher(m: dict) -> str:
 @router.get("/categories/{category_id}/detail", response_model=CategoryDetailOut)
 def category_detail(
     category_id: str,
+    limit: int = Query(default=50, ge=1, le=200,
+                       description="how many recent ledger entries to return"),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> CategoryDetailOut:
@@ -1674,7 +1676,7 @@ def category_detail(
         .join(Transaction, Allocation.transaction_id == Transaction.id, isouter=True)
         .where(Allocation.user_id == user.id, Allocation.category_id == c.id)
         .order_by(Allocation.created_at.desc())
-        .limit(10)
+        .limit(limit)
     ).all()
     recent = [
         {
@@ -1683,8 +1685,12 @@ def category_detail(
             # manual...); `note` is the free-text reason when there is one.
             "source": a.source,
             "note": a.note,
-            "at": a.created_at.isoformat() if a.created_at else None,
+            # The transaction's own date when there is one -- a purchase
+            # from last Tuesday posted today should read as last Tuesday.
+            "at": (t.date.isoformat() if t is not None and t.date
+                   else (a.created_at.isoformat() if a.created_at else None)),
             "merchant": (t.merchant_name or t.name) if t is not None else None,
+            "transaction_id": str(a.transaction_id) if a.transaction_id else None,
         }
         for a, t in recent_rows
     ]
@@ -1795,4 +1801,4 @@ def set_funding(
                          order_index=r.order_index, rule_type=r.rule_type,
                          params=r.params, enabled=r.enabled))
     db.commit()
-    return category_detail(category_id, user, db)
+    return category_detail(category_id, 50, user, db)

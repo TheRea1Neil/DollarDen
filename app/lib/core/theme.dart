@@ -58,6 +58,14 @@ class AppTheme {
     );
   }
 
+  /// Money arriving — a refund or income. Deliberately the same green as
+  /// a healthy balance, since both mean "this category is better off".
+  /// Readable on both light and dark surfaces.
+  static Color positive(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.dark
+          ? const Color(0xFF6ABF69)
+          : healthy;
+
   /// Status colour for a category balance. Overspent beats low, because a
   /// negative balance is the more urgent fact.
   static Color statusColor(BuildContext context,

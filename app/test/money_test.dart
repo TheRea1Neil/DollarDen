@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nnf/core/money.dart';
 
 void main() {
+  _flowTests();
   group('Money.format', () {
     test('renders cents as currency', () {
       expect(Money.format(0), r'$0.00');
@@ -61,6 +62,30 @@ void main() {
       for (final cents in [0, 1, 99, 100, 1999, 123456, 100000000]) {
         expect(Money.parse(Money.format(cents)), cents, reason: 'failed at $cents');
       }
+    });
+  });
+}
+
+void _flowTests() {
+  group('MoneyFlow', () {
+    test('reads the backend sign the way a person does', () {
+      // Stored positive means money went OUT.
+      expect(MoneyFlowFormat.flow(1450), '−\$14.50');
+      // Stored negative is a refund arriving.
+      expect(MoneyFlowFormat.flow(-2000), '+\$20.00');
+      expect(MoneyFlowFormat.flow(0), '\$0.00');
+    });
+
+    test('classifies direction', () {
+      expect(MoneyFlow.ofSigned(1450), MoneyFlow.out);
+      expect(MoneyFlow.ofSigned(-2000), MoneyFlow.into);
+      expect(MoneyFlow.ofSigned(0), MoneyFlow.none);
+    });
+
+    test('a refund is never described as spending', () {
+      expect(MoneyFlow.ofSigned(-2000).verb, 'adds to');
+      expect(MoneyFlow.ofSigned(-2000).noun, 'Money in');
+      expect(MoneyFlow.ofSigned(1450).verb, 'takes out of');
     });
   });
 }

@@ -1815,6 +1815,16 @@ class PreviewIn(BaseModel):
     gross_cents: int = Field(gt=0)
     plan_id: str | None = None
 
+    # A hypothetical plan to try instead of the saved one. This is what
+    # makes the review step interactive: drag a category up, change a
+    # rule, and see the recalculation without committing anything. The
+    # order of this list IS the funding order.
+    rules: list[SplitRuleIn] | None = None
+
+    # Count a paycheck the user has not recorded yet against the
+    # transaction it came from, so reviewing it twice is not possible.
+    transaction_id: str | None = None
+
 
 class PreviewLine(BaseModel):
     category_id: str
@@ -1822,6 +1832,9 @@ class PreviewLine(BaseModel):
     order_index: int
     rule_type: str
     rule_summary: str
+    # The raw rule, so a preview row can open an editor without a second
+    # round trip to fetch what it already showed.
+    params: dict = Field(default_factory=dict)
     balance_cents: int        # before
     allocated_cents: int      # what this paycheck adds
     after_cents: int
@@ -1842,6 +1855,9 @@ class PreviewOut(BaseModel):
     # fails at silently, so it is named rather than left to be noticed.
     starved: list[str]
     warnings: list[str]
+    # False when `rules` was supplied: the numbers describe a plan that
+    # is not saved, and the app must not imply otherwise.
+    is_saved_plan: bool = True
 
 
 @router.post("/paychecks/preview", response_model=PreviewOut)
@@ -1865,29 +1881,52 @@ def preview_paycheck(
             "There is no active split plan to preview against.",
         )
 
-    rows = db.scalars(
-        select(SplitRule).where(SplitRule.plan_id == plan.id)
-        .order_by(SplitRule.order_index)
-    ).all()
-    if not rows:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, "That plan has no rules."
-        )
-
     cats = {
         c.id: c
         for c in db.scalars(
             select(Category).where(Category.user_id == user.id)
         ).all()
     }
-    balances = {str(r.category_id): cats[r.category_id].balance_cents
-                for r in rows if r.category_id in cats}
+
+    if body.rules is not None:
+        # A what-if. Validate ownership and structure exactly as a real
+        # save would, so the preview cannot show a plan that could never
+        # be saved.
+        if not body.rules:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "A plan needs at least one rule.",
+            )
+        for r in body.rules:
+            _own(db, Category, r.category_id, user)
+        proposed = [
+            SplitRuleIn(category_id=r.category_id, order_index=i + 1,
+                        rule_type=r.rule_type, params=r.params,
+                        enabled=r.enabled)
+            for i, r in enumerate(body.rules)
+        ]
+        _validate_plan(proposed)
+        shape = [(uuid.UUID(r.category_id), r.rule_type, r.params, r.enabled,
+                  i + 1) for i, r in enumerate(proposed)]
+    else:
+        rows = db.scalars(
+            select(SplitRule).where(SplitRule.plan_id == plan.id)
+            .order_by(SplitRule.order_index)
+        ).all()
+        if not rows:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "That plan has no rules."
+            )
+        shape = [(r.category_id, r.rule_type, r.params or {}, r.enabled,
+                  r.order_index) for r in rows]
+
+    balances = {str(cid): cats[cid].balance_cents
+                for cid, *_ in shape if cid in cats}
 
     engine = [
-        EngineRule(category_id=str(r.category_id), order_index=r.order_index,
-                   rule_type=RuleType(r.rule_type), params=r.params or {},
-                   enabled=r.enabled)
-        for r in rows
+        EngineRule(category_id=str(cid), order_index=idx,
+                   rule_type=RuleType(rt), params=params or {}, enabled=en)
+        for cid, rt, params, en, idx in shape
     ]
     try:
         res = apply_split(body.gross_cents, engine, dict(balances))
@@ -1901,20 +1940,19 @@ def preview_paycheck(
 
     lines: list[PreviewLine] = []
     starved: list[str] = []
-    for r in rows:
-        cid = str(r.category_id)
-        c = cats.get(r.category_id)
+    for cat_uuid, rule_type, params, _enabled, order_index in shape:
+        cid = str(cat_uuid)
+        c = cats.get(cat_uuid)
         if c is None:
             continue
         allocated = got.get(cid, 0)
-        if allocated == 0 and r.rule_type != RuleType.REMAINDER.value:
-            starved.append(c.name)
-        elif allocated == 0 and r.rule_type == RuleType.REMAINDER.value:
+        if allocated == 0:
             starved.append(c.name)
         lines.append(PreviewLine(
-            category_id=cid, name=c.name, order_index=r.order_index,
-            rule_type=r.rule_type,
-            rule_summary=_describe_rule(r.rule_type, r.params or {}),
+            category_id=cid, name=c.name, order_index=order_index,
+            rule_type=rule_type,
+            rule_summary=_describe_rule(rule_type, params or {}),
+            params=params or {},
             balance_cents=c.balance_cents, allocated_cents=allocated,
             after_cents=c.balance_cents + allocated,
             short_cents=short.get(cid, 0),
@@ -1944,6 +1982,7 @@ def preview_paycheck(
         total_allocated_cents=res.total_cents,
         leftover_cents=res.remaining_cents,
         starved=starved, warnings=warnings,
+        is_saved_plan=body.rules is None,
     )
 
 

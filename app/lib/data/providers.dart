@@ -86,6 +86,17 @@ final categoriesProvider = FutureProvider<List<Category>>((ref) async {
 });
 
 
+/// Deposits that look like income and have not been recorded yet.
+///
+/// Drives the prompt on the budget screen. Deliberately a proposal, not
+/// an automatic split: an unrecognised large deposit — a tax refund,
+/// say — must never be divided up as though it were a paycheck.
+final unreviewedPaychecksProvider =
+    FutureProvider<List<Map<String, dynamic>>>((ref) async {
+  final all = await ref.watch(apiProvider).paycheckCandidates();
+  return [for (final c in all) if (c['already_recorded'] != true) c];
+});
+
 final plaidItemsProvider = FutureProvider<List<PlaidItem>>((ref) async {
   ref.watch(authStateProvider);
   return ref.watch(apiProvider).plaidItems();

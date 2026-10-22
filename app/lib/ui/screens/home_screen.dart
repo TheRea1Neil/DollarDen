@@ -103,6 +103,7 @@ class HomeScreen extends ConsumerWidget {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
             children: [
+              _PaycheckPrompt(),
               _TotalCard(summary: s),
               if (s.ledgerDrift.isNotEmpty) ...[
                 const SizedBox(height: 12),
@@ -382,6 +383,83 @@ class _ReorderNotice extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// "You got paid — review it."
+///
+/// An unrecorded deposit that looks like income. Shown rather than
+/// acted on: splitting a tax refund as though it were a paycheck would
+/// be worse than making the user tap once.
+class _PaycheckPrompt extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final pending = ref.watch(unreviewedPaychecksProvider);
+
+    return pending.maybeWhen(
+      data: (list) {
+        if (list.isEmpty) return const SizedBox.shrink();
+        final first = list.first;
+        final cents = first['inflow_cents'] as int? ?? 0;
+        final label = (first['merchant_name'] as String?) ??
+            (first['name'] as String? ?? 'Deposit');
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Card(
+            color: theme.colorScheme.primaryContainer,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: () async {
+                await Navigator.of(context).push(
+                  MaterialPageRoute<bool>(
+                    builder: (_) => PaycheckScreen(
+                      initialCents: cents,
+                      sourceLabel: '$label · ${first['date']}',
+                    ),
+                  ),
+                );
+                ref.invalidate(unreviewedPaychecksProvider);
+              },
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(children: [
+                  Icon(Icons.payments_outlined,
+                      color: theme.colorScheme.onPrimaryContainer),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          list.length == 1
+                              ? 'Review your paycheck'
+                              : '${list.length} paychecks to review',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                            color: theme.colorScheme.onPrimaryContainer,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${Money.format(cents)} from $label — see how it '
+                          'splits before anything moves',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onPrimaryContainer),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(Icons.chevron_right,
+                      color: theme.colorScheme.onPrimaryContainer),
+                ]),
+              ),
+            ),
+          ),
+        );
+      },
+      orElse: () => const SizedBox.shrink(),
     );
   }
 }

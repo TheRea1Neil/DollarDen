@@ -818,6 +818,7 @@ class PreviewLine {
   final int orderIndex;
   final String ruleType;
   final String ruleSummary;
+  final Map<String, dynamic> params;
   final int balanceCents;
   final int allocatedCents;
   final int afterCents;
@@ -829,6 +830,7 @@ class PreviewLine {
     required this.orderIndex,
     required this.ruleType,
     required this.ruleSummary,
+    required this.params,
     required this.balanceCents,
     required this.allocatedCents,
     required this.afterCents,
@@ -841,6 +843,7 @@ class PreviewLine {
         orderIndex: j['order_index'] as int? ?? 0,
         ruleType: j['rule_type'] as String? ?? '',
         ruleSummary: j['rule_summary'] as String? ?? '',
+        params: (j['params'] as Map?)?.cast<String, dynamic>() ?? {},
         balanceCents: j['balance_cents'] as int? ?? 0,
         allocatedCents: j['allocated_cents'] as int? ?? 0,
         afterCents: j['after_cents'] as int? ?? 0,
@@ -848,6 +851,28 @@ class PreviewLine {
       );
 
   bool get gotNothing => allocatedCents == 0;
+
+  /// The shape the preview endpoint wants back when proposing a change.
+  Map<String, dynamic> toRuleJson(int orderIndex) => {
+        'category_id': categoryId,
+        'order_index': orderIndex,
+        'rule_type': ruleType,
+        'params': params,
+      };
+
+  PreviewLine copyWithRule(String newType, Map<String, dynamic> newParams) =>
+      PreviewLine(
+        categoryId: categoryId,
+        name: name,
+        orderIndex: orderIndex,
+        ruleType: newType,
+        ruleSummary: ruleSummary,
+        params: newParams,
+        balanceCents: balanceCents,
+        allocatedCents: allocatedCents,
+        afterCents: afterCents,
+        shortCents: shortCents,
+      );
 }
 
 /// What a paycheck would do, before it does it.
@@ -861,6 +886,10 @@ class PaycheckPreview {
   final List<String> starved;
   final List<String> warnings;
 
+  /// False when these numbers come from an unsaved what-if. The screen
+  /// must not let that read as the real plan.
+  final bool isSavedPlan;
+
   const PaycheckPreview({
     required this.grossCents,
     required this.planId,
@@ -870,6 +899,7 @@ class PaycheckPreview {
     required this.leftoverCents,
     required this.starved,
     required this.warnings,
+    this.isSavedPlan = true,
   });
 
   factory PaycheckPreview.fromJson(Map<String, dynamic> j) => PaycheckPreview(
@@ -883,6 +913,7 @@ class PaycheckPreview {
         leftoverCents: j['leftover_cents'] as int? ?? 0,
         starved: ((j['starved'] as List?) ?? const []).cast<String>(),
         warnings: ((j['warnings'] as List?) ?? const []).cast<String>(),
+        isSavedPlan: j['is_saved_plan'] as bool? ?? true,
       );
 }
 

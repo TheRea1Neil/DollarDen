@@ -1062,6 +1062,117 @@ class TestPaycheckPreview:
                            json={"gross_cents": 200000, "plan_id": plan_id},
                            headers=hb).status_code == 404
 
+    def test_a_what_if_reorder_recalculates_without_saving(self, client) -> None:
+        """Dragging a category in the review must not touch the plan."""
+        h, c = self._plan(client)
+        saved = client.get("/api/budget/plans", headers=h).json()[0]
+
+        # Savings (position 3, refills to $5,000) starves Fun below it.
+        base = client.post("/api/budget/paychecks/preview",
+                           json={"gross_cents": 200000}, headers=h).json()
+        assert "Fun" in base["starved"] and base["is_saved_plan"] is True
+
+        # Move Fun above Savings.
+        reordered = [
+            {"category_id": c["tithe"]["id"], "order_index": 1,
+             "rule_type": "percent", "params": {"rate": "0.10", "of": "gross"}},
+            {"category_id": c["rent"]["id"], "order_index": 2,
+             "rule_type": "fixed", "params": {"amount_cents": 35000}},
+            {"category_id": c["fun"]["id"], "order_index": 3,
+             "rule_type": "refill_to", "params": {"target_cents": 5000}},
+            {"category_id": c["save"]["id"], "order_index": 4,
+             "rule_type": "refill_to", "params": {"target_cents": 500000}},
+            {"category_id": c["left"]["id"], "order_index": 5,
+             "rule_type": "remainder", "params": {}},
+        ]
+        what_if = client.post("/api/budget/paychecks/preview",
+                              json={"gross_cents": 200000, "rules": reordered},
+                              headers=h).json()
+        assert what_if["is_saved_plan"] is False
+        fun = next(l for l in what_if["lines"] if l["name"] == "Fun")
+        assert fun["allocated_cents"] == 5000
+        assert "Fun" not in what_if["starved"]
+        assert what_if["total_allocated_cents"] + what_if["leftover_cents"] == 200000
+
+        # And the saved plan is untouched.
+        after = client.get("/api/budget/plans", headers=h).json()[0]
+        assert after["version"] == saved["version"]
+        assert [r["category_id"] for r in after["rules"]] == \
+               [r["category_id"] for r in saved["rules"]]
+
+    def test_a_what_if_rule_change_recalculates(self, client) -> None:
+        """refill_to $150 vs a flat $150 every paycheck are different things."""
+        h = _auth(client)
+        health = _cat(client, h, "Health", kind="obligation")
+        left = _cat(client, h, "Leftover", kind="savings_bucket")
+        client.post("/api/budget/plans", json={"name": "S", "rules": [
+            {"category_id": health["id"], "order_index": 1,
+             "rule_type": "refill_to", "params": {"target_cents": 15000}},
+            {"category_id": left["id"], "order_index": 2,
+             "rule_type": "remainder", "params": {}},
+        ]}, headers=h)
+        client.post("/api/budget/paychecks",
+                    json={"gross_cents": 200000, "apply": True}, headers=h)
+        # Health is now full at $150, so a refill adds nothing.
+        base = client.post("/api/budget/paychecks/preview",
+                           json={"gross_cents": 200000}, headers=h).json()
+        assert next(l for l in base["lines"]
+                    if l["name"] == "Health")["allocated_cents"] == 0
+
+        # As a fixed rule it adds $150 regardless.
+        what_if = client.post("/api/budget/paychecks/preview", json={
+            "gross_cents": 200000,
+            "rules": [
+                {"category_id": health["id"], "order_index": 1,
+                 "rule_type": "fixed", "params": {"amount_cents": 15000}},
+                {"category_id": left["id"], "order_index": 2,
+                 "rule_type": "remainder", "params": {}},
+            ],
+        }, headers=h).json()
+        line = next(l for l in what_if["lines"] if l["name"] == "Health")
+        assert line["allocated_cents"] == 15000
+        assert "$150.00 every paycheck" in line["rule_summary"]
+
+    def test_an_unsaveable_what_if_is_refused(self, client) -> None:
+        """The preview must not show a plan that could never be saved."""
+        h, c = self._plan(client)
+        r = client.post("/api/budget/paychecks/preview", json={
+            "gross_cents": 200000,
+            "rules": [
+                {"category_id": c["left"]["id"], "order_index": 1,
+                 "rule_type": "remainder", "params": {}},
+                {"category_id": c["rent"]["id"], "order_index": 2,
+                 "rule_type": "fixed", "params": {"amount_cents": 35000}},
+            ],
+        }, headers=h)
+        assert r.status_code == 422
+        assert "remainder" in r.json()["detail"].lower()
+
+    def test_a_what_if_cannot_reach_another_users_category(self, client) -> None:
+        h, c = self._plan(client)
+        hb = _auth(client)
+        mine = _cat(client, hb, "Mine")
+        client.post("/api/budget/plans", json={"name": "S", "rules": [
+            {"category_id": mine["id"], "order_index": 1,
+             "rule_type": "remainder", "params": {}},
+        ]}, headers=hb)
+        r = client.post("/api/budget/paychecks/preview", json={
+            "gross_cents": 200000,
+            "rules": [
+                {"category_id": c["rent"]["id"], "order_index": 1,
+                 "rule_type": "fixed", "params": {"amount_cents": 35000}},
+                {"category_id": mine["id"], "order_index": 2,
+                 "rule_type": "remainder", "params": {}},
+            ],
+        }, headers=hb)
+        assert r.status_code == 404
+
+    def test_preview_exposes_raw_params_for_editing(self, client) -> None:
+        h, c = self._plan(client)
+        pv = client.post("/api/budget/paychecks/preview",
+                         json={"gross_cents": 200000}, headers=h).json()
+        save = next(l for l in pv["lines"] if l["name"] == "Savings")
+        assert save["params"]["target_cents"] == 500000
 
 @requires_db
 class TestTransactionHistory:

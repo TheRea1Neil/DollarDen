@@ -489,6 +489,15 @@ class ApiClient {
     return (r.data as Map).cast<String, dynamic>();
   }
 
+  /// Save a reviewed set of rules as a new plan version.
+  Future<Map<String, dynamic>> revisePlan(
+      String planId, String name, List<Map<String, dynamic>> rules) async {
+    final r = await _withRetry((o) => _dio.put('/budget/plans/$planId',
+        data: {'name': name, 'rules': rules}, options: o));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as Map).cast<String, dynamic>();
+  }
+
   Future<List<Map<String, dynamic>>> plans() async {
     final r = await _withRetry((o) => _dio.get('/budget/plans', options: o));
     if (r.statusCode != 200) _fail(r);
@@ -518,9 +527,18 @@ class ApiClient {
   }
 
   /// What a paycheck would do. Writes nothing.
-  Future<PaycheckPreview> previewPaycheck(int grossCents, {String? planId}) async {
+  ///
+  /// Pass [rules] to try a different funding order or a changed rule
+  /// without saving anything — the order of the list IS the funding
+  /// order.
+  Future<PaycheckPreview> previewPaycheck(int grossCents,
+      {String? planId, List<Map<String, dynamic>>? rules}) async {
     final r = await _withRetry((o) => _dio.post('/budget/paychecks/preview',
-        data: {'gross_cents': grossCents, if (planId != null) 'plan_id': planId},
+        data: {
+          'gross_cents': grossCents,
+          if (planId != null) 'plan_id': planId,
+          if (rules != null) 'rules': rules,
+        },
         options: o));
     if (r.statusCode != 200) _fail(r);
     return PaycheckPreview.fromJson((r.data as Map).cast<String, dynamic>());
@@ -580,6 +598,16 @@ class ApiClient {
         }, options: o));
     if (r.statusCode != 200) _fail(r);
     return (r.data as Map).cast<String, dynamic>();
+  }
+
+  /// Deposits that look like income and have not been recorded yet.
+  Future<List<Map<String, dynamic>>> paycheckCandidates() async {
+    final r = await _withRetry(
+        (o) => _dio.get('/budget/paychecks/candidates', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as List)
+        .map((e) => (e as Map).cast<String, dynamic>())
+        .toList();
   }
 
   Future<List<Map<String, dynamic>>> accounts() async {

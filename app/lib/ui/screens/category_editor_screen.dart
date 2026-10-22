@@ -7,6 +7,7 @@ import '../../data/api_client.dart';
 import '../../data/providers.dart';
 import '../../domain/models.dart';
 import '../widgets/funding_editor.dart';
+import 'history_screen.dart';
 import 'refine_category_screen.dart';
 
 /// Create or edit one category by hand.
@@ -343,7 +344,7 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
                         ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
               ]),
             )
-          else
+          else ...[
             Card(
               child: Column(children: [
                 for (var i = 0; i < rows.length; i++) ...[
@@ -353,6 +354,20 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
                 ],
               ]),
             ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => HistoryScreen(
+                    categoryId: c.id,
+                    categoryName: c.name,
+                  ),
+                ),
+              ),
+              icon: const Icon(Icons.receipt_long_outlined, size: 18),
+              label: const Text('All transactions for this category'),
+            ),
+          ],
         ],
       ),
     );

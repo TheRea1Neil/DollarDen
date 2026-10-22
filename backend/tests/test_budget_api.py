@@ -951,3 +951,249 @@ class TestSetFunding:
                        headers=h)
         assert r.status_code == 409
         assert "no active split plan" in r.json()["detail"]
+
+
+@requires_db
+class TestPaycheckPreview:
+    """Showing what a paycheck would do must not do any of it."""
+
+    def _plan(self, client: TestClient):
+        h = _auth(client)
+        tithe = _cat(client, h, "Tithing", kind="obligation")
+        rent = _cat(client, h, "Rent", kind="obligation")
+        save = _cat(client, h, "Savings", kind="savings_bucket")
+        fun = _cat(client, h, "Fun")
+        left = _cat(client, h, "Leftover", kind="savings_bucket")
+        assert client.post("/api/budget/plans", json={"name": "S", "rules": [
+            {"category_id": tithe["id"], "order_index": 1, "rule_type": "percent",
+             "params": {"rate": "0.10", "of": "gross"}},
+            {"category_id": rent["id"], "order_index": 2, "rule_type": "fixed",
+             "params": {"amount_cents": 35000}},
+            # A big refill target deliberately placed above the small ones.
+            {"category_id": save["id"], "order_index": 3, "rule_type": "refill_to",
+             "params": {"target_cents": 500000}},
+            {"category_id": fun["id"], "order_index": 4, "rule_type": "refill_to",
+             "params": {"target_cents": 5000}},
+            {"category_id": left["id"], "order_index": 5,
+             "rule_type": "remainder", "params": {}},
+        ]}, headers=h).status_code == 201
+        return h, {"tithe": tithe, "rent": rent, "save": save,
+                   "fun": fun, "left": left}
+
+    def test_preview_writes_nothing(self, client: TestClient) -> None:
+        h, c = self._plan(client)
+        before = client.get("/api/budget/summary", headers=h).json()
+
+        r = client.post("/api/budget/paychecks/preview",
+                        json={"gross_cents": 200000}, headers=h)
+        assert r.status_code == 200, r.text
+
+        after = client.get("/api/budget/summary", headers=h).json()
+        assert [x["balance_cents"] for x in after["categories"]] == \
+               [x["balance_cents"] for x in before["categories"]]
+        # And no paycheck row was created either.
+        assert client.get("/api/budget/paychecks/candidates",
+                          headers=h).status_code == 200
+
+    def test_preview_matches_what_applying_actually_does(self, client) -> None:
+        """A preview that disagrees with reality is worse than none."""
+        h, c = self._plan(client)
+        pv = client.post("/api/budget/paychecks/preview",
+                         json={"gross_cents": 200000}, headers=h).json()
+        predicted = {ln["name"]: ln["after_cents"] for ln in pv["lines"]}
+
+        assert client.post("/api/budget/paychecks",
+                           json={"gross_cents": 200000, "apply": True},
+                           headers=h).status_code == 201
+        actual = {x["name"]: x["balance_cents"]
+                  for x in client.get("/api/budget/summary", headers=h).json()["categories"]}
+        for name, after in predicted.items():
+            assert actual[name] == after, f"{name}: predicted {after}, got {actual[name]}"
+
+    def test_it_conserves_the_paycheck(self, client: TestClient) -> None:
+        h, c = self._plan(client)
+        pv = client.post("/api/budget/paychecks/preview",
+                         json={"gross_cents": 200000}, headers=h).json()
+        assert pv["total_allocated_cents"] + pv["leftover_cents"] == 200000
+
+    def test_starvation_is_named_not_left_to_be_noticed(self, client) -> None:
+        h, c = self._plan(client)
+        pv = client.post("/api/budget/paychecks/preview",
+                         json={"gross_cents": 200000}, headers=h).json()
+        # Savings refills to $5,000 from position 3, so Fun and Leftover
+        # below it get nothing.
+        assert "Fun" in pv["starved"] and "Leftover" in pv["starved"]
+        assert pv["warnings"], "starvation happened but was not reported"
+        assert "Savings" in pv["warnings"][0], pv["warnings"]
+
+    def test_a_healthy_plan_warns_about_nothing(self, client) -> None:
+        h = _auth(client)
+        rent = _cat(client, h, "Rent", kind="obligation")
+        left = _cat(client, h, "Leftover", kind="savings_bucket")
+        client.post("/api/budget/plans", json={"name": "S", "rules": [
+            {"category_id": rent["id"], "order_index": 1, "rule_type": "fixed",
+             "params": {"amount_cents": 35000}},
+            {"category_id": left["id"], "order_index": 2,
+             "rule_type": "remainder", "params": {}},
+        ]}, headers=h)
+        pv = client.post("/api/budget/paychecks/preview",
+                         json={"gross_cents": 200000}, headers=h).json()
+        assert pv["starved"] == [] and pv["warnings"] == []
+
+    def test_rule_summaries_come_back_in_plain_english(self, client) -> None:
+        h, c = self._plan(client)
+        pv = client.post("/api/budget/paychecks/preview",
+                         json={"gross_cents": 200000}, headers=h).json()
+        tithe = next(ln for ln in pv["lines"] if ln["name"] == "Tithing")
+        assert "10% of gross pay" in tithe["rule_summary"]
+
+    def test_without_a_plan_it_says_so(self, client: TestClient) -> None:
+        h = _auth(client)
+        _cat(client, h, "Food")
+        r = client.post("/api/budget/paychecks/preview",
+                        json={"gross_cents": 200000}, headers=h)
+        assert r.status_code == 409
+
+    def test_another_users_plan_is_404(self, client: TestClient) -> None:
+        h, c = self._plan(client)
+        plan_id = client.get("/api/budget/plans", headers=h).json()[0]["id"]
+        hb = _auth(client)
+        assert client.post("/api/budget/paychecks/preview",
+                           json={"gross_cents": 200000, "plan_id": plan_id},
+                           headers=hb).status_code == 404
+
+
+@requires_db
+class TestTransactionHistory:
+    """Every transaction and where its money actually went."""
+
+    def _seeded(self, client: TestClient):
+        """A user with synced transactions, via the sandbox fixture path."""
+        from datetime import date as _date
+
+        from app.db.models import Account, PlaidItem, Transaction
+        from app.db.session import SessionLocal
+
+        h = _auth(client)
+        me = client.get("/api/auth/me", headers=h).json()
+        uid = uuid.UUID(me["id"])
+        food = _cat(client, h, "Food")
+        fun = _cat(client, h, "Fun")
+
+        with SessionLocal() as db:
+            item = PlaidItem(user_id=uid, plaid_item_id=f"it-{uuid.uuid4().hex[:8]}",
+                             institution_name="Test Bank",
+                             access_token_encrypted=b"x", sync_cursor=None)
+            db.add(item)
+            db.flush()
+            acct = Account(user_id=uid, item_id=item.id,
+                           plaid_account_id=f"ac-{uuid.uuid4().hex[:8]}",
+                           name="Checking", type="depository", subtype="checking",
+                           current_cents=100000, is_tracked=True)
+            db.add(acct)
+            db.flush()
+
+            def txn(name, out=0, inn=0, treatment="spend", merchant=None):
+                t = Transaction(
+                    user_id=uid, account_id=acct.id,
+                    plaid_transaction_id=f"tx-{uuid.uuid4().hex[:10]}",
+                    outflow_cents=out, inflow_cents=inn,
+                    date=_date(2026, 10, 20), name=name,
+                    merchant_name=merchant, treatment=treatment,
+                )
+                db.add(t)
+                db.flush()
+                return t
+
+            spent = txn("KROGER #512", out=8320, merchant="Kroger")
+            refund = txn("KROGER REFUND", inn=1200, merchant="Kroger")
+            card = txn("CREDIT CARD 3333 PAYMENT", out=50000,
+                       treatment="card_payment")
+            unreviewed = txn("MYSTERY LLC", out=999, merchant="Mystery")
+            db.commit()
+            ids = {"spent": str(spent.id), "refund": str(refund.id),
+                   "card": str(card.id), "unreviewed": str(unreviewed.id)}
+
+        # File the two that have decisions.
+        from app.budget.ledger import Entry, post
+        with SessionLocal() as db:
+            post(db, uid, [Entry(uuid.UUID(food["id"]), -8320, "manual", None, "x")],
+                 transaction_id=uuid.UUID(ids["spent"]))
+            post(db, uid, [Entry(uuid.UUID(food["id"]), 1200, "manual", None, "x")],
+                 transaction_id=uuid.UUID(ids["refund"]))
+            db.commit()
+        return h, ids, {"food": food, "fun": fun}
+
+    def test_lists_everything_with_where_it_went(self, client: TestClient) -> None:
+        h, ids, c = self._seeded(client)
+        r = client.get("/api/budget/transactions", headers=h)
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["total"] == 4
+        by_id = {i["id"]: i for i in out["items"]}
+
+        spent = by_id[ids["spent"]]
+        assert spent["amount_cents"] == 8320          # positive == out
+        assert spent["splits"][0]["category_name"] == "Food"
+        assert spent["splits"][0]["amount_cents"] == 8320
+
+    def test_a_refund_reads_as_money_in(self, client: TestClient) -> None:
+        """The whole point: in and out must be distinguishable."""
+        h, ids, c = self._seeded(client)
+        out = client.get("/api/budget/transactions", headers=h).json()
+        refund = next(i for i in out["items"] if i["id"] == ids["refund"])
+        assert refund["amount_cents"] == -1200        # negative == in
+        assert refund["splits"][0]["amount_cents"] == -1200
+        assert refund["splits"][0]["category_name"] == "Food"
+
+    def test_excluded_is_distinct_from_awaiting_review(self, client) -> None:
+        h, ids, c = self._seeded(client)
+        out = client.get("/api/budget/transactions", headers=h).json()
+        by_id = {i["id"]: i for i in out["items"]}
+
+        card = by_id[ids["card"]]
+        assert card["excluded"] and not card["awaiting_review"]
+        assert card["treatment_label"] == "Credit card payment"
+
+        mystery = by_id[ids["unreviewed"]]
+        assert mystery["awaiting_review"] and not mystery["excluded"]
+        assert mystery["splits"] == []
+
+    def test_filter_by_category(self, client: TestClient) -> None:
+        h, ids, c = self._seeded(client)
+        out = client.get(f"/api/budget/transactions?category_id={c['food']['id']}",
+                         headers=h).json()
+        assert {i["id"] for i in out["items"]} == {ids["spent"], ids["refund"]}
+
+        empty = client.get(f"/api/budget/transactions?category_id={c['fun']['id']}",
+                           headers=h).json()
+        assert empty["items"] == [] and empty["total"] == 0
+
+    def test_filter_by_treatment_and_search(self, client: TestClient) -> None:
+        h, ids, c = self._seeded(client)
+        cards = client.get("/api/budget/transactions?treatment=card_payment",
+                           headers=h).json()
+        assert [i["id"] for i in cards["items"]] == [ids["card"]]
+
+        kroger = client.get("/api/budget/transactions?search=kroger",
+                            headers=h).json()
+        assert len(kroger["items"]) == 2
+
+    def test_bad_treatment_rejected(self, client: TestClient) -> None:
+        h, ids, c = self._seeded(client)
+        assert client.get("/api/budget/transactions?treatment=nonsense",
+                          headers=h).status_code == 422
+
+    def test_pagination_reports_more(self, client: TestClient) -> None:
+        h, ids, c = self._seeded(client)
+        page = client.get("/api/budget/transactions?limit=2", headers=h).json()
+        assert len(page["items"]) == 2 and page["total"] == 4
+        assert page["has_more"] is True
+        last = client.get("/api/budget/transactions?limit=2&offset=2",
+                          headers=h).json()
+        assert last["has_more"] is False
+
+    def test_another_users_transactions_are_invisible(self, client) -> None:
+        h, ids, c = self._seeded(client)
+        hb = _auth(client)
+        assert client.get("/api/budget/transactions", headers=hb).json()["total"] == 0

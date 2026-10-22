@@ -1802,3 +1802,286 @@ def set_funding(
                          params=r.params, enabled=r.enabled))
     db.commit()
     return category_detail(category_id, 50, user, db)
+
+
+# --------------------------------------------------------------------------- #
+# Previewing a paycheck
+#
+# `apply=false` on POST /paychecks still writes a paycheck row, so it is
+# not something you can offer as "show me what this would do". This is a
+# pure dry run: it touches nothing.
+# --------------------------------------------------------------------------- #
+class PreviewIn(BaseModel):
+    gross_cents: int = Field(gt=0)
+    plan_id: str | None = None
+
+
+class PreviewLine(BaseModel):
+    category_id: str
+    name: str
+    order_index: int
+    rule_type: str
+    rule_summary: str
+    balance_cents: int        # before
+    allocated_cents: int      # what this paycheck adds
+    after_cents: int
+    # How much the rule asked for but could not get, because the money
+    # ran out before its turn.
+    short_cents: int = 0
+
+
+class PreviewOut(BaseModel):
+    gross_cents: int
+    plan_id: str
+    plan_version: int
+    lines: list[PreviewLine]
+    total_allocated_cents: int
+    leftover_cents: int
+    # Categories that got nothing at all because something above them
+    # consumed the paycheck first. This is the failure mode a split plan
+    # fails at silently, so it is named rather than left to be noticed.
+    starved: list[str]
+    warnings: list[str]
+
+
+@router.post("/paychecks/preview", response_model=PreviewOut)
+def preview_paycheck(
+    body: PreviewIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> PreviewOut:
+    """Show what a paycheck would do. Writes nothing."""
+    if body.plan_id:
+        plan = _own(db, SplitPlan, body.plan_id, user)
+    else:
+        plan = db.scalars(
+            select(SplitPlan).where(
+                SplitPlan.user_id == user.id, SplitPlan.is_active.is_(True)
+            )
+        ).first()
+    if plan is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "There is no active split plan to preview against.",
+        )
+
+    rows = db.scalars(
+        select(SplitRule).where(SplitRule.plan_id == plan.id)
+        .order_by(SplitRule.order_index)
+    ).all()
+    if not rows:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "That plan has no rules."
+        )
+
+    cats = {
+        c.id: c
+        for c in db.scalars(
+            select(Category).where(Category.user_id == user.id)
+        ).all()
+    }
+    balances = {str(r.category_id): cats[r.category_id].balance_cents
+                for r in rows if r.category_id in cats}
+
+    engine = [
+        EngineRule(category_id=str(r.category_id), order_index=r.order_index,
+                   rule_type=RuleType(r.rule_type), params=r.params or {},
+                   enabled=r.enabled)
+        for r in rows
+    ]
+    try:
+        res = apply_split(body.gross_cents, engine, dict(balances))
+    except SplitPlanError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+    got: dict[str, int] = {}
+    for a in res.allocations:
+        got[a.category_id] = got.get(a.category_id, 0) + a.amount_cents
+    short = {cid: amt for cid, amt in res.unfunded}
+
+    lines: list[PreviewLine] = []
+    starved: list[str] = []
+    for r in rows:
+        cid = str(r.category_id)
+        c = cats.get(r.category_id)
+        if c is None:
+            continue
+        allocated = got.get(cid, 0)
+        if allocated == 0 and r.rule_type != RuleType.REMAINDER.value:
+            starved.append(c.name)
+        elif allocated == 0 and r.rule_type == RuleType.REMAINDER.value:
+            starved.append(c.name)
+        lines.append(PreviewLine(
+            category_id=cid, name=c.name, order_index=r.order_index,
+            rule_type=r.rule_type,
+            rule_summary=_describe_rule(r.rule_type, r.params or {}),
+            balance_cents=c.balance_cents, allocated_cents=allocated,
+            after_cents=c.balance_cents + allocated,
+            short_cents=short.get(cid, 0),
+        ))
+
+    warnings: list[str] = []
+    if starved:
+        # Name the culprit, not just the victims: the useful fact is which
+        # rule ate the paycheck, and that is the last one that got money.
+        funded = [ln for ln in lines if ln.allocated_cents > 0]
+        culprit = funded[-1].name if funded else None
+        warnings.append(
+            f"{len(starved)} categor{'y' if len(starved) == 1 else 'ies'} "
+            f"got nothing: {', '.join(starved)}."
+            + (f" {culprit} is last to be funded and took "
+               f"${funded[-1].allocated_cents / 100:,.2f}, leaving nothing "
+               f"for the ones below it." if culprit else "")
+        )
+    if res.remaining_cents > 0:
+        warnings.append(
+            f"${res.remaining_cents / 100:,.2f} was not allocated at all."
+        )
+
+    return PreviewOut(
+        gross_cents=body.gross_cents, plan_id=str(plan.id),
+        plan_version=plan.version, lines=lines,
+        total_allocated_cents=res.total_cents,
+        leftover_cents=res.remaining_cents,
+        starved=starved, warnings=warnings,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Transaction history
+#
+# Every transaction with where its money actually went. The review queue
+# only shows what still needs a decision; this shows the record.
+# --------------------------------------------------------------------------- #
+class HistorySplit(BaseModel):
+    category_id: str
+    category_name: str
+    # Signed from the BUDGET's point of view, matching the review queue:
+    # positive means this category was reduced. The ledger stores the
+    # opposite sign, and it is inverted here so one convention reaches
+    # the app.
+    amount_cents: int
+
+
+class HistoryItem(BaseModel):
+    id: str
+    date: str
+    name: str
+    merchant_name: str | None
+    account_name: str | None
+    amount_cents: int          # budget-signed: positive == money out
+    pending: bool
+    treatment: str
+    treatment_label: str
+    splits: list[HistorySplit]
+    # True when nothing was allocated and nothing was meant to be --
+    # a card payment or transfer. Distinguishes "deliberately excluded"
+    # from "still waiting on you".
+    excluded: bool
+    awaiting_review: bool
+
+
+class HistoryOut(BaseModel):
+    items: list[HistoryItem]
+    total: int
+    has_more: bool
+
+
+_TREATMENT_LABELS = {
+    "spend": "Spending",
+    "card_payment": "Credit card payment",
+    "transfer": "Transfer between accounts",
+    "ignored": "Ignored",
+}
+
+
+@router.get("/transactions", response_model=HistoryOut)
+def transaction_history(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    category_id: str | None = Query(default=None,
+                                    description="only transactions touching this category"),
+    treatment: str | None = Query(default=None),
+    search: str | None = Query(default=None, description="merchant or name contains"),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> HistoryOut:
+    q = select(Transaction).where(
+        Transaction.user_id == user.id, Transaction.removed_at.is_(None)
+    )
+    if treatment:
+        if treatment not in _TREATMENT_LABELS:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"treatment must be one of {sorted(_TREATMENT_LABELS)}",
+            )
+        q = q.where(Transaction.treatment == treatment)
+    if search:
+        like = f"%{search.lower()}%"
+        q = q.where(
+            func.lower(func.coalesce(Transaction.merchant_name, Transaction.name)).like(like)
+            | func.lower(Transaction.name).like(like)
+        )
+    if category_id:
+        cat = _own(db, Category, category_id, user)
+        q = q.where(
+            Transaction.id.in_(
+                select(Allocation.transaction_id).where(
+                    Allocation.user_id == user.id,
+                    Allocation.category_id == cat.id,
+                    Allocation.transaction_id.is_not(None),
+                )
+            )
+        )
+
+    total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
+
+    rows = db.scalars(
+        q.order_by(Transaction.date.desc(), Transaction.created_at.desc())
+        .offset(offset).limit(limit)
+    ).all()
+    if not rows:
+        return HistoryOut(items=[], total=total, has_more=False)
+
+    ids = [t.id for t in rows]
+    # One query for every split on this page rather than one per row.
+    split_rows = db.execute(
+        select(Allocation.transaction_id, Allocation.category_id,
+               Category.name, func.sum(Allocation.amount_cents))
+        .join(Category, Category.id == Allocation.category_id)
+        .where(Allocation.user_id == user.id, Allocation.transaction_id.in_(ids))
+        .group_by(Allocation.transaction_id, Allocation.category_id, Category.name)
+    ).all()
+    by_txn: dict[uuid.UUID, list[HistorySplit]] = {}
+    for txn_id, cat_id, cat_name, amount in split_rows:
+        by_txn.setdefault(txn_id, []).append(HistorySplit(
+            category_id=str(cat_id), category_name=cat_name,
+            # Invert: a category losing money is spending.
+            amount_cents=-int(amount or 0),
+        ))
+
+    accounts = {
+        a.id: a for a in db.scalars(
+            select(Account).where(Account.user_id == user.id)
+        ).all()
+    }
+
+    items: list[HistoryItem] = []
+    for t in rows:
+        splits = by_txn.get(t.id, [])
+        acct = accounts.get(t.account_id)
+        budgeted = Treatment(t.treatment).affects_budget
+        items.append(HistoryItem(
+            id=str(t.id), date=t.date.isoformat(), name=t.name,
+            merchant_name=t.merchant_name,
+            account_name=(acct.name if acct else None),
+            amount_cents=t.outflow_cents - t.inflow_cents,
+            pending=t.pending, treatment=t.treatment,
+            treatment_label=_TREATMENT_LABELS.get(t.treatment, t.treatment),
+            splits=splits,
+            excluded=not budgeted,
+            awaiting_review=budgeted and not splits,
+        ))
+
+    return HistoryOut(items=items, total=total,
+                      has_more=offset + len(rows) < total)

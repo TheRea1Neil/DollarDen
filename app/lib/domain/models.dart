@@ -810,3 +810,182 @@ class RefinedCategory {
     return (t == null || t == 'none') ? null : t as String;
   }
 }
+
+/// One line of a paycheck preview: what a category holds, gets, and ends at.
+class PreviewLine {
+  final String categoryId;
+  final String name;
+  final int orderIndex;
+  final String ruleType;
+  final String ruleSummary;
+  final int balanceCents;
+  final int allocatedCents;
+  final int afterCents;
+  final int shortCents;
+
+  const PreviewLine({
+    required this.categoryId,
+    required this.name,
+    required this.orderIndex,
+    required this.ruleType,
+    required this.ruleSummary,
+    required this.balanceCents,
+    required this.allocatedCents,
+    required this.afterCents,
+    required this.shortCents,
+  });
+
+  factory PreviewLine.fromJson(Map<String, dynamic> j) => PreviewLine(
+        categoryId: j['category_id'] as String,
+        name: j['name'] as String,
+        orderIndex: j['order_index'] as int? ?? 0,
+        ruleType: j['rule_type'] as String? ?? '',
+        ruleSummary: j['rule_summary'] as String? ?? '',
+        balanceCents: j['balance_cents'] as int? ?? 0,
+        allocatedCents: j['allocated_cents'] as int? ?? 0,
+        afterCents: j['after_cents'] as int? ?? 0,
+        shortCents: j['short_cents'] as int? ?? 0,
+      );
+
+  bool get gotNothing => allocatedCents == 0;
+}
+
+/// What a paycheck would do, before it does it.
+class PaycheckPreview {
+  final int grossCents;
+  final String planId;
+  final int planVersion;
+  final List<PreviewLine> lines;
+  final int totalAllocatedCents;
+  final int leftoverCents;
+  final List<String> starved;
+  final List<String> warnings;
+
+  const PaycheckPreview({
+    required this.grossCents,
+    required this.planId,
+    required this.planVersion,
+    required this.lines,
+    required this.totalAllocatedCents,
+    required this.leftoverCents,
+    required this.starved,
+    required this.warnings,
+  });
+
+  factory PaycheckPreview.fromJson(Map<String, dynamic> j) => PaycheckPreview(
+        grossCents: j['gross_cents'] as int,
+        planId: j['plan_id'] as String,
+        planVersion: j['plan_version'] as int,
+        lines: ((j['lines'] as List?) ?? const [])
+            .map((e) => PreviewLine.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        totalAllocatedCents: j['total_allocated_cents'] as int? ?? 0,
+        leftoverCents: j['leftover_cents'] as int? ?? 0,
+        starved: ((j['starved'] as List?) ?? const []).cast<String>(),
+        warnings: ((j['warnings'] as List?) ?? const []).cast<String>(),
+      );
+}
+
+/// Where one transaction's money went.
+class HistorySplit {
+  final String categoryId;
+  final String categoryName;
+
+  /// Budget-signed, same as everywhere else: positive means the category
+  /// was reduced.
+  final int amountCents;
+
+  const HistorySplit({
+    required this.categoryId,
+    required this.categoryName,
+    required this.amountCents,
+  });
+
+  factory HistorySplit.fromJson(Map<String, dynamic> j) => HistorySplit(
+        categoryId: j['category_id'] as String,
+        categoryName: j['category_name'] as String,
+        amountCents: j['amount_cents'] as int? ?? 0,
+      );
+}
+
+/// A transaction with where it landed.
+class HistoryItem {
+  final String id;
+  final String date;
+  final String name;
+  final String? merchantName;
+  final String? accountName;
+  final int amountCents;   // budget-signed: positive == money out
+  final bool pending;
+  final String treatment;
+  final String treatmentLabel;
+  final List<HistorySplit> splits;
+
+  /// Deliberately left out of the budget (a card payment or transfer) --
+  /// different from simply not having been reviewed yet, and the two
+  /// must not look alike.
+  final bool excluded;
+  final bool awaitingReview;
+
+  const HistoryItem({
+    required this.id,
+    required this.date,
+    required this.name,
+    required this.amountCents,
+    required this.pending,
+    required this.treatment,
+    required this.treatmentLabel,
+    required this.splits,
+    required this.excluded,
+    required this.awaitingReview,
+    this.merchantName,
+    this.accountName,
+  });
+
+  factory HistoryItem.fromJson(Map<String, dynamic> j) => HistoryItem(
+        id: j['id'] as String,
+        date: j['date'] as String,
+        name: j['name'] as String,
+        merchantName: j['merchant_name'] as String?,
+        accountName: j['account_name'] as String?,
+        amountCents: j['amount_cents'] as int? ?? 0,
+        pending: j['pending'] as bool? ?? false,
+        treatment: j['treatment'] as String? ?? 'spend',
+        treatmentLabel: j['treatment_label'] as String? ?? '',
+        splits: ((j['splits'] as List?) ?? const [])
+            .map((e) => HistorySplit.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        excluded: j['excluded'] as bool? ?? false,
+        awaitingReview: j['awaiting_review'] as bool? ?? false,
+      );
+
+  String get title => merchantName ?? name;
+
+  /// One line saying where it went, without needing the splits expanded.
+  String get destination {
+    if (excluded) return treatmentLabel;
+    if (awaitingReview) return 'Not filed yet';
+    if (splits.length == 1) return splits.first.categoryName;
+    return '${splits.length} categories';
+  }
+}
+
+class HistoryPage {
+  final List<HistoryItem> items;
+  final int total;
+  final bool hasMore;
+
+  const HistoryPage({
+    required this.items,
+    required this.total,
+    required this.hasMore,
+  });
+
+  factory HistoryPage.fromJson(Map<String, dynamic> j) => HistoryPage(
+        items: ((j['items'] as List?) ?? const [])
+            .map((e) => HistoryItem.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        total: j['total'] as int? ?? 0,
+        hasMore: j['has_more'] as bool? ?? false,
+      );
+}

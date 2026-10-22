@@ -8,6 +8,8 @@ import '../../domain/models.dart';
 import '../widgets/category_tile.dart';
 import 'add_category_screen.dart';
 import 'category_editor_screen.dart';
+import 'history_screen.dart';
+import 'paycheck_screen.dart';
 
 /// Offer both ways to add a category.
 ///
@@ -62,6 +64,13 @@ class HomeScreen extends ConsumerWidget {
         title: const Text('Budget'),
         actions: [
           IconButton(
+            tooltip: 'History',
+            icon: const Icon(Icons.receipt_long_outlined),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const HistoryScreen()),
+            ),
+          ),
+          IconButton(
             tooltip: 'New category',
             icon: const Icon(Icons.add),
             onPressed: () => _newCategory(context),
@@ -72,6 +81,13 @@ class HomeScreen extends ConsumerWidget {
             onPressed: () => ref.read(authStateProvider.notifier).logout(),
           ),
         ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => Navigator.of(context).push(
+          MaterialPageRoute<bool>(builder: (_) => const PaycheckScreen()),
+        ),
+        icon: const Icon(Icons.add_card),
+        label: const Text('Paycheck'),
       ),
       body: summary.when(
         loading: () => const Center(child: CircularProgressIndicator()),

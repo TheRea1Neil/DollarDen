@@ -517,6 +517,52 @@ class ApiClient {
     return (r.data as Map).cast<String, dynamic>();
   }
 
+  /// What a paycheck would do. Writes nothing.
+  Future<PaycheckPreview> previewPaycheck(int grossCents, {String? planId}) async {
+    final r = await _withRetry((o) => _dio.post('/budget/paychecks/preview',
+        data: {'gross_cents': grossCents, if (planId != null) 'plan_id': planId},
+        options: o));
+    if (r.statusCode != 200) _fail(r);
+    return PaycheckPreview.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
+  /// Record a paycheck and split it. This one does write.
+  Future<Map<String, dynamic>> recordPaycheck(int grossCents,
+      {bool apply = true}) async {
+    final r = await _withRetry((o) => _dio.post('/budget/paychecks',
+        data: {'gross_cents': grossCents, 'apply': apply}, options: o));
+    if (r.statusCode != 201) _fail(r);
+    return (r.data as Map).cast<String, dynamic>();
+  }
+
+  /// Undo a paycheck, reversing every allocation it made.
+  Future<void> unapplyPaycheck(String id) async {
+    final r = await _withRetry(
+        (o) => _dio.post('/budget/paychecks/$id/unapply', options: o));
+    if (r.statusCode != 200) _fail(r);
+  }
+
+  /// Every transaction and where its money went.
+  Future<HistoryPage> history({
+    int limit = 50,
+    int offset = 0,
+    String? categoryId,
+    String? treatment,
+    String? search,
+  }) async {
+    final r = await _withRetry((o) => _dio.get('/budget/transactions',
+        queryParameters: {
+          'limit': limit,
+          'offset': offset,
+          if (categoryId != null) 'category_id': categoryId,
+          if (treatment != null) 'treatment': treatment,
+          if (search != null && search.isNotEmpty) 'search': search,
+        },
+        options: o));
+    if (r.statusCode != 200) _fail(r);
+    return HistoryPage.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
   Future<Map<String, dynamic>> reconciliation() async {
     final r = await _withRetry((o) => _dio.get('/budget/reconciliation', options: o));
     if (r.statusCode != 200) _fail(r);

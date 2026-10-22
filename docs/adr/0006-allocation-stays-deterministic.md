@@ -75,6 +75,46 @@ once, before any money moves, and fixed permanently**. In arm B the same
 class of mistake recurs every payday, invisibly, and conservation is not
 guaranteed at all.
 
+### Arm E: the model as a checker does not work either
+
+The obvious safety net — engine allocates, model independently reads the
+prose and flags anything that disagrees — was measured separately, because
+a checker is allowed to be wrong in a way an allocator is not. A missed
+fault costs what we have today; a false alarm costs one glance.
+
+Against 8 correct splits and 26 deliberately broken ones (money vanished,
+a conditional fired wrongly, a refill overshot, priority inverted):
+
+| | qwen2.5vl:7b |
+|---|---|
+| faults caught | **26/26** |
+| false alarms on correct splits | **8/8** |
+| latency | 3.3s |
+
+Catching everything looks excellent until you see it also flagged every
+correct split. The model says "wrong" unconditionally, which carries no
+information at all. A warning that fires on every paycheck is one the user
+stops reading by the second payday, and then it is worse than nothing —
+it is a disabled alarm that looks enabled.
+
+Rejected. Revisit only with a model that can stay quiet when nothing is
+wrong.
+
+### The conditional is the consistent weak spot
+
+Worth naming, because it shows up in every arm independently:
+
+- **allocating** — qwen2.5vl funded car insurance at a $460 balance when
+  the rule says "only below $450"
+- **compiling** — qwen3 inverted the operator; qwen2.5vl zeroed the
+  threshold; neither got both fields right in any attempt
+- **checking** — the false alarms are mostly the model insisting car
+  insurance should have been funded when it correctly was not
+
+Percent, fixed, refill_to and remainder are handled reliably. Thresholded
+rules are not. That is a bounded, specific limitation to design around
+rather than a general one.
+
 ## Decision
 
 **The split engine stays in the money path. The model compiles intent into
@@ -86,7 +126,8 @@ producing rules a human reviews, rather than every payday producing
 numbers nobody checks.
 
 Arm C — letting the model allocate and then deterministically repairing it
-— is explicitly rejected despite lifting 0/24 to 12/24. Repair can only
+— is explicitly rejected despite lifting 0/24 to 12/24. So is arm E, the
+review-after-the-fact safety net, which flagged all 8 correct splits. Repair can only
 fix what is unambiguous (money that does not sum, negative amounts). It
 cannot fix a wrong judgement, and it produces a plausible-looking answer
 that hides one. A silent correction of a wrong split is worse than a loud
@@ -110,10 +151,12 @@ failure.
 
 ## Consequences
 
-- Conditional rules are the weak spot in compilation, and the operator
-  direction specifically. The apply screen should show compiled rules back
-  in plain English ("funded only while this holds **less than** $450") so
-  an inverted comparison is obvious before it is accepted.
+- Conditional rules are the weak spot everywhere — compiling them,
+  allocating against them, and reviewing them. The apply screen should
+  show compiled rules back in plain English ("funded only while this holds
+  **less than** $450") so an inverted comparison or a zeroed threshold is
+  obvious before it is accepted. This is the single highest-value piece of
+  UI the experiment argues for.
 - This experiment found a live bug: a predicate missing its threshold
   passed validation and raised `KeyError` when a paycheck was recorded.
   Fixed in the same change — see the commit for the three layers.

@@ -56,5 +56,6 @@ python report.py                                 # summarise
   hurts: rent losing to savings
 - **determinism** — same input, same output across repeats
 
-See `docs/adr/0006-allocation-stays-deterministic.md` for the findings and
+Arm E (engine allocates, model reviews) is in `arm_e.py`. See
+`docs/adr/0006-allocation-stays-deterministic.md` for the findings and
 the decision.

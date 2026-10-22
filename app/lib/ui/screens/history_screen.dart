@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/money.dart';
 import '../../core/theme.dart';
+import '../../data/api_client.dart';
 import '../../data/providers.dart';
 import '../../domain/models.dart';
 
@@ -199,7 +200,10 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                                     child: CircularProgressIndicator()),
                               );
                             }
-                            return _HistoryCard(item: _items[i]);
+                            return _HistoryCard(
+                              item: _items[i],
+                              onChanged: _reset,
+                            );
                           },
                         ),
                       ),
@@ -210,12 +214,60 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
   }
 }
 
-class _HistoryCard extends StatelessWidget {
+class _HistoryCard extends ConsumerWidget {
   final HistoryItem item;
-  const _HistoryCard({required this.item});
+  final Future<void> Function() onChanged;
+  const _HistoryCard({required this.item, required this.onChanged});
+
+  /// Undoing an old paycheck cannot be casual: the money may already
+  /// have been spent, and reversing does not bring it back. Show what
+  /// it would do, then let the user decide.
+  Future<void> _undo(BuildContext context, WidgetRef ref) async {
+    final api = ref.read(apiProvider);
+    UndoPreview preview;
+    try {
+      preview = await api.undoPreview(item.paycheckId!);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
+      }
+      return;
+    }
+    if (!context.mounted) return;
+
+    final ok = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => _UndoSheet(preview: preview),
+    );
+    if (ok != true) return;
+
+    try {
+      await api.unapplyPaycheck(item.paycheckId!, force: !preview.safe);
+      ref.invalidate(summaryProvider);
+      ref.invalidate(categoriesProvider);
+      ref.invalidate(unreviewedPaychecksProvider);
+      await onChanged();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Paycheck undone'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } on ApiException catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(e.message),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ));
+      }
+    }
+  }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final flow = MoneyFlow.ofSigned(item.amountCents);
     final colour = switch (flow) {
@@ -271,6 +323,122 @@ class _HistoryCard extends StatelessWidget {
             ),
             const SizedBox(height: 10),
             _Destination(item: item),
+            if (item.paycheckApplied) ...[
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () => _undo(context, ref),
+                  icon: const Icon(Icons.undo, size: 16),
+                  label: const Text('Undo this split'),
+                  style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      visualDensity: VisualDensity.compact),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// What undoing a paycheck would do, before it is done.
+class _UndoSheet extends StatelessWidget {
+  final UndoPreview preview;
+  const _UndoSheet({required this.preview});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Undo this paycheck?',
+                style: theme.textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text(
+              '${Money.format(preview.grossCents)} received '
+              '${preview.receivedOn} — '
+              '${Money.format(preview.totalReversedCents)} would come back '
+              'out of these categories.',
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+            if (!preview.safe) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.errorContainer,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.warning_amber_rounded,
+                          size: 18,
+                          color: theme.colorScheme.onErrorContainer),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Some of this has already been spent. Undoing '
+                          'does not bring it back — it leaves '
+                          '${preview.wouldGoNegative.join(", ")} overspent.',
+                          style: TextStyle(
+                              color: theme.colorScheme.onErrorContainer),
+                        ),
+                      ),
+                    ]),
+              ),
+            ],
+            const SizedBox(height: 16),
+            for (final i in preview.impacts)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(children: [
+                  Expanded(
+                    child: Text(i.name,
+                        style: theme.textTheme.bodyMedium,
+                        overflow: TextOverflow.ellipsis),
+                  ),
+                  Text(
+                    '${Money.format(i.balanceCents)} → '
+                    '${Money.format(i.afterCents)}',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: i.goesNegative ? FontWeight.w700 : null,
+                      color: i.goesNegative ? theme.colorScheme.error : null,
+                    ),
+                  ),
+                ]),
+              ),
+            const SizedBox(height: 16),
+            Row(children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('Keep it'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton(
+                  style: preview.safe
+                      ? null
+                      : FilledButton.styleFrom(
+                          backgroundColor: theme.colorScheme.error),
+                  onPressed: () => Navigator.pop(context, true),
+                  child: Text(preview.safe ? 'Undo' : 'Undo anyway'),
+                ),
+              ),
+            ]),
           ],
         ),
       ),

@@ -974,6 +974,10 @@ class HistoryItem {
   final bool excluded;
   final bool awaitingReview;
 
+  /// Set when this deposit was recorded as a paycheck.
+  final String? paycheckId;
+  final bool paycheckApplied;
+
   const HistoryItem({
     required this.id,
     required this.date,
@@ -987,6 +991,8 @@ class HistoryItem {
     required this.awaitingReview,
     this.merchantName,
     this.accountName,
+    this.paycheckId,
+    this.paycheckApplied = false,
   });
 
   factory HistoryItem.fromJson(Map<String, dynamic> j) => HistoryItem(
@@ -1004,12 +1010,19 @@ class HistoryItem {
             .toList(),
         excluded: j['excluded'] as bool? ?? false,
         awaitingReview: j['awaiting_review'] as bool? ?? false,
+        paycheckId: j['paycheck_id'] as String?,
+        paycheckApplied: j['paycheck_applied'] as bool? ?? false,
       );
 
   String get title => merchantName ?? name;
 
   /// One line saying where it went, without needing the splits expanded.
   String get destination {
+    if (paycheckId != null) {
+      return paycheckApplied
+          ? 'Split across ${splits.length} categories'
+          : 'Recorded, not split';
+    }
     if (excluded) return treatmentLabel;
     if (awaitingReview) return 'Not filed yet';
     if (splits.length == 1) return splits.first.categoryName;
@@ -1034,5 +1047,74 @@ class HistoryPage {
             .toList(),
         total: j['total'] as int? ?? 0,
         hasMore: j['has_more'] as bool? ?? false,
+      );
+}
+
+
+/// What undoing a paycheck would do to one category.
+class UndoImpact {
+  final String categoryId;
+  final String name;
+  final int balanceCents;
+  final int reversesCents;
+  final int afterCents;
+  final bool goesNegative;
+
+  const UndoImpact({
+    required this.categoryId,
+    required this.name,
+    required this.balanceCents,
+    required this.reversesCents,
+    required this.afterCents,
+    required this.goesNegative,
+  });
+
+  factory UndoImpact.fromJson(Map<String, dynamic> j) => UndoImpact(
+        categoryId: j['category_id'] as String,
+        name: j['name'] as String,
+        balanceCents: j['balance_cents'] as int? ?? 0,
+        reversesCents: j['reverses_cents'] as int? ?? 0,
+        afterCents: j['after_cents'] as int? ?? 0,
+        goesNegative: j['goes_negative'] as bool? ?? false,
+      );
+}
+
+/// Undoing a paycheck, before it is undone.
+class UndoPreview {
+  final String paycheckId;
+  final int grossCents;
+  final String receivedOn;
+  final bool applied;
+  final List<UndoImpact> impacts;
+  final int totalReversedCents;
+
+  /// Categories whose money has since been spent. Reversing does not
+  /// un-spend it, so they would simply go negative.
+  final List<String> wouldGoNegative;
+  final bool safe;
+
+  const UndoPreview({
+    required this.paycheckId,
+    required this.grossCents,
+    required this.receivedOn,
+    required this.applied,
+    required this.impacts,
+    required this.totalReversedCents,
+    required this.wouldGoNegative,
+    required this.safe,
+  });
+
+  factory UndoPreview.fromJson(Map<String, dynamic> j) => UndoPreview(
+        paycheckId: j['paycheck_id'] as String,
+        grossCents: j['gross_cents'] as int? ?? 0,
+        receivedOn: j['received_on'] as String? ?? '',
+        applied: j['applied'] as bool? ?? false,
+        impacts: ((j['impacts'] as List?) ?? const [])
+            .map((e) => UndoImpact.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        totalReversedCents: j['total_reversed_cents'] as int? ?? 0,
+        wouldGoNegative:
+            ((j['would_go_negative'] as List?) ?? const []).cast<String>(),
+        safe: j['safe'] as bool? ?? true,
       );
 }

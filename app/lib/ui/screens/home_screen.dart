@@ -417,10 +417,12 @@ class _PaycheckPrompt extends ConsumerWidget {
                     builder: (_) => PaycheckScreen(
                       initialCents: cents,
                       sourceLabel: '$label · ${first['date']}',
+                      transactionId: first['transaction_id'] as String?,
                     ),
                   ),
                 );
                 ref.invalidate(unreviewedPaychecksProvider);
+                ref.invalidate(summaryProvider);
               },
               child: Padding(
                 padding: const EdgeInsets.all(16),

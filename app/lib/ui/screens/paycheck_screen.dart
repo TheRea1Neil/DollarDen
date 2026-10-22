@@ -19,7 +19,16 @@ class PaycheckScreen extends ConsumerStatefulWidget {
   final int? initialCents;
   final String? sourceLabel;
 
-  const PaycheckScreen({super.key, this.initialCents, this.sourceLabel});
+  /// The deposit this paycheck came from. Without it the deposit is
+  /// never marked as recorded and keeps being offered for review.
+  final String? transactionId;
+
+  const PaycheckScreen({
+    super.key,
+    this.initialCents,
+    this.sourceLabel,
+    this.transactionId,
+  });
 
   @override
   ConsumerState<PaycheckScreen> createState() => _PaycheckScreenState();
@@ -202,8 +211,9 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
     setState(() => _busy = true);
     try {
       final lines = _ordered;
-      final out = await ref.read(apiProvider).recordPaycheck(
+      await ref.read(apiProvider).recordPaycheck(
             p.grossCents,
+            transactionId: widget.transactionId,
             // Only the ORDER is one-off. Any rule change was already
             // saved to the plan when it was made.
             rules: lines == null
@@ -214,28 +224,24 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
                   ],
             manual: _manualJson,
           );
+
+      // Everything that could be stale now is. The prompt in particular:
+      // leaving it would keep offering a paycheck that is already done.
       ref.invalidate(summaryProvider);
       ref.invalidate(categoriesProvider);
+      ref.invalidate(unreviewedPaychecksProvider);
       if (!mounted) return;
-      final id = out['id'] as String?;
+
+      final messenger = ScaffoldMessenger.of(context);
+      // Clear anything already queued, so confirmations cannot stack up
+      // into one that never seems to leave.
+      messenger.clearSnackBars();
       Navigator.of(context).pop(true);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      messenger.showSnackBar(SnackBar(
         content: Text('${Money.format(p.grossCents)} split across '
-            '${p.lines.where((l) => l.allocatedCents != 0).length} categories'),
-        action: id == null
-            ? null
-            // Undo matters here: this touched every envelope at once.
-            : SnackBarAction(
-                label: 'Undo',
-                onPressed: () async {
-                  try {
-                    await ref.read(apiProvider).unapplyPaycheck(id);
-                    ref.invalidate(summaryProvider);
-                    ref.invalidate(categoriesProvider);
-                  } catch (_) {}
-                },
-              ),
-        duration: const Duration(seconds: 8),
+            '${p.lines.where((l) => !l.gotNothing).length} categories'),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 4),
       ));
     } on ApiException catch (e) {
       if (!mounted) return;

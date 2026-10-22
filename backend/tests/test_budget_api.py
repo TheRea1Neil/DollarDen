@@ -1481,3 +1481,167 @@ class TestTransactionHistory:
         h, ids, c = self._seeded(client)
         hb = _auth(client)
         assert client.get("/api/budget/transactions", headers=hb).json()["total"] == 0
+
+
+@requires_db
+class TestPaycheckLinkageAndUndo:
+    """A recorded paycheck must stop being offered for review."""
+
+    def _with_deposit(self, client: TestClient):
+        from datetime import date as _date
+
+        from app.db.models import Account, PlaidItem, Transaction
+        from app.db.session import SessionLocal
+
+        h = _auth(client)
+        uid = uuid.UUID(client.get("/api/auth/me", headers=h).json()["id"])
+        rent = _cat(client, h, "Rent", kind="obligation")
+        left = _cat(client, h, "Leftover", kind="savings_bucket")
+        client.post("/api/budget/plans", json={"name": "S", "rules": [
+            {"category_id": rent["id"], "order_index": 1, "rule_type": "fixed",
+             "params": {"amount_cents": 35000}},
+            {"category_id": left["id"], "order_index": 2,
+             "rule_type": "remainder", "params": {}},
+        ]}, headers=h)
+
+        with SessionLocal() as db:
+            item = PlaidItem(user_id=uid, plaid_item_id=f"it-{uuid.uuid4().hex[:8]}",
+                             institution_name="Bank",
+                             access_token_encrypted=b"x", sync_cursor=None)
+            db.add(item); db.flush()
+            acct = Account(user_id=uid, item_id=item.id,
+                           plaid_account_id=f"ac-{uuid.uuid4().hex[:8]}",
+                           name="Checking", type="depository",
+                           current_cents=100000, is_tracked=True)
+            db.add(acct); db.flush()
+            dep = Transaction(
+                user_id=uid, account_id=acct.id,
+                plaid_transaction_id=f"tx-{uuid.uuid4().hex[:10]}",
+                outflow_cents=0, inflow_cents=200000,
+                date=_date(2026, 10, 20), name="ACME PAYROLL",
+                merchant_name="Acme", treatment="spend")
+            db.add(dep); db.flush()
+            dep_id = str(dep.id)
+            db.commit()
+        return h, dep_id, {"rent": rent, "left": left}
+
+    def test_recording_against_a_deposit_clears_it_from_review(self, client) -> None:
+        """The bug: a paycheck saved without its transaction id came back."""
+        h, dep_id, c = self._with_deposit(client)
+        before = client.get("/api/budget/paychecks/candidates", headers=h).json()
+        assert [x for x in before if not x["already_recorded"]]
+
+        r = client.post("/api/budget/paychecks", json={
+            "transaction_id": dep_id, "apply": True,
+        }, headers=h)
+        assert r.status_code == 201, r.text
+
+        after = client.get("/api/budget/paychecks/candidates", headers=h).json()
+        assert [x for x in after if not x["already_recorded"]] == []
+
+    def test_the_same_deposit_cannot_be_recorded_twice(self, client) -> None:
+        h, dep_id, c = self._with_deposit(client)
+        client.post("/api/budget/paychecks",
+                    json={"transaction_id": dep_id, "apply": True}, headers=h)
+        again = client.post("/api/budget/paychecks",
+                            json={"transaction_id": dep_id, "apply": True},
+                            headers=h)
+        assert again.status_code == 409
+
+    def test_the_deposit_shows_its_split_in_history(self, client) -> None:
+        """Otherwise the one transaction that funded everything reads as
+        'not filed yet'."""
+        h, dep_id, c = self._with_deposit(client)
+        client.post("/api/budget/paychecks",
+                    json={"transaction_id": dep_id, "apply": True}, headers=h)
+
+        items = client.get("/api/budget/transactions", headers=h).json()["items"]
+        dep = next(i for i in items if i["id"] == dep_id)
+        assert dep["awaiting_review"] is False
+        assert dep["paycheck_id"] is not None and dep["paycheck_applied"] is True
+        names = {s["category_name"] for s in dep["splits"]}
+        assert names == {"Rent", "Leftover"}
+        # Money arriving in a category reads as money in.
+        assert all(s["amount_cents"] < 0 for s in dep["splits"])
+
+    def test_undo_preview_writes_nothing(self, client: TestClient) -> None:
+        h, dep_id, c = self._with_deposit(client)
+        pid = client.post("/api/budget/paychecks",
+                          json={"transaction_id": dep_id, "apply": True},
+                          headers=h).json()["id"]
+        before = client.get("/api/budget/summary", headers=h).json()
+        pv = client.get(f"/api/budget/paychecks/{pid}/undo-preview",
+                        headers=h).json()
+        assert pv["safe"] is True
+        assert pv["total_reversed_cents"] == 200000
+        after = client.get("/api/budget/summary", headers=h).json()
+        assert after["categories"] == before["categories"]
+
+    def test_undo_is_refused_when_the_money_is_already_spent(self, client) -> None:
+        """Reversing does not un-spend it; it just goes negative."""
+        from app.budget.ledger import Entry, post
+        from app.db.session import SessionLocal
+
+        h, dep_id, c = self._with_deposit(client)
+        pid = client.post("/api/budget/paychecks",
+                          json={"transaction_id": dep_id, "apply": True},
+                          headers=h).json()["id"]
+        uid = uuid.UUID(client.get("/api/auth/me", headers=h).json()["id"])
+        with SessionLocal() as db:
+            post(db, uid, [Entry(uuid.UUID(c["rent"]["id"]), -30000,
+                                 "manual", None, "paid rent")])
+            db.commit()
+
+        pv = client.get(f"/api/budget/paychecks/{pid}/undo-preview",
+                        headers=h).json()
+        assert pv["safe"] is False and "Rent" in pv["would_go_negative"]
+
+        r = client.post(f"/api/budget/paychecks/{pid}/unapply", headers=h)
+        assert r.status_code == 409
+        assert "Rent" in r.json()["detail"]
+        # And nothing moved.
+        bal = {x["name"]: x["balance_cents"]
+               for x in client.get("/api/budget/summary", headers=h).json()["categories"]}
+        assert bal["Rent"] == 5000
+
+    def test_forcing_the_undo_is_allowed_and_explained(self, client) -> None:
+        from app.budget.ledger import Entry, post
+        from app.db.session import SessionLocal
+
+        h, dep_id, c = self._with_deposit(client)
+        pid = client.post("/api/budget/paychecks",
+                          json={"transaction_id": dep_id, "apply": True},
+                          headers=h).json()["id"]
+        uid = uuid.UUID(client.get("/api/auth/me", headers=h).json()["id"])
+        with SessionLocal() as db:
+            post(db, uid, [Entry(uuid.UUID(c["rent"]["id"]), -30000,
+                                 "manual", None, "paid rent")])
+            db.commit()
+
+        r = client.post(f"/api/budget/paychecks/{pid}/unapply",
+                        json={"force": True}, headers=h)
+        assert r.status_code == 200, r.text
+        bal = {x["name"]: x["balance_cents"]
+               for x in client.get("/api/budget/summary", headers=h).json()["categories"]}
+        assert bal["Rent"] == -30000      # overspent, as warned
+
+    def test_undoing_twice_is_refused(self, client: TestClient) -> None:
+        h, dep_id, c = self._with_deposit(client)
+        pid = client.post("/api/budget/paychecks",
+                          json={"transaction_id": dep_id, "apply": True},
+                          headers=h).json()["id"]
+        assert client.post(f"/api/budget/paychecks/{pid}/unapply",
+                           headers=h).status_code == 200
+        assert client.post(f"/api/budget/paychecks/{pid}/unapply",
+                           headers=h).status_code == 409
+
+    def test_an_undone_deposit_is_offered_for_review_again(self, client) -> None:
+        h, dep_id, c = self._with_deposit(client)
+        pid = client.post("/api/budget/paychecks",
+                          json={"transaction_id": dep_id, "apply": True},
+                          headers=h).json()["id"]
+        client.post(f"/api/budget/paychecks/{pid}/unapply", headers=h)
+        # The paycheck row still exists, so it stays out of the prompt --
+        # undoing the split is not the same as forgetting the deposit.
+        cands = client.get("/api/budget/paychecks/candidates", headers=h).json()
+        assert all(x["already_recorded"] for x in cands)

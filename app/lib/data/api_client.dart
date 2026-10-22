@@ -551,14 +551,19 @@ class ApiClient {
   ///
   /// [rules] applies to THIS paycheck only and never rewrites the saved
   /// plan; [manual] amounts are taken off the top before the rules run.
+  /// [transactionId] links the paycheck to the deposit it came from.
+  /// Without it the deposit is never marked as recorded and keeps being
+  /// offered for review forever.
   Future<Map<String, dynamic>> recordPaycheck(int grossCents,
       {bool apply = true,
+      String? transactionId,
       List<Map<String, dynamic>>? rules,
       List<Map<String, dynamic>>? manual}) async {
     final r = await _withRetry((o) => _dio.post('/budget/paychecks',
         data: {
           'gross_cents': grossCents,
           'apply': apply,
+          if (transactionId != null) 'transaction_id': transactionId,
           if (rules != null) 'rules': rules,
           if (manual != null && manual.isNotEmpty) 'manual': manual,
         },
@@ -568,10 +573,23 @@ class ApiClient {
   }
 
   /// Undo a paycheck, reversing every allocation it made.
-  Future<void> unapplyPaycheck(String id) async {
+  /// What undoing this paycheck would do. Writes nothing.
+  Future<UndoPreview> undoPreview(String id) async {
     final r = await _withRetry(
-        (o) => _dio.post('/budget/paychecks/$id/unapply', options: o));
+        (o) => _dio.get('/budget/paychecks/$id/undo-preview', options: o));
     if (r.statusCode != 200) _fail(r);
+    return UndoPreview.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
+  /// Reverse a paycheck. Refused with 409 when it would leave categories
+  /// overspent, unless [force] — reversing does not un-spend the money.
+  Future<UndoPreview> unapplyPaycheck(String id, {bool force = false}) async {
+    final r = await _withRetry((o) => _dio.post(
+        '/budget/paychecks/$id/unapply',
+        data: {'force': force},
+        options: o));
+    if (r.statusCode != 200) _fail(r);
+    return UndoPreview.fromJson((r.data as Map).cast<String, dynamic>());
   }
 
   /// Every transaction and where its money went.

@@ -617,15 +617,117 @@ def record_paycheck(
     return out
 
 
-@router.post("/paychecks/{paycheck_id}/unapply", response_model=PaycheckOut)
-def undo_paycheck(
+class UndoImpact(BaseModel):
+    """What undoing a paycheck would do to each category it funded."""
+
+    category_id: str
+    name: str
+    balance_cents: int
+    reverses_cents: int
+    after_cents: int
+    goes_negative: bool
+
+
+class UndoPreviewOut(BaseModel):
+    paycheck_id: str
+    gross_cents: int
+    received_on: str
+    applied: bool
+    impacts: list[UndoImpact]
+    total_reversed_cents: int
+    # Categories whose money has since been spent. Undoing still works,
+    # but it leaves them overspent, and that must be a decision rather
+    # than a surprise.
+    would_go_negative: list[str]
+    safe: bool
+
+
+def _undo_impacts(db: Session, user: User, pc: Paycheck) -> UndoPreviewOut:
+    rows = db.execute(
+        select(Allocation.category_id, Category.name, Category.balance_cents,
+               func.sum(Allocation.amount_cents))
+        .join(Category, Category.id == Allocation.category_id)
+        .where(
+            Allocation.user_id == user.id,
+            Allocation.paycheck_id == pc.id,
+            Allocation.source.in_(("paycheck_rule", "paycheck_manual")),
+        )
+        .group_by(Allocation.category_id, Category.name, Category.balance_cents)
+    ).all()
+
+    impacts: list[UndoImpact] = []
+    negative: list[str] = []
+    total = 0
+    for cat_id, name, balance, amount in rows:
+        amount = int(amount or 0)
+        total += amount
+        after = balance - amount
+        if after < 0:
+            negative.append(name)
+        impacts.append(UndoImpact(
+            category_id=str(cat_id), name=name, balance_cents=balance,
+            reverses_cents=amount, after_cents=after, goes_negative=after < 0,
+        ))
+    impacts.sort(key=lambda i: i.after_cents)
+
+    return UndoPreviewOut(
+        paycheck_id=str(pc.id), gross_cents=pc.gross_cents,
+        received_on=pc.received_on.isoformat(),
+        applied=pc.applied_at is not None,
+        impacts=impacts, total_reversed_cents=total,
+        would_go_negative=negative, safe=not negative,
+    )
+
+
+@router.get("/paychecks/{paycheck_id}/undo-preview", response_model=UndoPreviewOut)
+def undo_preview(
     paycheck_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)
-) -> PaycheckOut:
+) -> UndoPreviewOut:
+    """What undoing this paycheck would do. Writes nothing."""
+    return _undo_impacts(db, user, _own(db, Paycheck, paycheck_id, user))
+
+
+class UndoIn(BaseModel):
+    # Undoing a paycheck whose money has since been spent leaves
+    # categories overspent. That is sometimes genuinely what the user
+    # wants, so it is allowed -- but only deliberately.
+    force: bool = False
+
+
+@router.post("/paychecks/{paycheck_id}/unapply", response_model=UndoPreviewOut)
+def undo_paycheck(
+    paycheck_id: str,
+    body: UndoIn | None = None,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> UndoPreviewOut:
+    """Reverse a paycheck's allocations.
+
+    Refused when it would leave categories overspent unless `force` is
+    set. The money still has to be accounted for: reversing an old
+    paycheck whose funds have since been spent does not un-spend them,
+    it just makes the envelope negative, and doing that silently would
+    quietly break the budget.
+    """
     pc = _own(db, Paycheck, paycheck_id, user)
+    if pc.applied_at is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "That paycheck has already been undone."
+        )
+
+    impact = _undo_impacts(db, user, pc)
+    if impact.would_go_negative and not (body and body.force):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Undoing this would overspend "
+            + ", ".join(impact.would_go_negative)
+            + ". That money has already been spent, so reversing the "
+            "paycheck does not bring it back. Confirm to do it anyway.",
+        )
+
     unapply(db, user.id, pc)
     db.commit()
-    return PaycheckOut(id=str(pc.id), gross_cents=pc.gross_cents,
-                       received_on=pc.received_on.isoformat(), applied=False)
+    return _undo_impacts(db, user, pc)
 
 
 @router.get("/next-payday")
@@ -2108,6 +2210,10 @@ class HistoryItem(BaseModel):
     treatment: str
     treatment_label: str
     splits: list[HistorySplit]
+    # Set when this deposit was recorded as a paycheck, so history can
+    # offer to undo the split.
+    paycheck_id: str | None = None
+    paycheck_applied: bool = False
     # True when nothing was allocated and nothing was meant to be --
     # a card payment or transfer. Distinguishes "deliberately excluded"
     # from "still waiting on you".
@@ -2194,6 +2300,39 @@ def transaction_history(
             amount_cents=-int(amount or 0),
         ))
 
+    # A paycheck's allocations hang off the paycheck, not the deposit, so
+    # without this the deposit that funded everything shows as "not filed
+    # yet" -- the one transaction whose split the user most wants to see.
+    paychecks = {
+        p.transaction_id: p
+        for p in db.scalars(
+            select(Paycheck).where(
+                Paycheck.user_id == user.id,
+                Paycheck.transaction_id.in_(ids),
+            )
+        ).all()
+        if p.transaction_id
+    }
+    if paychecks:
+        pay_rows = db.execute(
+            select(Allocation.paycheck_id, Allocation.category_id,
+                   Category.name, func.sum(Allocation.amount_cents))
+            .join(Category, Category.id == Allocation.category_id)
+            .where(Allocation.user_id == user.id,
+                   Allocation.paycheck_id.in_([p.id for p in paychecks.values()]))
+            .group_by(Allocation.paycheck_id, Allocation.category_id, Category.name)
+        ).all()
+        by_paycheck: dict[uuid.UUID, list[HistorySplit]] = {}
+        for pay_id, cat_id, cat_name, amount in pay_rows:
+            by_paycheck.setdefault(pay_id, []).append(HistorySplit(
+                category_id=str(cat_id), category_name=cat_name,
+                amount_cents=-int(amount or 0),
+            ))
+        for txn_id, pc in paychecks.items():
+            splits = by_paycheck.get(pc.id)
+            if splits:
+                by_txn.setdefault(txn_id, []).extend(splits)
+
     accounts = {
         a.id: a for a in db.scalars(
             select(Account).where(Account.user_id == user.id)
@@ -2205,6 +2344,7 @@ def transaction_history(
         splits = by_txn.get(t.id, [])
         acct = accounts.get(t.account_id)
         budgeted = Treatment(t.treatment).affects_budget
+        pc = paychecks.get(t.id) if paychecks else None
         items.append(HistoryItem(
             id=str(t.id), date=t.date.isoformat(), name=t.name,
             merchant_name=t.merchant_name,
@@ -2213,8 +2353,11 @@ def transaction_history(
             pending=t.pending, treatment=t.treatment,
             treatment_label=_TREATMENT_LABELS.get(t.treatment, t.treatment),
             splits=splits,
+            paycheck_id=str(pc.id) if pc else None,
+            paycheck_applied=bool(pc and pc.applied_at is not None),
             excluded=not budgeted,
-            awaiting_review=budgeted and not splits,
+            # A deposit recorded as a paycheck is not waiting on anyone.
+            awaiting_review=budgeted and not splits and pc is None,
         ))
 
     return HistoryOut(items=items, total=total,

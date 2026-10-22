@@ -7,6 +7,48 @@ import '../../data/providers.dart';
 import '../../domain/models.dart';
 import '../widgets/category_tile.dart';
 import 'add_category_screen.dart';
+import 'category_editor_screen.dart';
+
+/// Offer both ways to add a category.
+///
+/// The assistant is genuinely faster for "money for the dog, vet visits
+/// come out of nowhere", and genuinely slower than typing four fields when
+/// the user already knows exactly what they want.
+Future<void> _newCategory(BuildContext context) async {
+  final route = await showModalBottomSheet<String>(
+    context: context,
+    showDragHandle: true,
+    builder: (ctx) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.auto_awesome),
+            title: const Text('Describe it'),
+            subtitle: const Text(
+                'Say what it is for in your own words and the assistant '
+                'drafts it, including how to fund it.'),
+            onTap: () => Navigator.pop(ctx, 'ai'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.edit_outlined),
+            title: const Text('Set it up myself'),
+            subtitle: const Text('Name, kind, target. No assistant.'),
+            onTap: () => Navigator.pop(ctx, 'manual'),
+          ),
+        ],
+      ),
+    ),
+  );
+  if (route == null || !context.mounted) return;
+  await Navigator.of(context).push(
+    MaterialPageRoute<bool>(
+      builder: (_) => route == 'ai'
+          ? const AddCategoryScreen()
+          : const CategoryEditorScreen(),
+    ),
+  );
+}
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -22,10 +64,7 @@ class HomeScreen extends ConsumerWidget {
           IconButton(
             tooltip: 'New category',
             icon: const Icon(Icons.add),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<bool>(
-                  builder: (_) => const AddCategoryScreen()),
-            ),
+            onPressed: () => _newCategory(context),
           ),
           IconButton(
             tooltip: 'Sign out',
@@ -144,6 +183,12 @@ class _CategoryListState extends ConsumerState<_CategoryList> {
                 style: theme.textTheme.titleSmall
                     ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
             const Spacer(),
+            if (!_reordering)
+              IconButton(
+                tooltip: 'Archived',
+                icon: const Icon(Icons.archive_outlined, size: 20),
+                onPressed: () => _showArchived(context, ref),
+              ),
             if (_reordering) ...[
               TextButton(
                 onPressed: _saving
@@ -211,7 +256,15 @@ class _CategoryListState extends ConsumerState<_CategoryList> {
                     for (var i = 0; i < widget.categories.length; i++) ...[
                       if (i > 0)
                         const Divider(height: 1, indent: 16, endIndent: 16),
-                      CategoryTile(category: widget.categories[i]),
+                      CategoryTile(
+                        category: widget.categories[i],
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute<bool>(
+                            builder: (_) => CategoryEditorScreen(
+                                existing: widget.categories[i]),
+                          ),
+                        ),
+                      ),
                     ],
                   ],
                 ),
@@ -219,6 +272,66 @@ class _CategoryListState extends ConsumerState<_CategoryList> {
       ],
     );
   }
+}
+
+/// Archived categories, with a way back.
+///
+/// Archiving is reversible by design (categories are never deleted, so
+/// transaction history stays explainable), but that is worth nothing if
+/// there is no screen that lists them.
+Future<void> _showArchived(BuildContext context, WidgetRef ref) async {
+  final api = ref.read(apiProvider);
+  late List<Category> archived;
+  try {
+    archived = (await api.categories(includeArchived: true))
+        .where((c) => c.archived)
+        .toList();
+  } catch (e) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('$e')));
+    return;
+  }
+  if (!context.mounted) return;
+  await showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    builder: (ctx) => SafeArea(
+      child: archived.isEmpty
+          ? const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 32),
+              child: Text('Nothing archived.', textAlign: TextAlign.center),
+            )
+          : Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final c in archived)
+                  ListTile(
+                    title: Text(c.name),
+                    subtitle: Text(c.balanceCents == 0
+                        ? c.kind
+                        : 'still holds ${Money.format(c.balanceCents)}'),
+                    trailing: TextButton(
+                      onPressed: () async {
+                        try {
+                          await api.restoreCategory(c.id);
+                          ref.invalidate(summaryProvider);
+                          ref.invalidate(categoriesProvider);
+                          if (ctx.mounted) Navigator.pop(ctx);
+                        } catch (e) {
+                          if (ctx.mounted) {
+                            ScaffoldMessenger.of(ctx).showSnackBar(
+                                SnackBar(content: Text('$e')));
+                          }
+                        }
+                      },
+                      child: const Text('Restore'),
+                    ),
+                  ),
+              ],
+            ),
+    ),
+  );
 }
 
 /// Says plainly what reordering does and does not do.
@@ -406,6 +519,14 @@ class _EmptyState extends StatelessWidget {
             textAlign: TextAlign.center,
             style: theme.textTheme.bodyMedium
                 ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 20),
+          // An empty state that only explains the problem leaves the user
+          // hunting the app bar for the fix.
+          FilledButton.icon(
+            onPressed: () => _newCategory(context),
+            icon: const Icon(Icons.add),
+            label: const Text('Add a category'),
           ),
         ],
       ),

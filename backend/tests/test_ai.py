@@ -512,3 +512,11 @@ class TestCategoryContext:
         c = Category(name="Gas", kind="spending", balance_cents=0)
         line = _describe_category(c)
         assert "Gas" in line and "—" not in line
+
+
+class TestJobKinds:
+    def test_every_advertised_kind_has_a_handler(self) -> None:
+        """A kind with no handler accepts the job and then always fails."""
+        from app.ai import jobs, tasks
+        missing = [k for k in jobs.KINDS if not hasattr(tasks, f"run_{k}")]
+        assert missing == [], f"no run_* handler for: {missing}"

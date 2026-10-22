@@ -25,13 +25,18 @@ from app.db.session import SessionLocal
 
 log = logging.getLogger("nnf.ai.jobs")
 
+# Only kinds with a `run_<kind>` handler in app.ai.tasks belong here.
+# "categorise" and "receipt_parse" lived here with no handler: enqueuing
+# either returned 202 and then failed every time, which is strictly worse
+# than refusing it up front. Neither is built yet -- unknown merchants go
+# to the human review queue (app/budget/categorize.py), and receipts are
+# phase 5d -- so each kind comes back when its handler does. The guard in
+# tests/test_ai.py keeps this honest.
 KINDS = {
     "design_categories",
     "design_category",
     "summary",
     "advise",
-    "receipt_parse",
-    "categorise",
 }
 
 # A job still `running` after this long is assumed dead -- almost always a

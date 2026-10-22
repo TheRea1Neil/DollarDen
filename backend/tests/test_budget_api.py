@@ -37,6 +37,56 @@ class TestCategories:
 
         assert len(client.get("/api/budget/categories", headers=h).json()) == 1
 
+    def test_kind_is_editable(self, client: TestClient) -> None:
+        """It was absent from the patch schema, so edits were silently lost."""
+        h = _auth(client)
+        c = _cat(client, h, "Car Fund", kind="spending")
+        r = client.patch(f"/api/budget/categories/{c['id']}",
+                         json={"kind": "savings_bucket"}, headers=h)
+        assert r.status_code == 200, r.text
+        assert r.json()["kind"] == "savings_bucket"
+
+    def test_bad_kind_on_patch_rejected(self, client: TestClient) -> None:
+        h = _auth(client)
+        c = _cat(client, h, "Food")
+        assert client.patch(f"/api/budget/categories/{c['id']}",
+                            json={"kind": "nonsense"},
+                            headers=h).status_code == 422
+
+    def test_renaming_onto_another_category_rejected(self, client: TestClient) -> None:
+        """Two live envelopes with one name breaks every reuse-by-name path."""
+        h = _auth(client)
+        _cat(client, h, "Food")
+        gas = _cat(client, h, "Gas")
+        r = client.patch(f"/api/budget/categories/{gas['id']}",
+                         json={"name": "Food"}, headers=h)
+        assert r.status_code == 409
+        assert client.get("/api/budget/categories", headers=h).json()[0]["name"] == "Food"
+
+    def test_renaming_to_its_own_name_is_fine(self, client: TestClient) -> None:
+        h = _auth(client)
+        c = _cat(client, h, "Food")
+        assert client.patch(f"/api/budget/categories/{c['id']}",
+                            json={"name": "Food", "target_cents": 1000},
+                            headers=h).status_code == 200
+
+    def test_reusing_an_archived_name_is_allowed(self, client: TestClient) -> None:
+        h = _auth(client)
+        old = _cat(client, h, "Food")
+        client.delete(f"/api/budget/categories/{old['id']}", headers=h)
+        gas = _cat(client, h, "Gas")
+        assert client.patch(f"/api/budget/categories/{gas['id']}",
+                            json={"name": "Food"}, headers=h).status_code == 200
+
+    def test_an_explicit_null_clears_a_target(self, client: TestClient) -> None:
+        """Clearing a target is a real edit, not an omission."""
+        h = _auth(client)
+        c = _cat(client, h, "Food", target_cents=30000)
+        r = client.patch(f"/api/budget/categories/{c['id']}",
+                         json={"target_cents": None}, headers=h)
+        assert r.status_code == 200, r.text
+        assert r.json()["target_cents"] is None
+
     def test_duplicate_active_name_rejected(self, client: TestClient) -> None:
         h = _auth(client)
         _cat(client, h, "Food")

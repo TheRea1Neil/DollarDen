@@ -196,6 +196,15 @@ class ApiClient {
     if (r.statusCode != 200) _fail(r);
   }
 
+  /// Bring an archived category back. Categories are archived, never
+  /// deleted, so this always has something to restore.
+  Future<Category> restoreCategory(String id) async {
+    final r = await _withRetry(
+        (o) => _dio.post('/budget/categories/$id/restore', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return Category.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
   Future<List<ReviewItem>> review() async {
     final r = await _withRetry((o) => _dio.get('/budget/review', options: o));
     if (r.statusCode != 200) _fail(r);

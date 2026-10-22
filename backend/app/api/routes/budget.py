@@ -78,10 +78,18 @@ class CategoryIn(BaseModel):
 
 class CategoryPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
+    kind: str | None = None
     description: str | None = None
     target_cents: int | None = Field(default=None, ge=0)
     alert_at_cents: int | None = Field(default=None, ge=0)
     sort_order: int | None = None
+
+    @field_validator("kind")
+    @classmethod
+    def _kind(cls, v: str | None) -> str | None:
+        if v is not None and v not in KINDS:
+            raise ValueError(f"kind must be one of {sorted(KINDS)}")
+        return v
 
 
 class CategoryOut(BaseModel):
@@ -152,7 +160,29 @@ def update_category(
     user: User = Depends(current_user), db: Session = Depends(get_db),
 ) -> CategoryOut:
     c = _own(db, Category, category_id, user)
-    for k, v in body.model_dump(exclude_unset=True).items():
+    changes = body.model_dump(exclude_unset=True)
+
+    # Renaming onto another live category would leave two envelopes with
+    # the same name, which quietly breaks every reuse-by-name path:
+    # applying a proposal, the assistant's duplicate check, and the user's
+    # own ability to tell them apart.
+    new_name = changes.get("name")
+    if new_name is not None and new_name != c.name:
+        clash = db.scalars(
+            select(Category).where(
+                Category.user_id == user.id,
+                Category.name == new_name,
+                Category.archived_at.is_(None),
+                Category.id != c.id,
+            )
+        ).first()
+        if clash is not None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "A category with that name already exists",
+            )
+
+    for k, v in changes.items():
         setattr(c, k, v)
     db.commit()
     return _cat_out(c)

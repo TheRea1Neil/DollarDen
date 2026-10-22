@@ -163,6 +163,12 @@ Simplified by the move to a vision model: no OCR dependency.
 **Do not start until the docs/04 cutover checklist is fully ticked**, including
 a *tested restore*.
 
+- [ ] **OAuth support, required for Bank of America** — redirect URI
+      registered, Universal/App Links served, `redirect_uri` passed on the
+      link token. Without this, BoA and every other large bank dead-ends.
+- [ ] Confirm the account is still on the Trial plan; upgrading to a paid
+      plan requires completing full OAuth registration (MSA, security
+      questionnaire, company details, app profile)
 - [ ] Production secret in `.env`; `ALLOW_PRODUCTION=true`
 - [ ] Separate database from sandbox data
 - [ ] Link **one** institution — costs 1 of 10

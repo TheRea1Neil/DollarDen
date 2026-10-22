@@ -37,12 +37,67 @@ transactions** on an immediate sync, because Plaid is still performing the
 initial pull. Code that links an account and then immediately syncs will
 conclude there is no data. The correct trigger is the webhook.
 
+## Account tier: Trial plan
+
+| | |
+|---|---|
+| Cost | **Free** — production API access, no commitment |
+| Production Items | **10**, a hard lifetime cap (see rule 1 below) |
+| OAuth institutions | **Included**, Bank of America named explicitly, along with Chase, Wells Fargo, Capital One, Citi, PNC, US Bank, Amex |
+| Products | Auth, Transactions (+ Recurring, Refresh), Balance, Identity, Assets, Liabilities, Investments, Statements |
+| Availability | US/Canada teams created on or after 2026-04-15 |
+
+**Trial skips the full OAuth registration.** Plaid gathers what it needs at
+signup, so the MSA addendum, security questionnaire, company details and app
+profile are not required. Those become mandatory only on upgrading to a paid
+plan — at which point OAuth access must be re-established through the full
+registration flow.
+
+Individual developers are explicitly supported: you may use your own name as
+the legal entity, and Plaid does not expect a solo developer to have the
+security posture of a public company.
+
+## OAuth institutions
+
+Most large US banks are OAuth, **including Bank of America** (`ins_127989`,
+`oauth: true`). OAuth hands the user to the bank's own site to authenticate,
+then needs a **registered redirect URI** to return them to the app.
+
+With `PLAID_REDIRECT_URI` empty, an OAuth link dead-ends: the user picks
+their accounts and is dumped back at the bank's login, no `public_token` is
+ever produced, and no Item is created. Observed exactly this during
+development against `ins_127989`.
+
+To support OAuth in production:
+
+- [ ] register a redirect URI in the Plaid dashboard
+- [ ] iOS Universal Link / Android App Link — an
+      `/.well-known/apple-app-site-association` served from
+      `budget.example.org` (the HTTPS host already exists)
+- [ ] pass `redirect_uri` on `/link/token/create`
+- [ ] handle the resumed Link session on return
+
+**In sandbox, every institution is a simulation.** `ins_127989` is a fake
+Bank of America that only accepts `user_good` / `pass_good`; real
+credentials cannot work there by design. For sandbox testing use one of the
+282 non-OAuth institutions — `First Platypus Bank` is the canonical one.
+
 ## Rules for not burning credits
 
 These are requirements, not suggestions.
 
-1. **Never call `/item/remove`** except deliberately retiring a bank forever.
-   It frees the Item; re-linking consumes a new credit.
+1. **Never call `/item/remove`. Ever.**
+
+   This was documented incorrectly at first. On the **Trial plan**, removing
+   an Item does **not** free a slot against the 10-Item cap:
+
+   > calling `/item/remove` on the Trial plan does not free up slots against
+   > your 10-Item cap
+
+   So the 10 is a **hard lifetime cap**, not a recyclable pool. Removing a
+   bank loses the connection *and* permanently burns the slot. There is no
+   situation in which calling it helps, which is why the app exposes no
+   disconnect action at all.
 
 2. **Re-authentication uses update mode, not a new link.** When an Item goes
    bad (`ITEM_LOGIN_REQUIRED`, expired MFA, changed password), the fix is to

@@ -1645,3 +1645,138 @@ class TestPaycheckLinkageAndUndo:
         # undoing the split is not the same as forgetting the deposit.
         cands = client.get("/api/budget/paychecks/candidates", headers=h).json()
         assert all(x["already_recorded"] for x in cands)
+
+
+@requires_db
+class TestRememberThisMerchant:
+    """Filing with 'remember' must not accumulate contradictory rules."""
+
+    def _review(self, client: TestClient, *, merchant: str, out: int = 0,
+                inn: int = 0):
+        from datetime import date as _date
+
+        from app.budget.categorize import queue_for_review
+        from app.db.models import Account, PlaidItem, Transaction
+        from app.db.session import SessionLocal
+
+        h = _auth(client)
+        uid = uuid.UUID(client.get("/api/auth/me", headers=h).json()["id"])
+        with SessionLocal() as db:
+            item = PlaidItem(user_id=uid, plaid_item_id=f"it-{uuid.uuid4().hex[:8]}",
+                             institution_name="B", access_token_encrypted=b"x")
+            db.add(item); db.flush()
+            acct = Account(user_id=uid, item_id=item.id,
+                           plaid_account_id=f"ac-{uuid.uuid4().hex[:8]}",
+                           name="Checking", type="depository", is_tracked=True)
+            db.add(acct); db.flush()
+            t = Transaction(user_id=uid, account_id=acct.id,
+                            plaid_transaction_id=f"tx-{uuid.uuid4().hex[:10]}",
+                            outflow_cents=out, inflow_cents=inn,
+                            date=_date(2026, 10, 20), name=merchant,
+                            merchant_name=merchant, treatment="spend")
+            db.add(t); db.flush()
+            rv = queue_for_review(db, uid, t, "unknown_merchant")
+            db.commit()
+            return h, str(rv.id)
+
+    def _rules(self, client, h):
+        return client.get("/api/budget/rules", headers=h).json()
+
+    def test_filing_the_same_merchant_twice_makes_one_rule(self, client) -> None:
+        h, rv1 = self._review(client, merchant="KROGER", out=5000)
+        food = _cat(client, h, "Food")
+        client.post(f"/api/budget/review/{rv1}/resolve", json={
+            "splits": [{"category_id": food["id"], "amount_cents": 5000}],
+            "remember": True,
+        }, headers=h)
+
+        # A second KROGER, filed the same way.
+        from datetime import date as _date
+
+        from sqlalchemy import select
+
+        from app.budget.categorize import queue_for_review
+        from app.db.models import Account, Transaction
+        from app.db.session import SessionLocal
+        uid = uuid.UUID(client.get("/api/auth/me", headers=h).json()["id"])
+        with SessionLocal() as db:
+            acct = db.scalars(select(Account).where(Account.user_id == uid)).first()
+            t = Transaction(user_id=uid, account_id=acct.id,
+                            plaid_transaction_id=f"tx-{uuid.uuid4().hex[:10]}",
+                            outflow_cents=6000, inflow_cents=0,
+                            date=_date(2026, 10, 21), name="KROGER",
+                            merchant_name="KROGER", treatment="spend")
+            db.add(t); db.flush()
+            rv2 = str(queue_for_review(db, uid, t, "unknown_merchant").id)
+            db.commit()
+        client.post(f"/api/budget/review/{rv2}/resolve", json={
+            "splits": [{"category_id": food["id"], "amount_cents": 6000}],
+            "remember": True,
+        }, headers=h)
+
+        kroger = [r for r in self._rules(client, h)
+                  if r["matcher"].get("merchant_contains") == "kroger"]
+        assert len(kroger) == 1, f"duplicated: {kroger}"
+
+    def test_refiling_elsewhere_moves_the_rule_rather_than_contradicting(
+            self, client) -> None:
+        """Two rules for one merchant at the same priority resolve by
+        creation order, which is to say arbitrarily."""
+        h, rv1 = self._review(client, merchant="BIKE SHOP", out=5000)
+        a = _cat(client, h, "Car Fund", kind="savings_bucket")
+        b = _cat(client, h, "Fun")
+        client.post(f"/api/budget/review/{rv1}/resolve", json={
+            "splits": [{"category_id": a["id"], "amount_cents": 5000}],
+            "remember": True,
+        }, headers=h)
+
+        from datetime import date as _date
+
+        from sqlalchemy import select
+
+        from app.budget.categorize import queue_for_review
+        from app.db.models import Account, Transaction
+        from app.db.session import SessionLocal
+        uid = uuid.UUID(client.get("/api/auth/me", headers=h).json()["id"])
+        with SessionLocal() as db:
+            acct = db.scalars(select(Account).where(Account.user_id == uid)).first()
+            t = Transaction(user_id=uid, account_id=acct.id,
+                            plaid_transaction_id=f"tx-{uuid.uuid4().hex[:10]}",
+                            outflow_cents=7000, inflow_cents=0,
+                            date=_date(2026, 10, 21), name="BIKE SHOP",
+                            merchant_name="BIKE SHOP", treatment="spend")
+            db.add(t); db.flush()
+            rv2 = str(queue_for_review(db, uid, t, "unknown_merchant").id)
+            db.commit()
+        client.post(f"/api/budget/review/{rv2}/resolve", json={
+            "splits": [{"category_id": b["id"], "amount_cents": 7000}],
+            "remember": True,
+        }, headers=h)
+
+        bike = [r for r in self._rules(client, h)
+                if r["matcher"].get("merchant_contains") == "bike shop"]
+        assert len(bike) == 1, f"contradictory rules: {bike}"
+        assert bike[0]["category_id"] == b["id"], "the latest decision should win"
+
+    def test_remembering_income_does_not_claim_future_spending(self, client) -> None:
+        """A payroll deposit filed once must not auto-file purchases."""
+        h, rv = self._review(client, merchant="ACME PAYROLL", inn=200000)
+        inc = _cat(client, h, "Income Holding", kind="savings_bucket")
+        client.post(f"/api/budget/review/{rv}/resolve", json={
+            "splits": [{"category_id": inc["id"], "amount_cents": -200000}],
+            "remember": True,
+        }, headers=h)
+        rule = next(r for r in self._rules(client, h)
+                    if r["matcher"].get("merchant_contains") == "acme payroll")
+        assert rule["matcher"]["direction"] == "inflow"
+
+    def test_remembering_spending_records_the_outflow_direction(self, client) -> None:
+        h, rv = self._review(client, merchant="KROGER", out=5000)
+        food = _cat(client, h, "Food")
+        client.post(f"/api/budget/review/{rv}/resolve", json={
+            "splits": [{"category_id": food["id"], "amount_cents": 5000}],
+            "remember": True,
+        }, headers=h)
+        rule = next(r for r in self._rules(client, h)
+                    if r["matcher"].get("merchant_contains") == "kroger")
+        assert rule["matcher"]["direction"] == "outflow"

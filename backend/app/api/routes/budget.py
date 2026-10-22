@@ -785,6 +785,10 @@ class NewCategoryIn(BaseModel):
 
     name: str = Field(min_length=1, max_length=120)
     kind: str = "spending"
+    # Asked for here too. Categories made mid-review were the only ones
+    # that could never get a description, which is how a budget ends up
+    # with none of them.
+    description: str | None = None
     target_cents: int | None = Field(default=None, ge=0)
     alert_at_cents: int | None = Field(default=None, ge=0)
 
@@ -859,9 +863,41 @@ def resolve(
         # says nothing reliable about the next transaction.
         txn = db.get(Transaction, rv.transaction_id)
         merchant = (txn.merchant_name or txn.name or "").strip() if txn else ""
-        if merchant:
-            db.add(CategoryRule(user_id=user.id, category_id=pairs[0][0],
-                                matcher={"merchant_contains": merchant.lower()}, priority=50))
+        if merchant and txn is not None:
+            # Match the same DIRECTION this transaction went. Remembering
+            # a purchase must not also claim a refund from the same
+            # merchant -- or, worse, an income deposit: a payroll deposit
+            # filed once would otherwise auto-file every future paycheck
+            # into that category.
+            matcher = {
+                "merchant_contains": merchant.lower(),
+                "direction": "inflow" if txn.inflow_cents > txn.outflow_cents
+                             else "outflow",
+            }
+            existing = db.scalars(
+                select(CategoryRule).where(
+                    CategoryRule.user_id == user.id,
+                    CategoryRule.matcher["merchant_contains"].astext
+                    == merchant.lower(),
+                )
+            ).all()
+            # The user's latest decision wins. Adding a second rule for a
+            # merchant already pointed somewhere else leaves two
+            # contradictory rules at the same priority, resolved by
+            # creation order -- which is to say, arbitrarily.
+            same_direction = [
+                r for r in existing
+                if (r.matcher or {}).get("direction") in
+                (None, matcher["direction"])
+            ]
+            if same_direction:
+                for r in same_direction:
+                    r.category_id = pairs[0][0]
+                    r.matcher = matcher
+                    r.enabled = True
+            else:
+                db.add(CategoryRule(user_id=user.id, category_id=pairs[0][0],
+                                    matcher=matcher, priority=50))
     db.commit()
 
 

@@ -210,6 +210,49 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
     }
   }
 
+  /// Ask the assistant to write the description.
+  ///
+  /// Small on purpose. A description is not load-bearing — allocation is
+  /// entirely split rules — but it is what the assistant reads when
+  /// writing summaries, and what anyone else reading the budget needs.
+  Future<void> _suggestDescription() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final api = ref.read(apiProvider);
+      final job = await api.queueJob('describe_category', {
+        'category_id': widget.existing!.id,
+        'funding_summary': _detail?.funding?.summary,
+        'recent_merchants': [
+          for (final a in (_detail?.recent ?? const <Activity>[]))
+            if (a.merchant != null) a.merchant,
+        ],
+      });
+      final done = await api.awaitJob(job.id);
+      if (!mounted) return;
+      if (!done.ok) {
+        setState(() => _error = done.error ?? 'The assistant could not finish.');
+        return;
+      }
+      final text = (done.result?['description'] as String?)?.trim() ?? '';
+      if (text.isEmpty) {
+        setState(() => _error = 'The assistant did not write anything.');
+        return;
+      }
+      // Into the field, not straight to the server: it is a suggestion,
+      // and the user saves it like anything else they typed.
+      setState(() => _description.text = text);
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _removeMatcher(Matcher m) async {
     setState(() => _busy = true);
     try {
@@ -417,12 +460,24 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
               decoration: const InputDecoration(
                 labelText: 'What it is for',
                 hintText: 'Groceries only — eating out comes out of Fun.',
-                helperText: 'The assistant reads this when it sorts '
-                    'transactions and writes your summaries. It does not '
-                    'affect how paychecks are split.',
-                helperMaxLines: 4,
+                helperText: 'Read by the assistant when it writes your '
+                    'summaries. It does not affect how paychecks are split.',
+                helperMaxLines: 3,
               ),
             ),
+            if (!_isNew)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: _busy ? null : _suggestDescription,
+                  icon: const Icon(Icons.auto_awesome, size: 16),
+                  label: Text(_description.text.trim().isEmpty
+                      ? 'Write one for me'
+                      : 'Rewrite it'),
+                  style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact),
+                ),
+              ),
             const SizedBox(height: 16),
             TextFormField(
               controller: _target,

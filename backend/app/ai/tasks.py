@@ -966,3 +966,91 @@ def _validate_refine(
         "notices": notices,
         "applicable": not problems,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Writing a category's description
+# --------------------------------------------------------------------------- #
+DESCRIBE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "description": {
+            "type": "string",
+            "description": "one sentence saying what belongs in this "
+                           "category and what does not",
+        },
+    },
+    "required": ["description"],
+}
+
+DESCRIBE_PROMPT = """Write one sentence describing what a budget category
+is for.
+
+  name:        {name}
+  kind:        {kind}
+  holds now:   {balance}
+  full at:     {target}
+  funded by:   {funding}
+{spending}
+
+Their other categories, so the line draws a boundary rather than
+overlapping one:
+{others}
+
+Write it in the user's voice, plainly, as if they wrote it themselves.
+Say what belongs here and — where it is not obvious — what does not,
+because the useful part of a description is usually the edge. For
+example: "Groceries from a shop; eating out comes out of Fun."
+
+One sentence. No preamble. Return JSON only."""
+
+
+async def run_describe_category(
+    db: Session, user: User, provider: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    """Suggest a description for one category.
+
+    Deliberately small. A description is not load-bearing -- allocation
+    is entirely split rules -- but it is what the assistant reads when
+    writing summaries and advice, and it is what a second person reading
+    the budget needs.
+    """
+    cat_id = (request.get("category_id") or "").strip()
+    if not cat_id:
+        raise ValueError("describe_category needs a category_id")
+    try:
+        pk = uuid.UUID(cat_id)
+    except ValueError:
+        raise ValueError("category_id is not a valid id") from None
+
+    cat = db.scalars(
+        select(Category).where(Category.id == pk, Category.user_id == user.id)
+    ).first()
+    if cat is None:
+        raise ValueError("that category does not exist")
+
+    # What has actually landed here says more than the name does.
+    merchants = request.get("recent_merchants") or []
+    spending = (
+        "  recently: " + ", ".join(str(m) for m in merchants[:8])
+        if merchants else ""
+    )
+    others = [c for c in _categories(db, user) if c.id != cat.id]
+
+    prompt = DESCRIBE_PROMPT.format(
+        name=cat.name, kind=cat.kind,
+        balance=f"${cat.balance_cents / 100:,.2f}",
+        target=f"${cat.target_cents / 100:,.2f}" if cat.target_cents else "no set amount",
+        funding=request.get("funding_summary") or "not funded automatically",
+        spending=spending,
+        others="\n".join(_describe_category(c) for c in others) or "  (none)",
+    )
+    res = await provider.chat(prompt, schema=DESCRIBE_SCHEMA)
+    raw = _parse_json(res.content)
+    text = str(raw.get("description", "")).strip()
+    return {
+        "description": text,
+        "applicable": bool(text),
+        "problems": [] if text else ["the assistant did not write anything"],
+        "notices": [],
+    }

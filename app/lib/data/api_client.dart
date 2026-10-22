@@ -294,6 +294,7 @@ class ApiClient {
     String reviewId, {
     required String name,
     String kind = 'spending',
+    String? description,
     int? targetCents,
     int? alertAtCents,
     bool remember = false,
@@ -303,6 +304,8 @@ class ApiClient {
           data: {
             'new_category': {
               'name': name,
+              if (description != null && description.isNotEmpty)
+                'description': description,
               'kind': kind,
               if (targetCents != null) 'target_cents': targetCents,
               if (alertAtCents != null) 'alert_at_cents': alertAtCents,

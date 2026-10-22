@@ -131,9 +131,15 @@ class _ReviewCard extends ConsumerWidget {
             [(categoryId: categoryId, amountCents: item.amountCents)],
             remember: remember,
           );
-        case _PickNew(:final name, :final kind, :final targetCents, :final remember):
+        case _PickNew(
+            :final name,
+            :final kind,
+            :final targetCents,
+            :final remember,
+            :final description
+          ):
           await api.resolveReviewWithNewCategory(
-            item.id, name: name, kind: kind,
+            item.id, name: name, kind: kind, description: description,
             targetCents: targetCents, remember: remember,
           );
         case _PickExclude(:final treatment):
@@ -173,7 +179,9 @@ class _PickNew extends _PickerResult {
   final String kind;
   final int? targetCents;
   final bool remember;
-  const _PickNew(this.name, this.kind, this.targetCents, this.remember);
+  final String? description;
+  const _PickNew(this.name, this.kind, this.targetCents, this.remember,
+      {this.description});
 }
 
 class _PickExclude extends _PickerResult {
@@ -342,12 +350,14 @@ class _NewCategoryDialog extends StatefulWidget {
 
 class _NewCategoryDialogState extends State<_NewCategoryDialog> {
   final _name = TextEditingController();
+  final _description = TextEditingController();
   final _target = TextEditingController();
   String _kind = 'spending';
 
   @override
   void dispose() {
     _name.dispose();
+    _description.dispose();
     _target.dispose();
     super.dispose();
   }
@@ -364,6 +374,18 @@ class _NewCategoryDialogState extends State<_NewCategoryDialog> {
             autofocus: true,
             textCapitalization: TextCapitalization.words,
             decoration: const InputDecoration(labelText: 'Name'),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _description,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: const InputDecoration(
+              labelText: 'What it is for (optional)',
+              hintText: 'Groceries from a shop; eating out is separate.',
+              helperText: 'The assistant reads this when writing your '
+                  'summaries.',
+              helperMaxLines: 2,
+            ),
           ),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
@@ -397,7 +419,10 @@ class _NewCategoryDialogState extends State<_NewCategoryDialog> {
             if (name.isEmpty) return;
             Navigator.pop(
               context,
-              _PickNew(name, _kind, Money.parse(_target.text), widget.remember),
+              _PickNew(name, _kind, Money.parse(_target.text), widget.remember,
+                  description: _description.text.trim().isEmpty
+                      ? null
+                      : _description.text.trim()),
             );
           },
           child: const Text('Create & assign'),

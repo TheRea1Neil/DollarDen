@@ -15,6 +15,7 @@ app/budget/__init__.py
 app/budget/categorize.py
 app/budget/ledger.py
 app/budget/paycheck.py
+app/budget/reconcile.py
 app/budget/rules.py
 app/budget/split.py
 app/budget/treatment.py
@@ -43,6 +44,7 @@ tests/test_ledger.py
 tests/test_plaid_sync.py
 tests/test_plaid_webhook.py
 tests/test_ratelimit.py
+tests/test_reconcile.py
 tests/test_split_engine.py
 tests/test_token_backup.py
 tests/test_treatment.py

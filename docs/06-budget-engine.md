@@ -134,6 +134,54 @@ text throws away. See docs/05.
 The user always confirms before allocations are written. Tax and fees are
 apportioned across lines proportionally by default, with manual override.
 
+## Reconciling against the bank
+
+The budget must agree with reality. The invariant:
+
+```
+allocated  ==  cash  -  card_debt
+```
+
+Why it holds continuously:
+
+| | cash | card debt | allocated | check |
+|---|---|---|---|---|
+| start | 1000 | 0 | 1000 | 1000 − 0 = 1000 ✓ |
+| $42 on the card | 1000 | 42 | 958 | 1000 − 42 = 958 ✓ |
+| pay the card | 958 | 0 | 958 | 958 − 0 = 958 ✓ |
+
+A card purchase draws its category down before the cash leaves, so the two
+sides diverge by exactly the card balance and converge again when the card
+is paid. This is the budgeting equivalent of reconciling a bank statement:
+if they disagree by anything else, the user is being shown a comfortable
+number that is wrong, and should be told.
+
+`cash` and `card_debt` count **tracked accounts only**, so choosing which
+accounts to track is also choosing what the budget is measured against.
+
+### The unallocated sink
+
+Exactly one category per user carries `is_unallocated`, enforced by a
+partial unique index rather than trusted to application code. It holds
+money with no purpose yet, which is what keeps the total matching the bank.
+
+`POST /budget/reconcile` sweeps any difference into it. **It works in both
+directions**: if more is allocated than exists — spending outran income —
+the sink goes negative rather than the shortfall being hidden. A budgeting
+app that quietly absorbs a shortfall is worse than one that shows a scary
+number.
+
+### Starting from money you already have
+
+`POST /budget/opening-balance` takes the current balances of tracked
+accounts and distributes them across categories, with the remainder landing
+in the sink. Guard rails:
+
+- refused once categories already hold money — opening balances are for
+  starting out, not for correcting an existing budget
+- refused if the allocations exceed what is available, unless
+  `allow_over_allocation` is passed explicitly
+
 ## Alerts
 
 | Alert | Trigger |

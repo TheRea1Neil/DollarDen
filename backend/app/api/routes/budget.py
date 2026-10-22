@@ -11,9 +11,17 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import current_user
 from app.budget.categorize import resolve_review, signed_amount
-from app.budget.ledger import LedgerError, audit_balances
+from app.budget.ledger import Entry, LedgerError, audit_balances, post
 from app.budget.treatment import Treatment, explain
 from app.budget.paycheck import apply_plan, candidates, predict_next, unapply
+from app.budget.reconcile import (
+    compute as compute_reconciliation,
+)
+from app.budget.reconcile import (
+    ensure_unallocated,
+    sweep_to_unallocated,
+    unallocated_category,
+)
 from app.budget.split import RuleType, SplitPlanError, SplitRule as EngineRule, apply_split
 from app.db.models import (
     Account,
@@ -88,6 +96,7 @@ class CategoryOut(BaseModel):
     archived: bool
     below_alert: bool
     overspent: bool
+    is_unallocated: bool
 
 
 def _cat_out(c: Category) -> CategoryOut:
@@ -100,6 +109,7 @@ def _cat_out(c: Category) -> CategoryOut:
         # A negative balance means more was spent than the category held. It
         # is a real state, not an error, and the user needs to see it.
         overspent=c.balance_cents < 0,
+        is_unallocated=c.is_unallocated,
     )
 
 
@@ -866,6 +876,122 @@ def credit_cards(
 
 
 # --------------------------------------------------------------------------- #
+# Opening balances and reconciliation
+# --------------------------------------------------------------------------- #
+@router.get("/reconciliation")
+def reconciliation(
+    user: User = Depends(current_user), db: Session = Depends(get_db)
+) -> dict[str, object]:
+    """Does the budget agree with the bank?
+
+    Allocated should equal cash minus card debt. Anything else is money
+    without a purpose, and is surfaced rather than quietly absorbed.
+    """
+    rec = compute_reconciliation(db, user.id)
+    sink = unallocated_category(db, user.id)
+    return {
+        **rec.as_dict(),
+        "unallocated_category_id": str(sink.id) if sink else None,
+    }
+
+
+class OpeningAllocationIn(BaseModel):
+    category_id: str
+    amount_cents: int = Field(gt=0)
+
+
+class OpeningBalanceIn(BaseModel):
+    """Start budgeting from the money you already have.
+
+    Every category gets its opening amount, and whatever is left lands in
+    the unallocated sink so the total still matches the bank.
+    """
+
+    allocations: list[OpeningAllocationIn] = Field(default_factory=list)
+    # Put the leftover somewhere other than the default sink, if wanted.
+    remainder_category_id: str | None = None
+    # Refuse rather than over-allocate past what actually exists.
+    allow_over_allocation: bool = False
+
+
+@router.post("/opening-balance")
+def set_opening_balance(
+    body: OpeningBalanceIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    rec = compute_reconciliation(db, user.id)
+
+    if rec.allocated_cents != 0:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Categories already hold money. Opening balances are for starting "
+            "from scratch; adjust categories individually instead.",
+        )
+
+    requested = sum(a.amount_cents for a in body.allocations)
+    if requested > rec.available_cents and not body.allow_over_allocation:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Tried to allocate {requested} cents but only "
+            f"{rec.available_cents} is available "
+            f"(cash {rec.cash_cents} minus card debt {rec.card_debt_cents}).",
+        )
+
+    entries: list[Entry] = []
+    for a in body.allocations:
+        cat = _own(db, Category, a.category_id, user)
+        if cat.archived_at is not None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"'{cat.name}' is archived",
+            )
+        entries.append(
+            Entry(cat.id, a.amount_cents, "opening_balance", None, "opening balance")
+        )
+
+    if entries:
+        post(db, user.id, entries)
+
+    # Whatever is left has no purpose yet, and must still be accounted for
+    # or the total stops matching the bank.
+    remainder = rec.available_cents - requested
+    sink_id = None
+    if remainder != 0:
+        if body.remainder_category_id:
+            sink = _own(db, Category, body.remainder_category_id, user)
+        else:
+            sink = ensure_unallocated(db, user.id)
+        post(db, user.id,
+             [Entry(sink.id, remainder, "opening_balance", None, "unallocated remainder")])
+        sink_id = str(sink.id)
+
+    db.commit()
+    after = compute_reconciliation(db, user.id)
+    return {
+        "allocated_cents": after.allocated_cents,
+        "remainder_cents": remainder,
+        "remainder_category_id": sink_id,
+        **after.as_dict(),
+    }
+
+
+@router.post("/reconcile")
+def reconcile_now(
+    user: User = Depends(current_user), db: Session = Depends(get_db)
+) -> dict[str, object]:
+    """Sweep any difference into the unallocated sink.
+
+    Works both ways: if more is allocated than exists -- spending outran
+    income -- the sink goes negative rather than the shortfall being hidden.
+    """
+    moved = sweep_to_unallocated(db, user.id)
+    db.commit()
+    rec = compute_reconciliation(db, user.id)
+    return {"moved_cents": moved, **rec.as_dict()}
+
+
+# --------------------------------------------------------------------------- #
 # Summary
 # --------------------------------------------------------------------------- #
 @router.get("/summary")
@@ -896,7 +1022,9 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
             )
         ).all()
     )
+    rec = compute_reconciliation(db, user.id)
     return {
+        "reconciliation": rec.as_dict(),
         "cards": [c.model_dump() for c in cards],
         "card_debt_cents": sum(c.balance_cents for c in cards),
         "cash_accounts": [a.model_dump() for a in cash],

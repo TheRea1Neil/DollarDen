@@ -192,6 +192,9 @@ class Category(Base):
     target_cents: Mapped[int | None] = mapped_column(BigInteger)
     alert_at_cents: Mapped[int | None] = mapped_column(BigInteger)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # The sink for money with no purpose yet. At most one per user, enforced
+    # by a partial unique index (migration 0004).
+    is_unallocated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _now()
 

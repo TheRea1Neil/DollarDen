@@ -303,3 +303,97 @@ class TestAccountVisibility:
         assert client.get("/api/budget/accounts", headers=hb).json() == []
         assert client.post(f"/api/budget/accounts/{aid}/tracked",
                            json={"is_tracked": False}, headers=hb).status_code == 404
+
+
+@requires_db
+class TestOpeningBalance:
+    def _accounts(self, client, h, *, cash: int, debt: int) -> None:
+        import uuid as _u
+
+        import sqlalchemy as _sa
+
+        from app.db.models import Account, PlaidItem, User
+        from app.db.session import SessionLocal
+
+        me = client.get("/api/auth/me", headers=h).json()
+        with SessionLocal() as db:
+            user = db.get(User, _u.UUID(me["id"]))
+            item = PlaidItem(user_id=user.id, plaid_item_id=f"it-{_u.uuid4().hex[:10]}",
+                             access_token_encrypted=b"x")
+            db.add(item); db.flush()
+            db.add(Account(user_id=user.id, item_id=item.id,
+                           plaid_account_id=f"ck-{_u.uuid4().hex[:8]}", name="Checking",
+                           type="depository", current_cents=cash, is_tracked=True))
+            db.add(Account(user_id=user.id, item_id=item.id,
+                           plaid_account_id=f"cc-{_u.uuid4().hex[:8]}", name="Visa",
+                           type="credit", current_cents=debt, is_tracked=True))
+            db.commit()
+            _sa  # keep the import referenced
+
+    def test_allocates_and_sinks_the_remainder(self, client: TestClient) -> None:
+        h = _auth(client)
+        self._accounts(client, h, cash=500000, debt=0)
+        food = _cat(client, h, "Food")
+        rent = _cat(client, h, "Rent", "obligation")
+
+        r = client.post("/api/budget/opening-balance", json={"allocations": [
+            {"category_id": food["id"], "amount_cents": 30000},
+            {"category_id": rent["id"], "amount_cents": 120000},
+        ]}, headers=h)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["remainder_cents"] == 350000
+        assert body["balanced"] is True
+
+        cats = {c["name"]: c for c in client.get("/api/budget/categories", headers=h).json()}
+        assert cats["Food"]["balance_cents"] == 30000
+        sink = next(c for c in cats.values() if c["is_unallocated"])
+        assert sink["balance_cents"] == 350000
+
+    def test_card_debt_reduces_what_is_available(self, client: TestClient) -> None:
+        h = _auth(client)
+        self._accounts(client, h, cash=100000, debt=25000)
+        r = client.get("/api/budget/reconciliation", headers=h).json()
+        assert r["cash_cents"] == 100000
+        assert r["card_debt_cents"] == 25000
+        assert r["available_cents"] == 75000
+
+    def test_over_allocation_is_refused_by_default(self, client: TestClient) -> None:
+        h = _auth(client)
+        self._accounts(client, h, cash=10000, debt=0)
+        food = _cat(client, h, "Food")
+        r = client.post("/api/budget/opening-balance", json={"allocations": [
+            {"category_id": food["id"], "amount_cents": 50000},
+        ]}, headers=h)
+        assert r.status_code == 422
+        assert "available" in r.text.lower()
+
+    def test_over_allocation_allowed_when_explicit(self, client: TestClient) -> None:
+        h = _auth(client)
+        self._accounts(client, h, cash=10000, debt=0)
+        food = _cat(client, h, "Food")
+        r = client.post("/api/budget/opening-balance", json={
+            "allocations": [{"category_id": food["id"], "amount_cents": 50000}],
+            "allow_over_allocation": True,
+        }, headers=h)
+        assert r.status_code == 200
+        # The shortfall lands in the sink as a negative, not hidden.
+        assert r.json()["remainder_cents"] == -40000
+
+    def test_refused_once_categories_hold_money(self, client: TestClient) -> None:
+        h = _auth(client)
+        self._accounts(client, h, cash=100000, debt=0)
+        food = _cat(client, h, "Food")
+        client.post("/api/budget/opening-balance", json={
+            "allocations": [{"category_id": food["id"], "amount_cents": 1000}]}, headers=h)
+        again = client.post("/api/budget/opening-balance", json={
+            "allocations": [{"category_id": food["id"], "amount_cents": 1000}]}, headers=h)
+        assert again.status_code == 409
+
+    def test_reconcile_endpoint_balances_the_budget(self, client: TestClient) -> None:
+        h = _auth(client)
+        self._accounts(client, h, cash=80000, debt=0)
+        assert client.get("/api/budget/reconciliation",
+                          headers=h).json()["unallocated_cents"] == 80000
+        r = client.post("/api/budget/reconcile", headers=h).json()
+        assert r["moved_cents"] == 80000 and r["balanced"] is True

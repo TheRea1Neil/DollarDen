@@ -129,7 +129,47 @@ docs/06, and sandbox spending draws the right categories down.
 **Done when:** the full sandbox loop works from the phone, including offline
 edits that reconcile on reconnect.
 
+## Phase 4.5 — Opening balances and reconciliation  ✅ DONE 2026-10-22
+
+- [x] `allocated == cash - card_debt` invariant, tested across the full
+      spend-then-pay cycle
+- [x] Unallocated sink, one per user, enforced by a partial unique index
+- [x] `POST /budget/opening-balance` — start from money already held
+- [x] `POST /budget/reconcile` — sweep the difference, in both directions
+- [x] `GET /budget/reconciliation` — surfaced, never quietly absorbed
+
 ## Phase 5 — AI features
+
+Ordered so each piece is useful on its own, and so the infrastructure that
+receipts need gets built before receipts.
+
+### 5a — Goals
+- [ ] Free-text goals, stored per user
+- [ ] Fed verbatim into summary and advice prompts
+
+### 5b — Job infrastructure
+- [ ] `ai_jobs` queue with persisted results
+- [ ] Wake orchestration via the deployed WoL API (~10 s cold)
+- [ ] Job state surfaced in the UI: queued -> waking -> running -> done
+
+### 5c — Setup assistant and category design
+- [ ] Guided first-run: which accounts to track, then opening allocation
+- [ ] Describe a goal in prose, get proposed categories and split rules
+- [ ] **Proposals land as editable drafts, never auto-applied** (ADR 0003)
+- [ ] Split plans already version on edit, so a proposal can be rolled back
+
+### 5d — Receipt itemisation
+- [ ] Camera capture and upload
+- [ ] `qwen2.5vl:7b` reads the image directly — no OCR stage (ADR 0004)
+- [ ] Line items split across categories, user confirms before anything is
+      written
+
+### Deliberately NOT doing
+- [ ] ~~AI categorisation of the review queue~~ — "remember this merchant"
+      collapses most of it after a few taps, and repeat merchants are the
+      bulk of real spending. Model inference is slower and less predictable
+      than a rule for recognising the same shop a fourth time.
+
 
 - [ ] Provider abstraction + settings (deck / custom URL / off)
 - [ ] Job queue, wake orchestration, job-state UI

@@ -292,3 +292,39 @@ broken. `problems` block; `notices` inform.
 Ollama has **no authentication**. Port 11434 must never be forwarded; remote
 access is via the WireGuard VPN only. If a user points `CustomProvider` at a
 public URL, warn them explicitly that financial data will go to that host.
+
+## What the model is actually told about a category
+
+`_describe_category()` in `app/ai/tasks.py` is the single place that
+renders a category for a prompt. Everything that reasons about categories
+goes through it, so there is one answer to "what does the model know".
+
+It sends name, kind, target and **description**. The description is the
+only field that can carry intent a name cannot: `Blue Fund` means nothing,
+but "the deductible on my daughter's braces, due in March; not spending
+money" means a great deal. Without it the model fills the gap with a
+plausible guess — asked about an undescribed `Blue Fund`, qwen2.5vl
+asserted it was "typically reserved for unexpected expenses or
+emergencies", which was simply made up.
+
+The description does **not** affect allocation. Money movement is entirely
+`split_rules`. If you add an AI task that mentions categories, render them
+with `_describe_category()` rather than inlining a format string, or the
+description quietly stops reaching the model for that task.
+
+## Job kinds must have handlers
+
+`jobs.KINDS` gates what `enqueue()` accepts; dispatch is by convention,
+`run_<kind>` in `app.ai.tasks`. A kind listed without a handler is the
+worst of both worlds: the API returns 202, the user watches a spinner, and
+the job fails with `no handler for job kind`.
+
+`categorise` and `receipt_parse` were both in that state. `tests/test_ai.py`
+now asserts every advertised kind has a handler, so a kind can only be
+advertised once it works.
+
+Note that **AI categorisation does not exist**. `app/budget/categorize.py`
+tries deterministic matchers, then prior decisions, then sends the
+transaction to the human review queue. Categories' descriptions therefore
+inform design, summaries and advice — not transaction sorting, which has no
+model in the loop yet.

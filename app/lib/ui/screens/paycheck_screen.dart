@@ -34,10 +34,35 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
   /// The order and rules currently being tried. Null means "whatever is
   /// saved"; non-null means the user has dragged or edited something and
   /// the numbers on screen describe a plan that is not saved yet.
-  List<PreviewLine>? _draft;
+  /// The saved plan's rules, as the last preview reported them. Rule
+  /// EDITS are permanent, so this is refreshed from the server whenever
+  /// one is made rather than patched locally.
+  List<PreviewLine>? _baseLines;
+
+  /// The order the user has dragged things into, by category id. This is
+  /// the only thing that is one-off: dragging is exploration, so it
+  /// never touches the saved plan. Null means "whatever the plan says".
+  List<String>? _order;
 
   /// Money set aside before the rules run, for this paycheck only.
   final Map<String, (String name, int cents)> _manual = {};
+
+  /// The saved rules arranged into the dragged order, or null if nothing
+  /// has been dragged.
+  List<PreviewLine>? get _ordered {
+    final base = _baseLines;
+    final order = _order;
+    if (base == null || order == null) return null;
+    final byId = {for (final l in base) l.categoryId: l};
+    final out = [
+      for (final id in order)
+        if (byId.containsKey(id)) byId[id]!
+    ];
+    // Anything the plan gained since the drag keeps its own place at the
+    // end rather than vanishing.
+    out.addAll(base.where((l) => !order.contains(l.categoryId)));
+    return out;
+  }
 
   @override
   void initState() {
@@ -56,35 +81,44 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
 
   int? get _cents => Money.parse(_amount.text);
 
-  Future<void> _previewIt({List<PreviewLine>? using}) async {
+  /// [refreshBase] re-reads the saved plan, after a permanent rule edit.
+  Future<void> _previewIt({bool refreshBase = false}) async {
     final cents = _cents;
     if (cents == null || cents <= 0) return;
     setState(() {
       _busy = true;
       _error = null;
-      if (using == null) _preview = null;
+      if (_baseLines == null) _preview = null;
     });
     try {
-      final source = using ?? _draft;
+      if (refreshBase || _baseLines == null) {
+        // One call against the saved plan, to learn what its rules now
+        // are. The dragged order is then applied on top of that.
+        final base = await ref.read(apiProvider).previewPaycheck(
+              cents,
+              manual: _manualJson,
+            );
+        if (!mounted) return;
+        _baseLines = base.lines.where((l) => !l.isManualOnly).toList();
+        if (_order == null) {
+          setState(() => _preview = base);
+          return;
+        }
+      }
+
+      final source = _ordered;
       final rules = source == null
           ? null
           : [
               for (var i = 0; i < source.length; i++)
-                if (!source[i].isManualOnly) source[i].toRuleJson(i + 1)
+                source[i].toRuleJson(i + 1)
             ];
       final p = await ref.read(apiProvider).previewPaycheck(
             cents,
             rules: rules,
             manual: _manualJson,
           );
-      if (mounted) {
-        setState(() {
-          _preview = p;
-          // Keep the draft in step with what came back, so a later drag
-          // builds on the recalculated rules rather than stale ones.
-          if (_draft != null || using != null) _draft = p.lines;
-        });
-      }
+      if (mounted) setState(() => _preview = p);
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } catch (e) {
@@ -95,11 +129,12 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
   }
 
   void _reorder(int from, int to) {
-    final lines = [...(_draft ?? _preview!.lines)];
+    final current = _ordered ?? _preview!.lines.where((l) => !l.isManualOnly).toList();
+    final ids = [for (final l in current) l.categoryId];
     if (to > from) to -= 1;
-    lines.insert(to, lines.removeAt(from));
-    setState(() => _draft = lines);
-    _previewIt(using: lines);
+    ids.insert(to, ids.removeAt(from));
+    setState(() => _order = ids);
+    _previewIt();
   }
 
   Future<void> _editRule(PreviewLine line) async {
@@ -111,13 +146,30 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
     );
     if (result == null) return;
     final (type, params) = result;
-    if (type == null) return;   // "remove funding" is not meaningful here
-    final lines = [
-      for (final l in (_draft ?? _preview!.lines))
-        l.categoryId == line.categoryId ? l.copyWithRule(type, params) : l
-    ];
-    setState(() => _draft = lines);
-    await _previewIt(using: lines);
+
+    // A rule change is a decision, not an experiment: it is saved to the
+    // plan straight away. Only the dragged ORDER is one-off. Position is
+    // preserved, so saving a rule does not also move the category.
+    setState(() => _busy = true);
+    try {
+      await ref.read(apiProvider).setFunding(
+            line.categoryId,
+            ruleType: type,
+            params: params,
+          );
+      ref.invalidate(summaryProvider);
+      ref.invalidate(categoriesProvider);
+      if (!mounted) return;
+      await _previewIt(refreshBase: true);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('${line.name} saved — this applies from now on.'),
+      ));
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   List<Map<String, dynamic>> get _manualJson => [
@@ -136,12 +188,12 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
     );
     if (picked == null) return;
     setState(() => _manual[picked.$1] = (picked.$2, picked.$3));
-    await _previewIt(using: _draft);
+    await _previewIt(refreshBase: true);
   }
 
   Future<void> _removeSetAside(String categoryId) async {
     setState(() => _manual.remove(categoryId));
-    await _previewIt(using: _draft);
+    await _previewIt(refreshBase: true);
   }
 
   Future<void> _apply() async {
@@ -149,16 +201,16 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
     if (p == null) return;
     setState(() => _busy = true);
     try {
-      final lines = _draft;
+      final lines = _ordered;
       final out = await ref.read(apiProvider).recordPaycheck(
             p.grossCents,
-            // One-off: this never rewrites the saved plan. Making a
-            // change stick is done on the category itself.
+            // Only the ORDER is one-off. Any rule change was already
+            // saved to the plan when it was made.
             rules: lines == null
                 ? null
                 : [
                     for (var i = 0; i < lines.length; i++)
-                      if (!lines[i].isManualOnly) lines[i].toRuleJson(i + 1)
+                      lines[i].toRuleJson(i + 1)
                   ],
             manual: _manualJson,
           );
@@ -229,7 +281,7 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
                       const TextInputType.numberWithOptions(decimal: true),
                   onChanged: (_) => setState(() {
                     _preview = null;
-                    _draft = null;
+                    _baseLines = null;
                   }),
                   onSubmitted: (_) => _previewIt(),
                   decoration: const InputDecoration(
@@ -299,7 +351,7 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
                             ),
                           ]),
                     ),
-                  if (_draft != null)
+                  if (_order != null)
                     Container(
                       width: double.infinity,
                       margin: const EdgeInsets.only(bottom: 12),
@@ -315,9 +367,8 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            'Just for this paycheck. Your saved plan is '
-                            'unchanged — edit the category itself to make '
-                            'it permanent.',
+                            'This order is just for this paycheck. Your '
+                            'saved plan keeps its own.',
                             style: TextStyle(
                                 color:
                                     theme.colorScheme.onTertiaryContainer),
@@ -326,8 +377,9 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
                       ]),
                     ),
                   Text(
-                      'Drag to change who gets paid first. Tap a row to '
-                      'change its rule for this paycheck.',
+                      'Drag to try a different order — just for this '
+                      'paycheck. Tap a row to change its rule, which '
+                      'saves for good.',
                       style: theme.textTheme.bodySmall?.copyWith(
                           color: theme.colorScheme.onSurfaceVariant)),
                   const SizedBox(height: 8),
@@ -339,10 +391,10 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
             SliverPadding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               sliver: SliverReorderableList(
-                itemCount: (_draft ?? p.lines).length,
+                itemCount: p.lines.length,
                 onReorder: _reorder,
                 itemBuilder: (context, i) {
-                  final line = (_draft ?? p.lines)[i];
+                  final line = p.lines[i];
                   return Material(
                     key: ValueKey(line.categoryId),
                     color: theme.colorScheme.surfaceContainerLow,
@@ -365,15 +417,15 @@ class _PaycheckScreenState extends ConsumerState<PaycheckScreen> {
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
               sliver: SliverList(
                 delegate: SliverChildListDelegate([
-                  if (_draft != null) ...[
+                  if (_order != null) ...[
                     OutlinedButton(
                       onPressed: _busy
                           ? null
                           : () {
-                              setState(() => _draft = null);
+                              setState(() => _order = null);
                               _previewIt();
                             },
-                      child: const Text('Reset to my saved plan'),
+                      child: const Text("Back to my plan's order"),
                     ),
                     const SizedBox(height: 12),
                   ],
@@ -551,6 +603,28 @@ class _RuleSheetState extends State<_RuleSheet> {
             Text('Currently holds ${Money.format(widget.line.balanceCents)}',
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            const SizedBox(height: 12),
+            // Said here, at the moment of the decision, because it is the
+            // opposite of dragging: the order is a what-if, this is not.
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(children: [
+                Icon(Icons.push_pin_outlined,
+                    size: 16, color: theme.colorScheme.onSurfaceVariant),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Saves to this category for good — every paycheck '
+                    'from now on, not just this one.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+              ]),
+            ),
             const SizedBox(height: 16),
             FundingEditor(
               initial: Funding(
@@ -583,7 +657,7 @@ class _RuleSheetState extends State<_RuleSheet> {
               Expanded(
                 child: FilledButton(
                   onPressed: () => Navigator.pop(context, (_type, _params)),
-                  child: const Text('Try it'),
+                  child: const Text('Save rule'),
                 ),
               ),
             ]),

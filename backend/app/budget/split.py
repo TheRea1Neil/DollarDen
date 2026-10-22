@@ -171,7 +171,24 @@ def _predicate_holds(when: dict, category_id: str, balances: dict[str, int]) -> 
         raise SplitPlanError(f"unsupported predicate field: {field_name}")
 
     current = balances.get(target_cat, 0)
-    value = int(when["value_cents"])
+
+    # A predicate missing its threshold or operator is a malformed plan,
+    # not a runtime surprise. Raising SplitPlanError means callers that
+    # already handle an invalid plan handle this too; a bare KeyError
+    # escaped them and surfaced as a 500 when a paycheck was recorded.
+    for required in ("value_cents", "op"):
+        if when.get(required) in (None, ""):
+            raise SplitPlanError(
+                f"conditional rule is missing '{required}'; it cannot be "
+                f"evaluated"
+            )
+    try:
+        value = int(when["value_cents"])
+    except (TypeError, ValueError) as exc:
+        raise SplitPlanError(
+            f"conditional threshold is not a whole number of cents: "
+            f"{when['value_cents']!r}"
+        ) from exc
     op = when["op"]
 
     match op:

@@ -111,8 +111,18 @@ DESIGN_SCHEMA = {
                                     "field": {"type": "string", "enum": ["balance"]},
                                     "op": {"type": "string",
                                            "enum": ["<", "<=", ">", ">=", "=="]},
-                                    "value_cents": {"type": "integer"},
+                                    "value_cents": {
+                                        "type": "integer",
+                                        "description": "the threshold in CENTS, e.g. "
+                                                       "45000 for $450. REQUIRED.",
+                                    },
                                 },
+                                # Naming a property is not enough -- the model
+                                # emitted `op` and omitted `value_cents`, and a
+                                # predicate with no threshold cannot be
+                                # evaluated at all. Declaring a property
+                                # optional is an invitation to leave it out.
+                                "required": ["op", "value_cents"],
                             },
                             "then": {
                                 "type": "object",
@@ -369,6 +379,19 @@ def _missing_params(rule_type: str, params: dict[str, Any]) -> str:
     """
     needed = _REQUIRED_PARAMS.get(rule_type, ())
     absent = [k for k in needed if params.get(k) in (None, "", {})]
+
+    # `when` existing is not enough. A predicate carrying an operator but
+    # no threshold passed this check, saved fine, and then raised at the
+    # moment a paycheck was recorded.
+    if rule_type == "conditional" and "when" not in absent:
+        when = params.get("when") or {}
+        absent += [f"when.{k}" for k in ("op", "value_cents")
+                   if when.get(k) in (None, "")]
+    if rule_type == "conditional" and "then" not in absent:
+        then = params.get("then") or {}
+        if then.get("rule_type") in (None, ""):
+            absent.append("then.rule_type")
+
     return ", ".join(absent)
 
 

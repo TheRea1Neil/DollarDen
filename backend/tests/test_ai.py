@@ -600,3 +600,58 @@ class TestDescriptionsReachTheModel:
             assert "daughter's braces" in cap.prompts[0], cap.prompts[0]
         finally:
             db.close()
+
+
+class TestConditionalPredicateIsComplete:
+    """A predicate with an operator but no threshold cannot be evaluated.
+
+    Found by an allocation experiment: qwen3 emitted `op` and omitted
+    `value_cents` on both compile attempts, the draft validated clean,
+    and the engine then raised KeyError when a paycheck was applied.
+    """
+
+    @staticmethod
+    def _rule(when: dict) -> dict:
+        return {"category_name": "Car Insurance", "order_index": 1,
+                "rule_type": "conditional",
+                "params": {"when": when,
+                           "then": {"rule_type": "fixed",
+                                    "params": {"amount_cents": 5000}}},
+                "why": "x"}
+
+    def test_schema_requires_both_predicate_fields(self) -> None:
+        from app.ai.tasks import DESIGN_SCHEMA
+        when = (DESIGN_SCHEMA["properties"]["split_rules"]["items"]
+                ["properties"]["params"]["properties"]["when"])
+        assert set(when["required"]) == {"op", "value_cents"}
+
+    def test_missing_threshold_is_reported(self) -> None:
+        from app.ai.tasks import _missing_params
+        out = _missing_params("conditional", self._rule({"op": "<"})["params"])
+        assert "when.value_cents" in out
+
+    def test_missing_operator_is_reported(self) -> None:
+        from app.ai.tasks import _missing_params
+        out = _missing_params("conditional",
+                              self._rule({"value_cents": 45000})["params"])
+        assert "when.op" in out
+
+    def test_a_complete_predicate_passes(self) -> None:
+        from app.ai.tasks import _missing_params
+        out = _missing_params(
+            "conditional", self._rule({"op": "<", "value_cents": 45000})["params"])
+        assert out == ""
+
+    def test_the_draft_blocks_applying(self) -> None:
+        """Blocking, not advisory: the plan cannot run at all like this."""
+        from app.ai.tasks import _validate_design
+        p = {"categories": [{"name": "Car Insurance", "kind": "obligation",
+                             "description": "x"},
+                            {"name": "Rest", "kind": "savings_bucket",
+                             "description": "y"}],
+             "split_rules": [self._rule({"op": "<"}),
+                             {"category_name": "Rest", "order_index": 2,
+                              "rule_type": "remainder", "params": {}, "why": "z"}]}
+        out = _validate_design(p, [])
+        assert any("value_cents" in n for n in out["problems"]), out["problems"]
+        assert not out["applicable"]

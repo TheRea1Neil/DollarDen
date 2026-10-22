@@ -198,3 +198,39 @@ def test_allocations_always_sum_to_gross(
 def test_remainder_only_plan_allocates_everything(gross: int) -> None:
     r = apply_split(gross, [SplitRule(NEWCAR, 1, RuleType.REMAINDER)], {})
     assert r.total_cents == gross
+
+
+class TestMalformedPredicate:
+    """An unevaluable predicate is an invalid plan, not a runtime surprise."""
+
+    @staticmethod
+    def _plan(when: dict):
+        return [
+            SplitRule("c", 1, RuleType.CONDITIONAL,
+                      {"when": when,
+                       "then": {"rule_type": "fixed",
+                                "params": {"amount_cents": 5000}}}),
+            SplitRule("r", 2, RuleType.REMAINDER, {}),
+        ]
+
+    @pytest.mark.parametrize("when,missing", [
+        ({"field": "balance", "op": "<"}, "value_cents"),
+        ({"field": "balance", "value_cents": 45000}, "op"),
+        ({}, "value_cents"),
+    ])
+    def test_incomplete_predicate_is_a_plan_error(self, when, missing) -> None:
+        with pytest.raises(SplitPlanError, match=missing):
+            apply_split(200000, self._plan(when), {"c": 0, "r": 0})
+
+    def test_junk_threshold_is_a_plan_error(self) -> None:
+        with pytest.raises(SplitPlanError, match="whole number"):
+            apply_split(200000,
+                        self._plan({"op": "<", "value_cents": "a lot"}),
+                        {"c": 0, "r": 0})
+
+    def test_a_complete_predicate_still_works(self) -> None:
+        res = apply_split(200000,
+                          self._plan({"field": "balance", "op": "<",
+                                      "value_cents": 45000}),
+                          {"c": 0, "r": 0})
+        assert res.total_cents == 200000

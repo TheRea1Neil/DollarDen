@@ -45,3 +45,14 @@ backups/*.dump
 Thumbs.db
 *.swp
 .vscode/
+
+# ---- flutter build output ----
+app/build/
+app/.dart_tool/
+app/ios/Pods/
+app/macos/Pods/
+app/ios/.symlinks/
+app/macos/Flutter/ephemeral/
+app/ios/Flutter/ephemeral/
+**/Flutter/Generated.xcconfig
+**/Flutter/flutter_export_environment.sh

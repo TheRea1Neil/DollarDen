@@ -109,9 +109,15 @@ rather than advancing the cursor if the data still cannot be stored.
 **Done when:** a simulated paycheck splits exactly per the worked example in
 docs/06, and sandbox spending draws the right categories down.
 
-## Phase 4 — Flutter app
+## Phase 4 — Flutter app  (in progress)
 
-- [ ] Project setup, theme, navigation, auth screens
+- [x] Project setup, theme, navigation, auth screens
+- [x] API client with automatic token refresh and single-flight guard
+- [x] Tokens in the OS keychain / keystore, never SharedPreferences
+- [x] Home: category balances with target bars, alert and overspent states
+- [x] Review queue with one-tap categorisation and "remember this merchant"
+- [x] Configurable server address, so the app can point at another deployment
+- [x] 12 Dart tests; `flutter analyze` clean; runs on the iOS simulator
 - [ ] Home: category balances, next-paycheck estimate
 - [ ] Transactions list, detail, manual re-categorisation
 - [ ] Review queue UI — the highest-traffic screen; make it fast

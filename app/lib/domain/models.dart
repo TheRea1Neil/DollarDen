@@ -556,3 +556,199 @@ class SuggestedCategory {
     }
   }
 }
+
+/// How a category is funded from a paycheck, as the API describes it.
+class Funding {
+  final String planId;
+  final int planVersion;
+  final String ruleType;
+  final Map<String, dynamic> params;
+  final bool enabled;
+
+  /// Where it sits in the funding order, and out of how many. Position is
+  /// what decides who loses when a paycheck is short, so it is shown.
+  final int position;
+  final int ofTotal;
+
+  /// The rule in plain English, rendered server-side so the app and the
+  /// API cannot drift into describing the same rule differently.
+  final String summary;
+
+  const Funding({
+    required this.planId,
+    required this.planVersion,
+    required this.ruleType,
+    required this.params,
+    required this.enabled,
+    required this.position,
+    required this.ofTotal,
+    required this.summary,
+  });
+
+  factory Funding.fromJson(Map<String, dynamic> j) => Funding(
+        planId: j['plan_id'] as String,
+        planVersion: j['plan_version'] as int,
+        ruleType: j['rule_type'] as String,
+        params: (j['params'] as Map?)?.cast<String, dynamic>() ?? {},
+        enabled: j['enabled'] as bool? ?? true,
+        position: j['position'] as int,
+        ofTotal: j['of_total'] as int,
+        summary: j['summary'] as String? ?? '',
+      );
+
+  int? get amountCents => params['amount_cents'] as int?;
+  int? get targetCents => params['target_cents'] as int?;
+  int? get maxContributionCents => params['max_contribution_cents'] as int?;
+  String? get rate => params['rate']?.toString();
+  String? get of => params['of'] as String?;
+
+  Map<String, dynamic> get _when =>
+      (params['when'] as Map?)?.cast<String, dynamic>() ?? {};
+  String? get whenOp => _when['op'] as String?;
+  int? get whenValueCents => _when['value_cents'] as int?;
+  int? get thenAmountCents {
+    final then = (params['then'] as Map?)?.cast<String, dynamic>() ?? {};
+    final p = (then['params'] as Map?)?.cast<String, dynamic>() ?? {};
+    return p['amount_cents'] as int?;
+  }
+}
+
+/// A rule deciding which transactions come out of a category.
+class Matcher {
+  final String id;
+  final Map<String, dynamic> matcher;
+  final int priority;
+  final bool enabled;
+  final String summary;
+
+  const Matcher({
+    required this.id,
+    required this.matcher,
+    required this.priority,
+    required this.enabled,
+    required this.summary,
+  });
+
+  factory Matcher.fromJson(Map<String, dynamic> j) => Matcher(
+        id: j['id'] as String,
+        matcher: (j['matcher'] as Map?)?.cast<String, dynamic>() ?? {},
+        priority: j['priority'] as int? ?? 100,
+        enabled: j['enabled'] as bool? ?? true,
+        summary: j['summary'] as String? ?? '',
+      );
+}
+
+/// Everything about one category, for the screen that edits it.
+class CategoryDetail {
+  final Category category;
+  final Funding? funding;
+  final List<Matcher> matchers;
+  final List<Map<String, dynamic>> recent;
+
+  const CategoryDetail({
+    required this.category,
+    required this.matchers,
+    required this.recent,
+    this.funding,
+  });
+
+  factory CategoryDetail.fromJson(Map<String, dynamic> j) => CategoryDetail(
+        category: Category.fromJson((j['category'] as Map).cast<String, dynamic>()),
+        funding: j['funding'] == null
+            ? null
+            : Funding.fromJson((j['funding'] as Map).cast<String, dynamic>()),
+        matchers: ((j['matchers'] as List?) ?? const [])
+            .map((e) => Matcher.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        recent: ((j['recent'] as List?) ?? const [])
+            .map((e) => (e as Map).cast<String, dynamic>())
+            .toList(),
+      );
+}
+
+/// An AI-proposed change to one existing category, before it is accepted.
+class RefinedCategory {
+  String name;
+  String kind;
+  String description;
+  int? targetCents;
+  int? alertAtCents;
+  Map<String, dynamic> funding;
+  final List<Map<String, dynamic>> addMatchers;
+  final String whatChanged;
+  final List<String> problems;
+  final List<String> notices;
+  final bool applicable;
+
+  RefinedCategory({
+    required this.name,
+    required this.kind,
+    required this.description,
+    required this.funding,
+    required this.applicable,
+    this.targetCents,
+    this.alertAtCents,
+    this.addMatchers = const [],
+    this.whatChanged = '',
+    this.problems = const [],
+    this.notices = const [],
+  });
+
+  factory RefinedCategory.fromJson(Map<String, dynamic> j) => RefinedCategory(
+        name: j['name'] as String? ?? '',
+        kind: j['kind'] as String? ?? 'spending',
+        description: j['description'] as String? ?? '',
+        targetCents: j['target_cents'] as int?,
+        alertAtCents: j['alert_at_cents'] as int?,
+        funding: (j['funding'] as Map?)?.cast<String, dynamic>() ??
+            {'rule_type': 'none'},
+        addMatchers: ((j['add_matchers'] as List?) ?? const [])
+            .map((e) => (e as Map).cast<String, dynamic>())
+            .toList(),
+        whatChanged: j['what_changed'] as String? ?? '',
+        problems: ((j['problems'] as List?) ?? const []).cast<String>(),
+        notices: ((j['notices'] as List?) ?? const []).cast<String>(),
+        applicable: j['applicable'] as bool? ?? false,
+      );
+
+  /// Translate the AI's flat funding shape into what the API expects.
+  ///
+  /// The model answers with `when_op`/`when_value_cents` because a flat
+  /// schema is far more reliable for it than a nested one; the engine
+  /// wants `when: {op, value_cents}`. One of them has to bend, and it
+  /// should not be the engine.
+  Map<String, dynamic>? get apiParams {
+    switch (funding['rule_type']) {
+      case 'percent':
+        return {'rate': funding['rate']?.toString() ?? '0',
+                'of': funding['of'] ?? 'gross'};
+      case 'fixed':
+        return {'amount_cents': funding['amount_cents']};
+      case 'refill_to':
+        return {
+          'target_cents': funding['target_cents'],
+          if (funding['max_contribution_cents'] != null)
+            'max_contribution_cents': funding['max_contribution_cents'],
+        };
+      case 'conditional':
+        return {
+          'when': {
+            'field': 'balance',
+            'op': funding['when_op'],
+            'value_cents': funding['when_value_cents'],
+          },
+          'then': {
+            'rule_type': 'fixed',
+            'params': {'amount_cents': funding['then_amount_cents']},
+          },
+        };
+      default:
+        return null;
+    }
+  }
+
+  String? get apiRuleType {
+    final t = funding['rule_type'];
+    return (t == null || t == 'none') ? null : t as String;
+  }
+}

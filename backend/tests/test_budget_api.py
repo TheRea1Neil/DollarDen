@@ -782,3 +782,172 @@ class TestSinkIsProtected:
         cid = r.json()["id"]
         assert client.delete(f"/api/budget/categories/{cid}",
                              headers=h).status_code == 200
+
+
+@requires_db
+class TestCategoryDetail:
+    """One screen should be able to show everything about a category."""
+
+    def _setup(self, client: TestClient):
+        h = _auth(client)
+        rent = _cat(client, h, "Rent", kind="obligation")
+        food = _cat(client, h, "Food", target_cents=30000)
+        left = _cat(client, h, "Leftover", kind="savings_bucket")
+        body = {"name": "Standard", "rules": [
+            {"category_id": rent["id"], "order_index": 1,
+             "rule_type": "fixed", "params": {"amount_cents": 35000}},
+            {"category_id": food["id"], "order_index": 2, "rule_type": "refill_to",
+             "params": {"target_cents": 30000, "max_contribution_cents": 10000}},
+            {"category_id": left["id"], "order_index": 3,
+             "rule_type": "remainder", "params": {}},
+        ]}
+        assert client.post("/api/budget/plans", json=body, headers=h).status_code == 201
+        return h, {"rent": rent, "food": food, "left": left}
+
+    def test_detail_shows_funding_position_and_plain_english(self, client) -> None:
+        h, c = self._setup(client)
+        r = client.get(f"/api/budget/categories/{c['food']['id']}/detail", headers=h)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["category"]["name"] == "Food"
+        assert d["funding"]["position"] == 2 and d["funding"]["of_total"] == 3
+        assert d["funding"]["rule_type"] == "refill_to"
+        # The cap the engine honours but nothing used to show.
+        assert "$300.00" in d["funding"]["summary"]
+        assert "never more than $100.00" in d["funding"]["summary"]
+
+    def test_a_conditional_reads_in_the_right_direction(self, client) -> None:
+        """An inverted operator is the failure ADR 0006 found; it must be visible."""
+        h = _auth(client)
+        ins = _cat(client, h, "Car Insurance", kind="obligation")
+        left = _cat(client, h, "Leftover", kind="savings_bucket")
+        client.post("/api/budget/plans", json={"name": "S", "rules": [
+            {"category_id": ins["id"], "order_index": 1, "rule_type": "conditional",
+             "params": {"when": {"field": "balance", "op": "<", "value_cents": 45000},
+                        "then": {"rule_type": "fixed",
+                                 "params": {"amount_cents": 5000}}}},
+            {"category_id": left["id"], "order_index": 2,
+             "rule_type": "remainder", "params": {}},
+        ]}, headers=h)
+        d = client.get(f"/api/budget/categories/{ins['id']}/detail", headers=h).json()
+        s = d["funding"]["summary"]
+        assert "less than $450.00" in s, s
+        assert "$50.00 every paycheck" in s, s
+
+    def test_unfunded_category_says_so(self, client: TestClient) -> None:
+        h, c = self._setup(client)
+        solo = _cat(client, h, "Dog Vet", kind="savings_bucket")
+        d = client.get(f"/api/budget/categories/{solo['id']}/detail", headers=h).json()
+        assert d["funding"] is None
+
+    def test_matchers_are_listed_in_plain_english(self, client: TestClient) -> None:
+        h, c = self._setup(client)
+        client.post("/api/budget/rules", json={
+            "category_id": c["food"]["id"],
+            "matcher": {"merchant_contains": "kroger", "direction": "outflow"},
+        }, headers=h)
+        d = client.get(f"/api/budget/categories/{c['food']['id']}/detail",
+                       headers=h).json()
+        assert len(d["matchers"]) == 1
+        s = d["matchers"][0]["summary"]
+        assert "kroger" in s and "going out" in s
+
+    def test_recent_activity_appears_once_money_has_moved(self, client) -> None:
+        """The detail call was only ever tested on an empty ledger.
+
+        It referenced a column that does not exist and 500'd the moment a
+        paycheck had been applied -- invisible until a real end-to-end run.
+        """
+        h, c = self._setup(client)
+        assert client.post("/api/budget/paychecks",
+                           json={"gross_cents": 200000, "apply": True},
+                           headers=h).status_code == 201
+
+        r = client.get(f"/api/budget/categories/{c['food']['id']}/detail",
+                       headers=h)
+        assert r.status_code == 200, r.text
+        recent = r.json()["recent"]
+        assert recent, "a paycheck was applied but nothing shows as recent"
+        assert recent[0]["amount_cents"] > 0
+        assert recent[0]["source"]
+        assert "at" in recent[0]
+
+    def test_another_users_category_is_404(self, client: TestClient) -> None:
+        h, c = self._setup(client)
+        hb = _auth(client)
+        assert client.get(f"/api/budget/categories/{c['food']['id']}/detail",
+                          headers=hb).status_code == 404
+
+
+@requires_db
+class TestSetFunding:
+    def _setup(self, client: TestClient):
+        return TestCategoryDetail()._setup(client)
+
+    def test_change_a_rule_in_place_keeps_order(self, client: TestClient) -> None:
+        h, c = self._setup(client)
+        r = client.put(f"/api/budget/categories/{c['food']['id']}/funding", json={
+            "rule_type": "fixed", "params": {"amount_cents": 20000},
+        }, headers=h)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["funding"]["rule_type"] == "fixed"
+        assert d["funding"]["position"] == 2      # unchanged
+        assert d["funding"]["plan_version"] == 2  # new version
+
+    def test_moving_a_category_up_the_funding_order(self, client: TestClient) -> None:
+        h, c = self._setup(client)
+        d = client.put(f"/api/budget/categories/{c['food']['id']}/funding", json={
+            "rule_type": "refill_to", "params": {"target_cents": 30000},
+            "position": 1,
+        }, headers=h).json()
+        assert d["funding"]["position"] == 1
+
+    def test_removing_funding_leaves_the_category(self, client: TestClient) -> None:
+        h, c = self._setup(client)
+        d = client.put(f"/api/budget/categories/{c['food']['id']}/funding",
+                       json={"rule_type": None}, headers=h).json()
+        assert d["funding"] is None
+        assert d["category"]["name"] == "Food"
+        plans = client.get("/api/budget/plans", headers=h).json()
+        active = [p for p in plans if p["is_active"]][0]
+        assert len(active["rules"]) == 2
+        assert active["rules"][-1]["rule_type"] == "remainder"
+
+    def test_a_cap_round_trips(self, client: TestClient) -> None:
+        h, c = self._setup(client)
+        d = client.put(f"/api/budget/categories/{c['food']['id']}/funding", json={
+            "rule_type": "refill_to",
+            "params": {"target_cents": 50000, "max_contribution_cents": 7500},
+        }, headers=h).json()
+        assert d["funding"]["params"]["max_contribution_cents"] == 7500
+        assert "never more than $75.00" in d["funding"]["summary"]
+
+    def test_an_incomplete_conditional_is_refused(self, client: TestClient) -> None:
+        h, c = self._setup(client)
+        r = client.put(f"/api/budget/categories/{c['food']['id']}/funding", json={
+            "rule_type": "conditional",
+            "params": {"when": {"op": "<"},
+                       "then": {"rule_type": "fixed",
+                                "params": {"amount_cents": 5000}}},
+        }, headers=h)
+        assert r.status_code == 422
+        assert "value_cents" in r.json()["detail"]
+
+    def test_taking_the_remainder_moves_it_last(self, client: TestClient) -> None:
+        h, c = self._setup(client)
+        d = client.put(f"/api/budget/categories/{c['rent']['id']}/funding",
+                       json={"rule_type": "remainder"}, headers=h).json()
+        assert d["funding"]["position"] == d["funding"]["of_total"]
+        plans = client.get("/api/budget/plans", headers=h).json()
+        active = [p for p in plans if p["is_active"]][0]
+        assert sum(1 for x in active["rules"] if x["rule_type"] == "remainder") == 1
+
+    def test_without_a_plan_it_explains_itself(self, client: TestClient) -> None:
+        h = _auth(client)
+        solo = _cat(client, h, "Food")
+        r = client.put(f"/api/budget/categories/{solo['id']}/funding",
+                       json={"rule_type": "fixed", "params": {"amount_cents": 1000}},
+                       headers=h)
+        assert r.status_code == 409
+        assert "no active split plan" in r.json()["detail"]

@@ -196,6 +196,56 @@ class ApiClient {
     if (r.statusCode != 200) _fail(r);
   }
 
+  /// Everything about one category: its settings, how it is funded and
+  /// where in the order, what deducts from it, and recent activity.
+  Future<CategoryDetail> categoryDetail(String id) async {
+    final r = await _withRetry(
+        (o) => _dio.get('/budget/categories/$id/detail', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return CategoryDetail.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
+  /// Set, change, or remove how one category is funded.
+  ///
+  /// `ruleType: null` takes it out of the split plan — a category you only
+  /// ever allocate to by hand. Saves a new plan version either way.
+  Future<CategoryDetail> setFunding(
+    String id, {
+    required String? ruleType,
+    Map<String, dynamic> params = const {},
+    int? position,
+  }) async {
+    final r = await _withRetry((o) => _dio.put(
+          '/budget/categories/$id/funding',
+          data: {
+            'rule_type': ruleType,
+            'params': params,
+            if (position != null) 'position': position,
+          },
+          options: o,
+        ));
+    if (r.statusCode != 200) _fail(r);
+    return CategoryDetail.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
+  Future<Matcher> addMatcher(String categoryId, Map<String, dynamic> matcher,
+      {int priority = 100}) async {
+    final r = await _withRetry((o) => _dio.post('/budget/rules', data: {
+          'category_id': categoryId,
+          'matcher': matcher,
+          'priority': priority,
+        }, options: o));
+    if (r.statusCode != 201) _fail(r);
+    final j = (r.data as Map).cast<String, dynamic>();
+    // The create endpoint does not render a summary; the detail call does.
+    return Matcher.fromJson({...j, 'summary': ''});
+  }
+
+  Future<void> deleteMatcher(String id) async {
+    final r = await _withRetry((o) => _dio.delete('/budget/rules/$id', options: o));
+    if (r.statusCode != 204) _fail(r);
+  }
+
   /// Bring an archived category back. Categories are archived, never
   /// deleted, so this always has something to restore.
   Future<Category> restoreCategory(String id) async {

@@ -35,6 +35,7 @@ log = logging.getLogger("nnf.ai.jobs")
 KINDS = {
     "design_categories",
     "design_category",
+    "refine_category",
     "summary",
     "advise",
 }

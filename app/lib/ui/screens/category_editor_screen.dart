@@ -5,6 +5,8 @@ import '../../core/money.dart';
 import '../../data/api_client.dart';
 import '../../data/providers.dart';
 import '../../domain/models.dart';
+import '../widgets/funding_editor.dart';
+import 'refine_category_screen.dart';
 
 /// Create or edit one category by hand.
 ///
@@ -33,6 +35,17 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen> {
   bool _busy = false;
   String? _error;
 
+  // Everything beyond the plain fields: funding, matchers, recent
+  // activity. Loaded separately because a brand-new category has none
+  // of it yet.
+  CategoryDetail? _detail;
+  bool _loadingDetail = false;
+  String? _pendingRuleType;
+  Map<String, dynamic> _pendingParams = const {};
+  int? _pendingPosition;
+  bool _fundingTouched = false;
+  int _categoryCount = 1;
+
   bool get _isNew => widget.existing == null;
 
   @override
@@ -50,6 +63,31 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen> {
             ? ''
             : (c!.alertAtCents! / 100).toStringAsFixed(2));
     _kind = c?.kind ?? 'spending';
+    if (!_isNew) _loadDetail();
+  }
+
+  Future<void> _loadDetail() async {
+    setState(() => _loadingDetail = true);
+    try {
+      final api = ref.read(apiProvider);
+      final d = await api.categoryDetail(widget.existing!.id);
+      final all = await api.categories();
+      if (!mounted) return;
+      setState(() {
+        _detail = d;
+        _categoryCount = all.length;
+        _pendingRuleType = d.funding?.ruleType;
+        _pendingParams = d.funding?.params ?? const {};
+        _pendingPosition = d.funding?.position;
+        _loadingDetail = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loadingDetail = false;
+        _error = 'Could not load this category\'s rules: $e';
+      });
+    }
   }
 
   @override
@@ -96,6 +134,16 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen> {
           'alert_at_cents': _cents(_alert),
         });
       }
+      // Funding is a plan revision, so it is a separate call and only
+      // made when the user actually touched it.
+      if (!_isNew && _fundingTouched) {
+        await api.setFunding(
+          widget.existing!.id,
+          ruleType: _pendingRuleType,
+          params: _pendingParams,
+          position: _pendingPosition,
+        );
+      }
       ref.invalidate(summaryProvider);
       ref.invalidate(categoriesProvider);
       if (!mounted) return;
@@ -114,6 +162,67 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen> {
           _error = '$e';
         });
       }
+    }
+  }
+
+  Future<void> _refine() async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => RefineCategoryScreen(detail: _detail!),
+      ),
+    );
+    if (changed == true && mounted) {
+      // The assistant may have changed the name, the funding, anything.
+      // Reload rather than trying to guess what moved.
+      final fresh = await ref.read(apiProvider).categoryDetail(widget.existing!.id);
+      if (!mounted) return;
+      setState(() {
+        _detail = fresh;
+        _name.text = fresh.category.name;
+        _kind = fresh.category.kind;
+        _description.text = fresh.category.description ?? '';
+        _target.text = fresh.category.targetCents == null
+            ? ''
+            : (fresh.category.targetCents! / 100).toStringAsFixed(2);
+        _alert.text = fresh.category.alertAtCents == null
+            ? ''
+            : (fresh.category.alertAtCents! / 100).toStringAsFixed(2);
+        _pendingRuleType = fresh.funding?.ruleType;
+        _pendingParams = fresh.funding?.params ?? const {};
+        _pendingPosition = fresh.funding?.position;
+        _fundingTouched = false;
+      });
+      ref.invalidate(summaryProvider);
+      ref.invalidate(categoriesProvider);
+    }
+  }
+
+  Future<void> _removeMatcher(Matcher m) async {
+    setState(() => _busy = true);
+    try {
+      await ref.read(apiProvider).deleteMatcher(m.id);
+      await _loadDetail();
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _addMatcher() async {
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (ctx) => const _MatcherDialog(),
+    );
+    if (result == null) return;
+    setState(() => _busy = true);
+    try {
+      await ref.read(apiProvider).addMatcher(widget.existing!.id, result);
+      await _loadDetail();
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -167,6 +276,12 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen> {
       appBar: AppBar(
         title: Text(_isNew ? 'New category' : c!.name),
         actions: [
+          if (!_isNew)
+            IconButton(
+              tooltip: 'Ask the assistant to change this',
+              icon: const Icon(Icons.auto_awesome),
+              onPressed: _busy || _detail == null ? null : _refine,
+            ),
           if (!_isNew)
             IconButton(
               tooltip: 'Archive',
@@ -286,6 +401,96 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen> {
                         TextStyle(color: theme.colorScheme.onErrorContainer)),
               ),
             ],
+            if (!_isNew) ...[
+              const SizedBox(height: 28),
+              _SectionHeader(
+                title: 'Funding',
+                subtitle: 'How much of each paycheck lands here, and when '
+                    'in the order. Changing this saves a new version of '
+                    'your split plan.',
+              ),
+              if (_loadingDetail)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24),
+                  child: Center(child: CircularProgressIndicator()),
+                )
+              else
+                FundingEditor(
+                  initial: _detail?.funding,
+                  categoryCount: _categoryCount,
+                  onChanged: (type, params, position) {
+                    _pendingRuleType = type;
+                    _pendingParams = params;
+                    _pendingPosition = position;
+                    _fundingTouched = true;
+                  },
+                ),
+
+              const SizedBox(height: 28),
+              _SectionHeader(
+                title: 'What comes out of it',
+                subtitle: 'Transactions matching these skip the review '
+                    'queue and are deducted here automatically. Anything '
+                    'else you file by hand while reviewing.',
+              ),
+              ...[
+                for (final m in _detail?.matchers ?? const <Matcher>[])
+                  Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    child: ListTile(
+                      dense: true,
+                      leading: const Icon(Icons.filter_alt_outlined),
+                      title: Text(m.summary),
+                      trailing: IconButton(
+                        tooltip: 'Remove',
+                        icon: const Icon(Icons.close),
+                        onPressed: _busy ? null : () => _removeMatcher(m),
+                      ),
+                    ),
+                  ),
+              ],
+              if ((_detail?.matchers ?? const []).isEmpty && !_loadingDetail)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    'Nothing is filed here automatically yet.',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  ),
+                ),
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _addMatcher,
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('Add a rule'),
+              ),
+
+              if ((_detail?.recent ?? const []).isNotEmpty) ...[
+                const SizedBox(height: 28),
+                _SectionHeader(
+                  title: 'Recent activity',
+                  subtitle: 'What has actually moved in and out, which is '
+                      'the real test of whether the rules above are right.',
+                ),
+                for (final a in _detail!.recent.take(6))
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text((a['merchant'] as String?) ??
+                        _sourceLabel(a['source'] as String?)),
+                    subtitle: Text((a['note'] as String?) ??
+                        _sourceLabel(a['source'] as String?)),
+                    trailing: Text(
+                      Money.formatSigned(a['amount_cents'] as int? ?? 0),
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: (a['amount_cents'] as int? ?? 0) < 0
+                            ? theme.colorScheme.error
+                            : null,
+                      ),
+                    ),
+                  ),
+              ],
+            ],
+
             const SizedBox(height: 24),
             FilledButton(
               onPressed: _busy ? null : _save,
@@ -296,19 +501,120 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen> {
                       child: CircularProgressIndicator(strokeWidth: 2))
                   : Text(_isNew ? 'Create' : 'Save'),
             ),
-            if (!_isNew) ...[
-              const SizedBox(height: 16),
-              Text(
-                'Funding — how much this gets from each paycheck — lives in '
-                'your split plan, not here.',
-                textAlign: TextAlign.center,
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-              ),
-            ],
+
           ],
         ),
       ),
+    );
+  }
+}
+
+
+/// Turn a ledger `source` into something readable.
+String _sourceLabel(String? source) => switch (source) {
+      'paycheck_split' => 'From a paycheck',
+      'auto_categorise' => 'Filed automatically',
+      'manual' => 'Filed by hand',
+      'opening_balance' => 'Opening balance',
+      'reconcile' => 'Reconciliation',
+      null => '—',
+      _ => source.replaceAll('_', ' '),
+    };
+
+class _SectionHeader extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  const _SectionHeader({required this.title, required this.subtitle});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title,
+              style: theme.textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 2),
+          Text(subtitle,
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+        ],
+      ),
+    );
+  }
+}
+
+/// Build one matching rule.
+///
+/// Only the two conditions worth hand-writing are offered. The engine
+/// supports regex, Plaid categories, accounts and amount ranges too, but
+/// those are better suggested by the assistant than typed into a phone.
+class _MatcherDialog extends StatefulWidget {
+  const _MatcherDialog();
+
+  @override
+  State<_MatcherDialog> createState() => _MatcherDialogState();
+}
+
+class _MatcherDialogState extends State<_MatcherDialog> {
+  final _contains = TextEditingController();
+  String _direction = 'outflow';
+
+  @override
+  void dispose() {
+    _contains.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('File it here when…'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _contains,
+            autofocus: true,
+            onChanged: (_) => setState(() {}),
+            decoration: const InputDecoration(
+              labelText: 'The name contains',
+              hintText: 'kroger',
+              helperText: 'One word works best. Case does not matter.',
+              helperMaxLines: 2,
+            ),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            initialValue: _direction,
+            decoration: const InputDecoration(labelText: 'And it is'),
+            items: const [
+              DropdownMenuItem(value: 'outflow', child: Text('Money going out')),
+              DropdownMenuItem(value: 'inflow', child: Text('Money coming in')),
+            ],
+            onChanged: (v) => setState(() => _direction = v ?? _direction),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel')),
+        FilledButton(
+          // An empty matcher would claim every transaction, so there is
+          // nothing to save until there is something to match on.
+          onPressed: _contains.text.trim().isEmpty
+              ? null
+              : () => Navigator.pop(context, {
+                    'merchant_contains': _contains.text.trim().toLowerCase(),
+                    'direction': _direction,
+                  }),
+          child: const Text('Add'),
+        ),
+      ],
     );
   }
 }

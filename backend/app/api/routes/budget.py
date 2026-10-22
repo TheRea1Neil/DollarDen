@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
@@ -1518,3 +1519,280 @@ def apply_category(
         plan_version=new_plan.version, funding_position=position + 1,
         matcher_rule_id=matcher_rule_id,
     )
+
+
+# --------------------------------------------------------------------------- #
+# One category, everything about it
+#
+# Until now a category's funding rule lived only inside the split plan and
+# its matching rules only under /rules, so the one screen a user thinks of
+# as "this category" could show neither. These endpoints assemble the whole
+# picture per category and let it be edited in place.
+# --------------------------------------------------------------------------- #
+class FundingOut(BaseModel):
+    """How this category is funded, if it is."""
+
+    plan_id: str
+    plan_version: int
+    rule_type: str
+    params: dict
+    enabled: bool
+    # Where it sits in the funding order, and out of how many. Position is
+    # what decides who loses when a paycheck is short.
+    position: int
+    of_total: int
+    # Plain English, so an inverted comparison or a zeroed threshold is
+    # visible without reading JSON. This is the single thing the
+    # allocation experiment said was worth building (ADR 0006).
+    summary: str
+
+
+class MatcherOut(BaseModel):
+    id: str
+    matcher: dict
+    priority: int
+    enabled: bool
+    summary: str
+
+
+class CategoryDetailOut(BaseModel):
+    category: CategoryOut
+    funding: FundingOut | None
+    matchers: list[MatcherOut]
+    # Spending that landed here recently, so "what deducts from it" can be
+    # judged from behaviour and not just from rules.
+    recent: list[dict]
+
+
+def _describe_rule(rule_type: str, params: dict) -> str:
+    """A funding rule in words the user can check."""
+    p = params or {}
+    match rule_type:
+        case "percent":
+            rate = p.get("rate")
+            try:
+                pct = Decimal(str(rate)) * 100
+                shown = f"{pct.normalize():f}%"
+            except (TypeError, ArithmeticError):
+                shown = f"{rate}"
+            base = "what is left at that point" if p.get("of") == "remaining" else "gross pay"
+            return f"{shown} of {base}, every paycheck"
+        case "fixed":
+            c = p.get("amount_cents")
+            return (f"${c / 100:,.2f} every paycheck" if isinstance(c, int)
+                    else "a fixed amount every paycheck (not set)")
+        case "refill_to":
+            t = p.get("target_cents")
+            cap = p.get("max_contribution_cents")
+            base = (f"topped back up to ${t / 100:,.2f} each paycheck"
+                    if isinstance(t, int) else "refilled to a target (not set)")
+            if isinstance(cap, int):
+                base += f", but never more than ${cap / 100:,.2f} at a time"
+            return base
+        case "conditional":
+            when = p.get("when") or {}
+            then = p.get("then") or {}
+            op_words = {"<": "less than", "<=": "at most", ">": "more than",
+                        ">=": "at least", "==": "exactly"}
+            op = op_words.get(when.get("op"), when.get("op") or "?")
+            v = when.get("value_cents")
+            amount = _describe_rule(then.get("rule_type", "?"),
+                                    then.get("params") or {})
+            held = f"${v / 100:,.2f}" if isinstance(v, int) else "an unset amount"
+            return f"only while this category holds {op} {held}: {amount}"
+        case "remainder":
+            return "whatever is left after everything above it"
+    return rule_type
+
+
+def _describe_matcher(m: dict) -> str:
+    """A matching rule in words."""
+    if not m:
+        return "matches nothing"
+    bits: list[str] = []
+    if (v := m.get("merchant_contains")) is not None:
+        bits.append(f'the name contains "{v}"')
+    if (v := m.get("merchant_regex")) is not None:
+        bits.append(f"the name matches /{v}/")
+    if (v := m.get("pfc_detailed")) is not None:
+        bits.append(f"Plaid calls it {v}")
+    if (v := m.get("pfc_primary")) is not None:
+        bits.append(f"Plaid's category is {v}")
+    if (v := m.get("account_id")) is not None:
+        bits.append("it is on a particular account")
+    if (v := m.get("amount_between")) is not None:
+        try:
+            bits.append(f"it is between ${int(v[0]) / 100:,.2f} and ${int(v[1]) / 100:,.2f}")
+        except (TypeError, ValueError, IndexError):
+            bits.append("it is in an amount range")
+    if (v := m.get("direction")) is not None:
+        bits.append("it is money going out" if v == "outflow" else "it is money coming in")
+    return " and ".join(bits) if bits else "matches nothing"
+
+
+@router.get("/categories/{category_id}/detail", response_model=CategoryDetailOut)
+def category_detail(
+    category_id: str,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> CategoryDetailOut:
+    c = _own(db, Category, category_id, user)
+
+    funding: FundingOut | None = None
+    plan = db.scalars(
+        select(SplitPlan).where(
+            SplitPlan.user_id == user.id, SplitPlan.is_active.is_(True)
+        )
+    ).first()
+    if plan is not None:
+        rows = db.scalars(
+            select(SplitRule).where(SplitRule.plan_id == plan.id)
+            .order_by(SplitRule.order_index)
+        ).all()
+        for i, r in enumerate(rows):
+            if r.category_id == c.id:
+                funding = FundingOut(
+                    plan_id=str(plan.id), plan_version=plan.version,
+                    rule_type=r.rule_type, params=r.params or {},
+                    enabled=r.enabled, position=i + 1, of_total=len(rows),
+                    summary=_describe_rule(r.rule_type, r.params or {}),
+                )
+                break
+
+    matchers = [
+        MatcherOut(id=str(m.id), matcher=m.matcher or {}, priority=m.priority,
+                   enabled=m.enabled, summary=_describe_matcher(m.matcher or {}))
+        for m in db.scalars(
+            select(CategoryRule)
+            .where(CategoryRule.user_id == user.id, CategoryRule.category_id == c.id)
+            .order_by(CategoryRule.priority)
+        ).all()
+    ]
+
+    recent_rows = db.execute(
+        select(Allocation, Transaction)
+        .join(Transaction, Allocation.transaction_id == Transaction.id, isouter=True)
+        .where(Allocation.user_id == user.id, Allocation.category_id == c.id)
+        .order_by(Allocation.created_at.desc())
+        .limit(10)
+    ).all()
+    recent = [
+        {
+            "amount_cents": a.amount_cents,
+            # `source` says how it got here (paycheck_split, auto_categorise,
+            # manual...); `note` is the free-text reason when there is one.
+            "source": a.source,
+            "note": a.note,
+            "at": a.created_at.isoformat() if a.created_at else None,
+            "merchant": (t.merchant_name or t.name) if t is not None else None,
+        }
+        for a, t in recent_rows
+    ]
+
+    return CategoryDetailOut(category=_cat_out(c), funding=funding,
+                             matchers=matchers, recent=recent)
+
+
+class FundingIn(BaseModel):
+    """Set, change, or remove how one category is funded.
+
+    `rule_type: null` removes it from the split plan entirely, which is a
+    legitimate choice -- a category you only ever allocate to by hand.
+    """
+
+    rule_type: str | None = None
+    params: dict = Field(default_factory=dict)
+    # Where in the funding order. Omit to keep its current place, or to
+    # land last-before-remainder if it is new.
+    position: int | None = Field(default=None, ge=1)
+    enabled: bool = True
+
+    @field_validator("rule_type")
+    @classmethod
+    def _known(cls, v: str | None) -> str | None:
+        if v is not None and v not in {t.value for t in RuleType}:
+            raise ValueError(f"rule_type must be one of {[t.value for t in RuleType]}")
+        return v
+
+
+@router.put("/categories/{category_id}/funding", response_model=CategoryDetailOut)
+def set_funding(
+    category_id: str,
+    body: FundingIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> CategoryDetailOut:
+    """Edit one category's funding rule, saving a new plan version.
+
+    Every other rule keeps its relative order. Validated like any plan
+    edit, so a change that strands the remainder is refused rather than
+    silently repaired.
+    """
+    c = _own(db, Category, category_id, user)
+    plan = db.scalars(
+        select(SplitPlan).where(
+            SplitPlan.user_id == user.id, SplitPlan.is_active.is_(True)
+        )
+    ).first()
+    if plan is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "There is no active split plan yet. Create one before setting "
+            "how a category is funded.",
+        )
+
+    rows = db.scalars(
+        select(SplitRule).where(SplitRule.plan_id == plan.id)
+        .order_by(SplitRule.order_index)
+    ).all()
+    others = [
+        SplitRuleIn(category_id=str(r.category_id), order_index=0,
+                    rule_type=r.rule_type, params=r.params or {}, enabled=r.enabled)
+        for r in rows if r.category_id != c.id
+    ]
+
+    if body.rule_type is None:
+        ordered = others
+    else:
+        mine = SplitRuleIn(category_id=str(c.id), order_index=0,
+                           rule_type=body.rule_type, params=body.params,
+                           enabled=body.enabled)
+        if body.rule_type == RuleType.REMAINDER.value:
+            # Only one remainder is allowed and it must be last, so this
+            # is the only place it can go.
+            ordered = [r for r in others
+                       if r.rule_type != RuleType.REMAINDER.value] + [mine]
+        else:
+            last_allowed = len(others)
+            if others and others[-1].rule_type == RuleType.REMAINDER.value:
+                last_allowed = len(others) - 1
+            if body.position is None:
+                # Keep its old place if it had one, else last before the
+                # remainder.
+                previous = next((i for i, r in enumerate(rows)
+                                 if r.category_id == c.id), None)
+                idx = min(previous, last_allowed) if previous is not None else last_allowed
+            else:
+                idx = min(body.position - 1, last_allowed)
+            ordered = others[:idx] + [mine] + others[idx:]
+
+    if not ordered:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "That would leave the plan with no rules at all",
+        )
+    for i, r in enumerate(ordered):
+        r.order_index = i + 1
+    _validate_plan(ordered)
+
+    plan.is_active = False
+    new = SplitPlan(user_id=user.id, name=plan.name,
+                    version=plan.version + 1, is_active=True)
+    db.add(new)
+    db.flush()
+    for r in ordered:
+        db.add(SplitRule(plan_id=new.id, category_id=uuid.UUID(r.category_id),
+                         order_index=r.order_index, rule_type=r.rule_type,
+                         params=r.params, enabled=r.enabled))
+    db.commit()
+    return category_detail(category_id, user, db)

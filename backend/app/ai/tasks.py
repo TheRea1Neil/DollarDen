@@ -7,6 +7,7 @@ deterministic code disposes (ADR 0003). Nothing here writes to the ledger.
 from __future__ import annotations
 
 import json
+import uuid
 import logging
 from typing import Any
 
@@ -104,6 +105,13 @@ DESIGN_SCHEMA = {
                                              "description": "fixed rules, in cents"},
                             "target_cents": {"type": "integer",
                                              "description": "refill_to rules, in cents"},
+                            "max_contribution_cents": {
+                                "type": "integer",
+                                "description": "refill_to rules, optional: never "
+                                               "add more than this in one paycheck, "
+                                               "so a big shortfall is filled over "
+                                               "several rather than all at once",
+                            },
                             "when": {
                                 "type": "object",
                                 "description": "conditional rules: the test to apply",
@@ -748,6 +756,212 @@ def _validate_single(
         "alert_at_cents": _as_int(raw.get("alert_at_cents")),
         "suggested_rule": rule or None,
         "matcher_hint": raw.get("matcher_hint") or None,
+        "problems": problems,
+        "notices": notices,
+        "applicable": not problems,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Refining ONE existing category
+# --------------------------------------------------------------------------- #
+REFINE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "kind": {"type": "string",
+                 "enum": ["spending", "savings_bucket", "obligation"]},
+        "description": {"type": "string"},
+        "target_cents": {"type": "integer",
+                         "description": "the full-envelope amount, in CENTS"},
+        "alert_at_cents": {"type": "integer",
+                           "description": "warn below this, in CENTS"},
+        "funding": {
+            "type": "object",
+            "properties": {
+                "rule_type": {"type": "string",
+                              "enum": ["percent", "fixed", "refill_to",
+                                       "conditional", "none"]},
+                "rate": {"type": "string", "description": "percent: '0.10' is 10%"},
+                "of": {"type": "string", "enum": ["gross", "remaining"]},
+                "amount_cents": {"type": "integer", "description": "fixed rules"},
+                "target_cents": {"type": "integer", "description": "refill_to rules"},
+                "max_contribution_cents": {
+                    "type": "integer",
+                    "description": "refill_to: cap per paycheck, optional"},
+                "when_op": {"type": "string",
+                            "enum": ["<", "<=", ">", ">=", "=="],
+                            "description": "conditional only"},
+                "when_value_cents": {"type": "integer",
+                                     "description": "conditional only: the "
+                                                    "threshold in CENTS. REQUIRED "
+                                                    "for conditional rules."},
+                "then_amount_cents": {"type": "integer",
+                                      "description": "conditional only: how much "
+                                                     "when the test passes"},
+            },
+            "required": ["rule_type"],
+        },
+        "add_matchers": {
+            "type": "array",
+            "description": "transactions that should come out of this category",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "merchant_contains": {"type": "string"},
+                    "direction": {"type": "string", "enum": ["outflow", "inflow"]},
+                },
+                "required": ["merchant_contains"],
+            },
+        },
+        "what_changed": {"type": "string",
+                         "description": "one sentence, plain English"},
+    },
+    "required": ["name", "kind", "description", "funding", "what_changed"],
+}
+
+REFINE_PROMPT = """Change ONE budget category, as asked.
+
+Here is the category as it stands:
+
+  name:        {name}
+  kind:        {kind}
+  for:         {description}
+  holds now:   {balance}
+  full at:     {target}
+  warn below:  {alert}
+  funded by:   {funding}
+  money comes out of it when: {matchers}
+
+Their overall goals, for context:
+{goals}
+
+Their other categories, so you do not duplicate or contradict them:
+{others}
+
+What they want changed:
+{request}
+
+Return the category as it should be AFTER the change. Carry over anything
+they did not ask to change -- do not drop the description or reset the
+target because they only mentioned the funding.
+
+All money is INTEGER CENTS. $300.00 is 30000.
+
+Funding rule types:
+    percent      a share of pay. Set rate ("0.10" = 10%) and of="gross".
+    fixed        the same amount each paycheck. Set amount_cents.
+    refill_to    topped back up to a target, adding only the shortfall.
+                 Set target_cents. Optionally cap one paycheck's top-up
+                 with max_contribution_cents.
+    conditional  funded only while a threshold holds. Set when_op,
+                 when_value_cents AND then_amount_cents. All three.
+    none         not funded automatically; they allocate to it by hand.
+
+For a conditional, read the direction carefully: "only while it holds less
+than $450" is when_op "<" with when_value_cents 45000.
+
+Return JSON only."""
+
+
+async def run_refine_category(
+    db: Session, user: User, provider: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    """Change one existing category from a plain-English instruction.
+
+    Distinct from `design_category`, which invents one from nothing. This
+    one starts from what is already there and must preserve the parts the
+    user did not mention.
+    """
+    cat_id = (request.get("category_id") or "").strip()
+    wanted = (request.get("request") or "").strip()
+    if not cat_id:
+        raise ValueError("refine_category needs a category_id")
+    if not wanted:
+        raise ValueError("say what should change about it")
+
+    try:
+        pk = uuid.UUID(cat_id)
+    except ValueError:
+        raise ValueError("category_id is not a valid id") from None
+
+    cat = db.scalars(
+        select(Category).where(Category.id == pk, Category.user_id == user.id)
+    ).first()
+    if cat is None:
+        raise ValueError("that category does not exist")
+
+    funding_txt = request.get("funding_summary") or "nothing — not funded automatically"
+    matchers = request.get("matcher_summaries") or []
+    others = [c for c in _categories(db, user) if c.id != cat.id]
+
+    prompt = REFINE_PROMPT.format(
+        name=cat.name, kind=cat.kind,
+        description=cat.description or "(not written down)",
+        balance=f"${cat.balance_cents / 100:,.2f}",
+        target=f"${cat.target_cents / 100:,.2f}" if cat.target_cents else "no set amount",
+        alert=f"${cat.alert_at_cents / 100:,.2f}" if cat.alert_at_cents else "never",
+        funding=funding_txt,
+        matchers="; ".join(matchers) if matchers else "nothing matches it automatically",
+        goals=_goals(db, user) or "(none stated)",
+        others="\n".join(_describe_category(c) for c in others) or "  (none)",
+        request=wanted,
+    )
+
+    res = await provider.chat(prompt, schema=REFINE_SCHEMA)
+    return _validate_refine(_parse_json(res.content), cat, others)
+
+
+_FUNDING_REQUIRED = {
+    "percent": ("rate",),
+    "fixed": ("amount_cents",),
+    "refill_to": ("target_cents",),
+    "conditional": ("when_op", "when_value_cents", "then_amount_cents"),
+    "none": (),
+}
+
+
+def _validate_refine(
+    raw: dict[str, Any], cat: Category, others: list[Category]
+) -> dict[str, Any]:
+    problems: list[str] = []
+    notices: list[str] = []
+
+    name = str(raw.get("name", "")).strip() or cat.name
+    if any(o.name.lower() == name.lower() for o in others):
+        problems.append(f"'{name}' is already another category's name")
+
+    kind = raw.get("kind")
+    if kind not in VALID_KINDS:
+        notices.append(f"kind '{kind}' was not valid, kept '{cat.kind}'")
+        kind = cat.kind
+
+    f = raw.get("funding") or {}
+    rule_type = f.get("rule_type")
+    if rule_type not in _FUNDING_REQUIRED:
+        notices.append(f"funding type '{rule_type}' was not valid and was dropped")
+        rule_type, f = "none", {}
+    else:
+        absent = [k for k in _FUNDING_REQUIRED[rule_type] if f.get(k) in (None, "")]
+        if absent:
+            # Same failure the allocation experiment found: an operator
+            # with no threshold. Blocking, because the engine cannot run it.
+            problems.append(
+                f"the funding rule is missing {', '.join(absent)} — "
+                f"fill it in before applying"
+            )
+
+    return {
+        "name": name,
+        "kind": kind,
+        "description": str(raw.get("description", "")).strip() or (cat.description or ""),
+        "target_cents": _as_int(raw.get("target_cents")),
+        "alert_at_cents": _as_int(raw.get("alert_at_cents")),
+        "funding": {"rule_type": rule_type, **{k: v for k, v in f.items()
+                                               if k != "rule_type"}},
+        "add_matchers": [m for m in (raw.get("add_matchers") or [])
+                         if (m.get("merchant_contains") or "").strip()],
+        "what_changed": str(raw.get("what_changed", "")).strip(),
         "problems": problems,
         "notices": notices,
         "applicable": not problems,

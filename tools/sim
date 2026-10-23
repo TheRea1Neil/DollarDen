@@ -19,6 +19,9 @@
 #   sim swipe <x1> <y1> <x2> <y2> [dur]
 #   sim scroll up|down     half a screen, from the middle
 #   sim back               the usual back-button spot
+#   sim drag <x1> <y1> <x2> <y2> [dur]   press, hold, move, release
+#   sim addphoto <path>    put an image in the photo library
+#   sim waitfor <label> [n]  block until an element appears
 #   sim launch | relaunch | terminate
 #   sim boot [name]        boot a simulator by name (default: iPhone 17)
 #
@@ -123,6 +126,28 @@ case "${1:-}" in
     ;;
 
   back)      "$IDB" ui tap --udid "$(udid)" 24 70 ;;
+
+  # A real press-hold-move-release, which is what a ReorderableListView
+  # needs. A plain swipe starts moving immediately and the list reads it
+  # as a scroll.
+  drag)
+    "$IDB" ui drag-and-drop --udid "$(udid)" \
+      --duration "${6:-1.0}" "${2:?x1}" "${3:?y1}" "${4:?x2}" "${5:?y2}"
+    ;;
+
+  # Put an image in the simulator's photo library, so the receipt
+  # camera flow can be exercised without a camera.
+  addphoto) xcrun simctl addmedia "$(udid)" "${2:?path}" && echo "added ${2}" ;;
+
+  # Block until an element appears, instead of sleeping and hoping.
+  waitfor)
+    label="${2:?label}"; tries="${3:-30}"
+    for _ in $(seq 1 "$tries"); do
+      if [[ -n "$(find_el "$label" | head -1)" ]]; then echo "found [$label]"; exit 0; fi
+      sleep 1
+    done
+    echo "never saw [$label]" >&2; exit 1
+    ;;
 
   # Scroll until an element with this label is on screen, then tap it.
   # A button below the fold is invisible to `tap`, and a script that

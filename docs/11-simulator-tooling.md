@@ -70,6 +70,22 @@ Debug builds are fine on the simulator; only a physical device needs
 release (JIT needs a debugger attached, which is why a debug build dies
 instantly when launched standalone on the phone).
 
+## For the receipt work
+
+`sim addphoto <file>` puts an image in the simulator's photo library via
+`xcrun simctl addmedia`, so the pick-a-receipt flow can be exercised
+without a camera. The simulator has no camera at all — "take a photo"
+has to fall back to the library there, which the app should handle
+gracefully anyway since some real devices refuse camera permission.
+
+`sim drag` is a real press-hold-move-release rather than a swipe, which
+is what `ReorderableListView` needs; a swipe starts moving immediately
+and the list reads it as a scroll.
+
+`sim waitfor <label>` blocks until an element appears, which is more
+honest than sleeping and hoping — an AI suggestion can take 1s or 15s
+depending on whether the gaming PC is awake.
+
 ## Limits
 
 - Flutter renders to a canvas, so the tree is what Flutter's semantics
@@ -79,5 +95,10 @@ instantly when launched standalone on the phone).
 - Text in a single `Text` widget arrives as one label with newlines, so
   a card reads as `"Tithing / $400.00 / Rent / $350.00"`. Fine for
   finding, poor for asserting.
-- No gesture recording. Drag-to-reorder has to be driven with explicit
-  `swipe` calls.
+- No video. Animations and transitions are invisible; only end states
+  can be checked. Screen recording would need a standing macOS
+  permission, which is not worth it for the gain.
+- idb's accessibility tree reports an element's LABEL, not its current
+  VALUE. A text field shows as "What gets charged here" whether it is
+  empty or full, so the only way to confirm what is in a field is to
+  look at a screenshot.

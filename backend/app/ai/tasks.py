@@ -1512,3 +1512,121 @@ def _validate_receipt(
         "notices": notices,
         "applicable": not problems,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Categorising a receipt's items, all at once
+# --------------------------------------------------------------------------- #
+ITEMS_PROMPT = """Decide which budget category each line of a receipt
+belongs to.
+
+Bought at: {merchant}
+
+The categories:
+{cats}
+
+The lines:
+{items}
+
+Give one answer per line, in the same order, using the line numbers
+shown. Most lines from one shop usually belong to the same category —
+say so rather than inventing variety. Use "{unsure}" for a line whose
+category is genuinely unclear.
+
+Tax and tip are not listed here; they are handled separately.
+
+Return JSON only."""
+
+
+def _items_schema(names: list[str], count: int) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "lines": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "line": {"type": "integer",
+                                 "description": "the line number shown"},
+                        "category": {"type": "string",
+                                     "enum": names + [UNSURE]},
+                    },
+                    "required": ["line", "category"],
+                },
+            },
+        },
+        "required": ["lines"],
+    }
+
+
+async def run_categorise_items(
+    db: Session, user: User, provider: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    """Assign a category to every line of a receipt in one call.
+
+    One request rather than one per line: the model sees the whole
+    receipt, which is the context that makes "BANANAS" obviously
+    groceries, and eight lines do not cost eight round trips.
+    """
+    items = request.get("items") or []
+    if not items:
+        raise ValueError("there are no items to categorise")
+    merchant = (request.get("merchant") or "a shop").strip()
+
+    cats = [c for c in _categories(db, user) if not c.is_unallocated]
+    if not cats:
+        raise ValueError("there are no categories to choose from")
+
+    cat_lines = []
+    for c in cats:
+        line = f"  - {c.name} ({c.kind})"
+        if c.spend_criteria:
+            line += f": {c.spend_criteria}"
+        cat_lines.append(line)
+
+    shown = []
+    for i, it in enumerate(items[:60], 1):
+        desc = str(it.get("description", "")).strip()
+        amount = _as_signed_int(it.get("amount_cents")) or 0
+        shown.append(f"  {i}. {desc} — ${amount / 100:,.2f}")
+
+    names = [c.name for c in cats]
+    prompt = ITEMS_PROMPT.format(
+        merchant=merchant, cats="\n".join(cat_lines),
+        items="\n".join(shown), unsure=UNSURE,
+    )
+    res = await provider.chat(prompt, schema=_items_schema(names, len(shown)))
+    return _validate_item_categories(_parse_json(res.content), cats, len(shown))
+
+
+def _validate_item_categories(
+    raw: dict[str, Any], cats: list[Category], count: int
+) -> dict[str, Any]:
+    """Map the model's answers back onto line numbers.
+
+    A missing or unrecognised line is left undecided rather than
+    guessed: the review screen shows it as needing a choice, which is
+    the honest outcome and costs one tap.
+    """
+    by_name = {c.name: c for c in cats}
+    assigned: dict[int, dict[str, str]] = {}
+
+    for row in raw.get("lines") or []:
+        idx = _as_int(row.get("line"))
+        name = str(row.get("category", "")).strip()
+        if idx is None or not (1 <= idx <= count):
+            continue
+        cat = by_name.get(name)
+        if cat is None:
+            continue
+        assigned[idx] = {"category_id": str(cat.id), "category_name": cat.name}
+
+    return {
+        "lines": [
+            {"line": i, **assigned.get(i, {"category_id": None,
+                                           "category_name": None})}
+            for i in range(1, count + 1)
+        ],
+        "undecided": [i for i in range(1, count + 1) if i not in assigned],
+    }

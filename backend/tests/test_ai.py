@@ -1053,3 +1053,53 @@ class TestReceiptArithmetic:
         assert set(RECEIPT_SCHEMA["required"]) == {
             "merchant", "items", "subtotal_cents", "tax_cents",
             "tip_cents", "total_cents"}
+
+
+class TestItemCategories:
+    """Mapping the model's per-line answers back onto the receipt."""
+
+    @staticmethod
+    def _cats() -> list[Category]:
+        return [
+            Category(name="Groceries", kind="spending", balance_cents=0),
+            Category(name="Household", kind="spending", balance_cents=0),
+        ]
+
+    def test_every_line_comes_back(self) -> None:
+        from app.ai.tasks import _validate_item_categories
+        out = _validate_item_categories(
+            {"lines": [{"line": 1, "category": "Groceries"},
+                       {"line": 2, "category": "Household"}]},
+            self._cats(), 2)
+        assert [l["category_name"] for l in out["lines"]] == \
+               ["Groceries", "Household"]
+        assert out["undecided"] == []
+
+    def test_a_line_the_model_skipped_is_undecided_not_guessed(self) -> None:
+        from app.ai.tasks import _validate_item_categories
+        out = _validate_item_categories(
+            {"lines": [{"line": 1, "category": "Groceries"}]},
+            self._cats(), 3)
+        assert out["lines"][1]["category_id"] is None
+        assert out["undecided"] == [2, 3]
+
+    def test_an_invented_category_is_dropped(self) -> None:
+        from app.ai.tasks import _validate_item_categories
+        out = _validate_item_categories(
+            {"lines": [{"line": 1, "category": "Holiday Fund"}]},
+            self._cats(), 1)
+        assert out["undecided"] == [1]
+
+    def test_unsure_leaves_the_line_open(self) -> None:
+        from app.ai.tasks import _validate_item_categories
+        out = _validate_item_categories(
+            {"lines": [{"line": 1, "category": "UNSURE"}]}, self._cats(), 1)
+        assert out["lines"][0]["category_name"] is None
+
+    def test_line_numbers_outside_the_receipt_are_ignored(self) -> None:
+        from app.ai.tasks import _validate_item_categories
+        out = _validate_item_categories(
+            {"lines": [{"line": 99, "category": "Groceries"},
+                       {"line": 0, "category": "Groceries"}]},
+            self._cats(), 2)
+        assert out["undecided"] == [1, 2]

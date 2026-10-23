@@ -8,6 +8,7 @@ import '../../data/providers.dart';
 import '../../domain/models.dart';
 import 'add_category_screen.dart';
 import 'assisted_review_screen.dart';
+import 'receipt_screen.dart';
 
 /// The review queue: transactions the deterministic rules could not place.
 ///
@@ -150,6 +151,15 @@ class _ReviewCard extends ConsumerWidget {
       return;
     }
 
+    if (result is _PickItemise) {
+      await Navigator.of(context).push<bool>(
+        MaterialPageRoute(builder: (_) => ReceiptScreen(item: item)),
+      );
+      ref.invalidate(reviewProvider);
+      ref.invalidate(summaryProvider);
+      return;
+    }
+
     final api = ref.read(apiProvider);
     try {
       switch (result) {
@@ -171,6 +181,8 @@ class _ReviewCard extends ConsumerWidget {
             item.id, name: name, kind: kind, description: description,
             targetCents: targetCents, remember: remember,
           );
+        case _PickItemise():
+          return;   // handled before the switch
         case _PickReopen():
           // Handled before the switch; listed so the match stays
           // exhaustive and a new result type cannot be forgotten.
@@ -215,6 +227,11 @@ class _PickNew extends _PickerResult {
   final String? description;
   const _PickNew(this.name, this.kind, this.targetCents, this.remember,
       {this.description});
+}
+
+/// "This charge covers several things — let me itemise it."
+class _PickItemise extends _PickerResult {
+  const _PickItemise();
 }
 
 /// "I made a category, show me the list again."
@@ -376,6 +393,13 @@ class _CategoryPickerState extends State<_CategoryPicker> {
                           context, _PickExisting(c.id, _remember)),
                     ),
                   const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.receipt_long_outlined),
+                    title: const Text('Split by receipt'),
+                    subtitle: const Text('Photograph or paste it and file '
+                        'each item separately.'),
+                    onTap: () => Navigator.pop(context, const _PickItemise()),
+                  ),
                   // Noticing a charge fits nowhere is exactly when you
                   // realise a category is missing, so make one here.
                   ListTile(

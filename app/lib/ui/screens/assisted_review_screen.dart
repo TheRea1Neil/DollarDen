@@ -8,6 +8,7 @@ import '../../data/providers.dart';
 import '../../domain/models.dart';
 import 'add_category_screen.dart';
 import 'category_editor_screen.dart';
+import 'receipt_screen.dart';
 
 /// Walk the review backlog, one charge at a time, with a suggestion.
 ///
@@ -178,6 +179,18 @@ class _AssistedReviewScreenState extends ConsumerState<AssistedReviewScreen> {
     await _accept(picked);
   }
 
+  Future<void> _itemise() async {
+    final item = _item;
+    if (item == null) return;
+    final filed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => ReceiptScreen(item: item)),
+    );
+    if (filed == true) {
+      _filed += 1;
+      _next();
+    }
+  }
+
   /// Forget a matcher that is claiming this merchant.
   Future<void> _forget(ExistingMatcher m) async {
     final ok = await showDialog<bool>(
@@ -310,6 +323,14 @@ class _AssistedReviewScreenState extends ConsumerState<AssistedReviewScreen> {
             child: Text(s != null && !s.unsure
                 ? 'Pick a different category'
                 : 'Choose a category'),
+          ),
+          const SizedBox(height: 8),
+          // A receipt with several things on it does not belong in one
+          // envelope, and this is the moment you have the receipt.
+          OutlinedButton.icon(
+            onPressed: _busy ? null : _itemise,
+            icon: const Icon(Icons.receipt_long_outlined, size: 18),
+            label: const Text('Split by receipt'),
           ),
           const SizedBox(height: 8),
           TextButton(

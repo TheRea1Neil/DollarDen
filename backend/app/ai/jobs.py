@@ -39,6 +39,7 @@ KINDS = {
     "describe_category",
     "suggest_category",
     "receipt_parse",
+    "categorise_items",
     "summary",
     "advise",
 }

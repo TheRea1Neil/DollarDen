@@ -663,6 +663,37 @@ class ApiClient {
     return ParsedReceipt.fromJson(done.result ?? {});
   }
 
+  /// Categorise every line of a receipt in one call.
+  ///
+  /// Returns a map of 1-based line number to (categoryId, name); a line
+  /// the assistant would not commit on is absent rather than guessed.
+  Future<Map<int, (String, String)>> categoriseItems({
+    required String merchant,
+    required List<ReceiptItem> items,
+  }) async {
+    final job = await queueJob('categorise_items', {
+      'merchant': merchant,
+      'items': [
+        for (final i in items)
+          {'description': i.description, 'amount_cents': i.amountCents}
+      ],
+    });
+    final done = await awaitJob(job.id, timeout: const Duration(minutes: 4));
+    if (!done.ok) {
+      throw ApiException(done.error ?? 'The assistant could not finish.');
+    }
+    final out = <int, (String, String)>{};
+    for (final row in (done.result?['lines'] as List?) ?? const []) {
+      final m = (row as Map).cast<String, dynamic>();
+      final id = m['category_id'] as String?;
+      final name = m['category_name'] as String?;
+      if (id != null && name != null) {
+        out[m['line'] as int] = (id, name);
+      }
+    }
+    return out;
+  }
+
   /// Ask where one charge belongs. Suggests; never files.
   Future<CategorySuggestion> suggestCategory({
     required String merchant,

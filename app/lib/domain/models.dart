@@ -1236,3 +1236,81 @@ class CategorySuggestion {
   /// pick with nothing behind it is the failure mode worth showing.
   bool get hasEvidence => matchedPhrase != null || mentions.isNotEmpty;
 }
+
+/// One line from a receipt, and where the user has decided it goes.
+class ReceiptItem {
+  final String description;
+  final int amountCents;
+  final int quantity;
+
+  /// Assigned by the user (or pre-filled by a suggestion). Null until
+  /// someone decides.
+  String? categoryId;
+  String? categoryName;
+
+  ReceiptItem({
+    required this.description,
+    required this.amountCents,
+    this.quantity = 1,
+    this.categoryId,
+    this.categoryName,
+  });
+
+  factory ReceiptItem.fromJson(Map<String, dynamic> j) => ReceiptItem(
+        description: j['description'] as String? ?? '',
+        amountCents: j['amount_cents'] as int? ?? 0,
+        quantity: j['quantity'] as int? ?? 1,
+      );
+
+  bool get isCredit => amountCents < 0;
+}
+
+/// A receipt, read but not yet filed.
+class ParsedReceipt {
+  final String merchant;
+  final List<ReceiptItem> items;
+  final int subtotalCents;
+  final int taxCents;
+  final int tipCents;
+  final int totalCents;
+  final int itemsSumCents;
+
+  /// What the bank actually charged, when this is being matched to a
+  /// transaction. The receipt and the charge can legitimately differ —
+  /// a tip added afterwards is the usual reason.
+  final int? expectedCents;
+  final List<String> problems;
+  final List<String> notices;
+
+  const ParsedReceipt({
+    required this.merchant,
+    required this.items,
+    required this.subtotalCents,
+    required this.taxCents,
+    required this.tipCents,
+    required this.totalCents,
+    required this.itemsSumCents,
+    required this.problems,
+    required this.notices,
+    this.expectedCents,
+  });
+
+  factory ParsedReceipt.fromJson(Map<String, dynamic> j) => ParsedReceipt(
+        merchant: j['merchant'] as String? ?? '',
+        items: ((j['items'] as List?) ?? const [])
+            .map((e) => ReceiptItem.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        subtotalCents: j['subtotal_cents'] as int? ?? 0,
+        taxCents: j['tax_cents'] as int? ?? 0,
+        tipCents: j['tip_cents'] as int? ?? 0,
+        totalCents: j['total_cents'] as int? ?? 0,
+        itemsSumCents: j['items_sum_cents'] as int? ?? 0,
+        expectedCents: j['expected_cents'] as int?,
+        problems: ((j['problems'] as List?) ?? const []).cast<String>(),
+        notices: ((j['notices'] as List?) ?? const []).cast<String>(),
+      );
+
+  /// What the split has to add up to: the real charge if we know it,
+  /// otherwise what the receipt claims.
+  int get targetCents => expectedCents ?? totalCents;
+}

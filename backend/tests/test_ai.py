@@ -965,3 +965,91 @@ class TestExistingMatchersAreSurfaced:
         with SessionLocal() as db:
             user = db.get(User, uid)
             assert _existing_matchers(db, user, "SAFEWAY #1842") == []
+
+
+class TestReceiptArithmetic:
+    """The parts must equal the whole, and the check is ours not the model's.
+
+    An OCR slip of one digit is easy to make and easy to miss, and
+    itemising is pointless if the items do not reconcile.
+    """
+
+    @staticmethod
+    def _raw(**over):
+        base = {
+            "merchant": "Trader Joe's",
+            "items": [
+                {"description": "Bananas", "amount_cents": 199, "quantity": 1},
+                {"description": "Oat milk", "amount_cents": 399, "quantity": 2},
+            ],
+            "subtotal_cents": 598,
+            "tax_cents": 42,
+            "tip_cents": 0,
+            "total_cents": 640,
+        }
+        base.update(over)
+        return base
+
+    def test_a_receipt_that_adds_up_has_no_notices(self) -> None:
+        from app.ai.tasks import _validate_receipt
+        out = _validate_receipt(self._raw())
+        assert out["applicable"] and out["notices"] == []
+        assert out["items_sum_cents"] == 598
+        assert out["total_cents"] == 640
+
+    def test_lines_not_matching_the_stated_total_is_flagged(self) -> None:
+        from app.ai.tasks import _validate_receipt
+        out = _validate_receipt(self._raw(total_cents=999))
+        assert out["notices"]
+        assert "add up to $6.40" in out["notices"][0]
+        assert "$9.99" in out["notices"][0]
+
+    def test_a_total_not_matching_the_charge_is_flagged(self) -> None:
+        """The bank wins; a tip added later is the usual reason."""
+        from app.ai.tasks import _validate_receipt
+        out = _validate_receipt(self._raw(), expected_cents=800)
+        assert any("tip added later" in n for n in out["notices"])
+
+    def test_a_matching_charge_says_nothing(self) -> None:
+        from app.ai.tasks import _validate_receipt
+        out = _validate_receipt(self._raw(), expected_cents=640)
+        assert out["notices"] == []
+
+    def test_discounts_are_kept_as_negative_lines(self) -> None:
+        """They are part of what makes the lines add up."""
+        from app.ai.tasks import _validate_receipt
+        out = _validate_receipt(self._raw(
+            items=[{"description": "Cheese", "amount_cents": 800},
+                   {"description": "Coupon", "amount_cents": -150}],
+            total_cents=692, tax_cents=42))
+        assert out["items_sum_cents"] == 650
+        assert out["notices"] == []
+
+    def test_unreadable_lines_are_dropped_not_guessed(self) -> None:
+        from app.ai.tasks import _validate_receipt
+        out = _validate_receipt(self._raw(items=[
+            {"description": "Bananas", "amount_cents": 199},
+            {"description": "", "amount_cents": 500},
+            {"description": "No amount"},
+        ]))
+        assert [i["description"] for i in out["items"]] == ["Bananas"]
+
+    def test_no_items_at_all_is_a_problem(self) -> None:
+        from app.ai.tasks import _validate_receipt
+        out = _validate_receipt(self._raw(items=[]))
+        assert not out["applicable"]
+        assert "no line items" in out["problems"][0]
+
+    def test_quantity_defaults_to_one(self) -> None:
+        from app.ai.tasks import _validate_receipt
+        out = _validate_receipt(self._raw(
+            items=[{"description": "Bananas", "amount_cents": 199}]))
+        assert out["items"][0]["quantity"] == 1
+
+    def test_the_schema_requires_every_field(self) -> None:
+        """A model omits what a schema leaves optional — three times
+        this project, so far."""
+        from app.ai.tasks import RECEIPT_SCHEMA
+        assert set(RECEIPT_SCHEMA["required"]) == {
+            "merchant", "items", "subtotal_cents", "tax_cents",
+            "tip_cents", "total_cents"}

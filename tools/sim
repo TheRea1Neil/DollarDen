@@ -35,12 +35,28 @@ export IDB_COMPANION_PATH="${IDB_COMPANION_PATH:-/opt/homebrew/bin/idb_companion
 BUNDLE="${NNF_BUNDLE:-org.nonsensefinance.nnf}"
 SHOTS="$HERE/shots"
 
+# The companion connection drops when the simulator restarts, and the
+# failure is nasty: reads keep working from a cached tree while every
+# tap no-ops with "Mach port invalid, device disconnected" on stderr.
+# Reconnecting is cheap and idempotent, so just do it.
+ensure_connected() {
+  local id="$1"
+  "$IDB" connect "$id" >/dev/null 2>&1 || true
+}
+
 udid() {
   if [[ -n "${NNF_SIM:-}" ]]; then echo "$NNF_SIM"; return; fi
   xcrun simctl list devices booted -j | python3 "$HERE/_udid.py"
 }
 
-tree_json() { "$IDB" ui describe-all --udid "$(udid)" 2>/dev/null; }
+tree_json() {
+  # `local id="$(cmd)"` always returns 0 — the assignment's status
+  # masks the command's. Declare first, assign second, or a missing
+  # simulator prints a clear message AND a traceback.
+  local id
+  id="$(udid)" || return 1
+  "$IDB" ui describe-all --udid "$id" 2>/dev/null
+}
 
 # Find elements by label, returning "x y w h | type | label" per match.
 find_el() { tree_json | python3 "$HERE/_tree.py" find "$1"; }
@@ -59,6 +75,7 @@ case "${1:-}" in
   find)  find_el "${2:?need text}" ;;
 
   tap)
+    ensure_connected "$(udid)"
     match="$(find_el "${2:?need text}" | head -1)"
     [[ -z "$match" ]] && { echo "no element matching: $2" >&2; exit 1; }
     read -r x y w h _ <<<"$match"
@@ -67,7 +84,9 @@ case "${1:-}" in
     echo "tapped ($cx,$cy) — ${match#*| }"
     ;;
 
-  tapxy) "$IDB" ui tap --udid "$(udid)" "${2:?x}" "${3:?y}"; echo "tapped ($2,$3)" ;;
+  tapxy)
+    ensure_connected "$(udid)"
+    "$IDB" ui tap --udid "$(udid)" "${2:?x}" "${3:?y}"; echo "tapped ($2,$3)" ;;
   type)  "$IDB" ui text --udid "$(udid)" "${2:?text}" ;;
 
   # Tapping a filled field puts the caret in it and typing APPENDS.

@@ -639,6 +639,30 @@ class ApiClient {
     return (r.data as Map).cast<String, dynamic>();
   }
 
+  /// Read a receipt into line items, from a photo or pasted text.
+  ///
+  /// [expectedCents] is the real charge when this is being matched to a
+  /// transaction, so the result can say when the two disagree.
+  Future<ParsedReceipt> parseReceipt({
+    String? imageBase64,
+    String? text,
+    int? expectedCents,
+    void Function(AiJob)? onProgress,
+  }) async {
+    final job = await queueJob('receipt_parse', {
+      if (imageBase64 != null) 'image_b64': imageBase64,
+      if (text != null && text.isNotEmpty) 'text': text,
+      if (expectedCents != null) 'expected_cents': expectedCents,
+    });
+    // Vision on a sleeping host is the slowest thing the app does.
+    final done = await awaitJob(job.id,
+        onProgress: onProgress, timeout: const Duration(minutes: 8));
+    if (!done.ok) {
+      throw ApiException(done.error ?? 'The assistant could not read it.');
+    }
+    return ParsedReceipt.fromJson(done.result ?? {});
+  }
+
   /// Ask where one charge belongs. Suggests; never files.
   Future<CategorySuggestion> suggestCategory({
     required String merchant,

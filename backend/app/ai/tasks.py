@@ -502,13 +502,30 @@ def _repair_remainders(
 
 
 def _as_int(v: Any) -> int | None:
+    """A non-negative whole number of cents, or None.
+
+    Most money the model proposes cannot sensibly be negative — a
+    target, a threshold, a paycheck amount — so a negative is treated
+    as garbage rather than carried forward. Receipt LINE ITEMS are the
+    exception; see `_as_signed_int`.
+    """
+    n = _as_signed_int(v)
+    return n if n is not None and n >= 0 else None
+
+
+def _as_signed_int(v: Any) -> int | None:
+    """A whole number of cents that may be negative.
+
+    Receipt lines can be: a coupon or a returned item is a negative
+    line, and dropping it makes the receipt stop adding up — which is
+    exactly the thing itemising is supposed to guarantee.
+    """
     if v is None:
         return None
     try:
-        n = int(v)
+        return int(v)
     except (TypeError, ValueError):
         return None
-    return n if n >= 0 else None
 
 
 # --------------------------------------------------------------------------- #
@@ -1350,4 +1367,148 @@ def _validate_suggestion(
         "mentions": mentions,
         "chosen_description": cat.spend_criteria or cat.description or None,
         "unsure": False,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Reading a receipt
+# --------------------------------------------------------------------------- #
+RECEIPT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "merchant": {"type": "string"},
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string",
+                                    "description": "the line as printed"},
+                    "amount_cents": {
+                        "type": "integer",
+                        "description": "line total in CENTS. $4.99 is 499. "
+                                       "If a quantity is shown, this is the "
+                                       "total for all of them, not the unit "
+                                       "price.",
+                    },
+                    "quantity": {"type": "integer"},
+                },
+                "required": ["description", "amount_cents"],
+            },
+        },
+        "subtotal_cents": {"type": "integer"},
+        "tax_cents": {"type": "integer"},
+        "tip_cents": {"type": "integer"},
+        "total_cents": {"type": "integer"},
+    },
+    # Everything required: a model omits what a schema leaves optional,
+    # and a receipt missing its total cannot be reconciled.
+    "required": ["merchant", "items", "subtotal_cents", "tax_cents",
+                 "tip_cents", "total_cents"],
+}
+
+RECEIPT_PROMPT = """Read this receipt and list what was bought.
+
+Every amount in CENTS as a whole number: $4.99 is 499, $12.00 is 1200.
+
+One entry per line item as printed. If a line shows a quantity, give the
+TOTAL for that line, not the unit price, and put the count in quantity.
+
+Separate out tax and tip rather than folding them into items. Use 0 when
+a receipt has none. Do not invent a tip that is not printed.
+
+Leave discounts and coupons as their own items with a NEGATIVE
+amount_cents — they are part of what makes the lines add up.
+
+Return JSON only."""
+
+TEXT_RECEIPT_PROMPT = RECEIPT_PROMPT + "\n\nThe receipt:\n\n{text}"
+
+
+async def run_receipt_parse(
+    db: Session, user: User, provider: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    """Turn a receipt photo or pasted text into line items.
+
+    Reading a receipt is the kind of work a vision model is genuinely
+    good at -- transcription, not judgement. What the items MEAN is
+    decided afterwards, one at a time, by the same categorise path that
+    already exists and was measured.
+    """
+    image_b64 = (request.get("image_b64") or "").strip()
+    text = (request.get("text") or "").strip()
+    if not image_b64 and not text:
+        raise ValueError("give the receipt as an image or as text")
+
+    if image_b64:
+        res = await provider.chat(RECEIPT_PROMPT, images=[image_b64],
+                                  schema=RECEIPT_SCHEMA)
+    else:
+        res = await provider.chat(TEXT_RECEIPT_PROMPT.format(text=text[:8000]),
+                                  schema=RECEIPT_SCHEMA)
+
+    return _validate_receipt(_parse_json(res.content),
+                             expected_cents=_as_int(request.get("expected_cents")))
+
+
+def _validate_receipt(
+    raw: dict[str, Any], expected_cents: int | None = None
+) -> dict[str, Any]:
+    """Check the receipt adds up, and say so when it does not.
+
+    An OCR slip of one digit is both easy to make and easy to miss, and
+    the whole point of itemising is that the parts equal the whole. The
+    arithmetic is done here rather than trusted from the model.
+    """
+    items: list[dict[str, Any]] = []
+    for it in raw.get("items") or []:
+        desc = str(it.get("description", "")).strip()
+        amount = _as_signed_int(it.get("amount_cents"))
+        if not desc or amount is None:
+            continue
+        items.append({
+            "description": desc,
+            "amount_cents": amount,
+            "quantity": _as_int(it.get("quantity")) or 1,
+        })
+
+    tax = _as_int(raw.get("tax_cents")) or 0
+    tip = _as_int(raw.get("tip_cents")) or 0
+    total = _as_int(raw.get("total_cents")) or 0
+    items_sum = sum(i["amount_cents"] for i in items)
+
+    problems: list[str] = []
+    notices: list[str] = []
+
+    if not items:
+        problems.append("no line items could be read from this")
+
+    # What the receipt says about itself.
+    computed = items_sum + tax + tip
+    if total and computed != total:
+        notices.append(
+            f"The lines add up to ${computed / 100:,.2f} but the receipt "
+            f"says ${total / 100:,.2f}. Check the amounts before filing."
+        )
+
+    # What the bank says, which wins if they disagree.
+    if expected_cents is not None and total and total != expected_cents:
+        notices.append(
+            f"The receipt total is ${total / 100:,.2f} but the charge was "
+            f"${expected_cents / 100:,.2f}. A tip added later would explain "
+            f"the difference."
+        )
+
+    return {
+        "merchant": str(raw.get("merchant", "")).strip(),
+        "items": items,
+        "subtotal_cents": _as_int(raw.get("subtotal_cents")) or items_sum,
+        "tax_cents": tax,
+        "tip_cents": tip,
+        "total_cents": total or computed,
+        "items_sum_cents": items_sum,
+        "expected_cents": expected_cents,
+        "problems": problems,
+        "notices": notices,
+        "applicable": not problems,
     }

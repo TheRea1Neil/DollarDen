@@ -32,6 +32,7 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
   final _form = GlobalKey<FormState>();
   late final TextEditingController _name;
   late final TextEditingController _description;
+  late final TextEditingController _spendCriteria;
   late final TextEditingController _target;
   late final TextEditingController _alert;
   late String _kind;
@@ -59,6 +60,7 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
     final c = widget.existing;
     _name = TextEditingController(text: c?.name ?? '');
     _description = TextEditingController(text: c?.description ?? '');
+    _spendCriteria = TextEditingController(text: c?.spendCriteria ?? '');
     _target = TextEditingController(
         text: c?.targetCents == null
             ? ''
@@ -105,6 +107,7 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
     _tabs?.dispose();
     _name.dispose();
     _description.dispose();
+    _spendCriteria.dispose();
     _target.dispose();
     _alert.dispose();
     super.dispose();
@@ -125,12 +128,14 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
     });
     final api = ref.read(apiProvider);
     final description = _description.text.trim();
+    final criteria = _spendCriteria.text.trim();
     try {
       if (_isNew) {
         await api.createCategory(
           name: _name.text.trim(),
           kind: _kind,
           description: description.isEmpty ? null : description,
+          spendCriteria: criteria.isEmpty ? null : criteria,
           targetCents: _cents(_target),
           alertAtCents: _cents(_alert),
         );
@@ -141,6 +146,7 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
           'name': _name.text.trim(),
           'kind': _kind,
           'description': description.isEmpty ? null : description,
+          'spend_criteria': criteria.isEmpty ? null : criteria,
           'target_cents': _cents(_target),
           'alert_at_cents': _cents(_alert),
         });
@@ -463,6 +469,22 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
                 helperText: 'Read by the assistant when it writes your '
                     'summaries. It does not affect how paychecks are split.',
                 helperMaxLines: 3,
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _spendCriteria,
+              maxLines: 3,
+              minLines: 2,
+              textCapitalization: TextCapitalization.sentences,
+              decoration: const InputDecoration(
+                labelText: 'What gets charged here',
+                hintText: 'Fun spending over \$40 — meals out together, '
+                    'films. Not groceries.',
+                helperText: 'This is what the assistant reads when it files '
+                    'a charge. Say where the edge is — what belongs here '
+                    'and what belongs somewhere else.',
+                helperMaxLines: 4,
               ),
             ),
             if (!_isNew)

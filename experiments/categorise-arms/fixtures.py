@@ -77,9 +77,27 @@ NUANCED = {
 }
 
 
+# Neil's actual Date Fund problem: one field holding both a funding
+# statement and (implicitly) a spending boundary. The `mixed` arm sends
+# the whole thing; the `split` arm sends only the spending half. Same
+# information available to the user either way — the question is whether
+# the funding sentence hurts the categoriser.
+MIXED = {
+    **NUANCED,
+    "Date Fund": "Whatever is left over at the end of the paycheck goes "
+                 "here. Going out together — restaurants, films, outings, "
+                 "and the rideshare to get there.",
+    "Gas": "Saves up to $300 per paycheck. Fuel at a pump, nothing else. "
+           "Uber and Lyft come out of Date Fund.",
+    "Short-Term Savings": "Gets topped up to $2,000 each payday. A buffer "
+                          "for irregular costs — car repairs, vet bills.",
+}
+
+
 def categories(arm: str) -> list[dict]:
     """Build the category list for one arm."""
-    table = {"plain": None, "generic": GENERIC, "nuanced": NUANCED}[arm]
+    table = {"plain": None, "generic": GENERIC, "nuanced": NUANCED,
+             "mixed": MIXED}[arm]
     return [
         dict(name=n, kind=k, description=("" if table is None else table[n]))
         for n, k in _BASE

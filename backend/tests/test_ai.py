@@ -786,3 +786,75 @@ class TestDeterministicAttribution:
         # And it still reports that GAS is the description naming Uber,
         # which is what the user needs to see.
         assert [m["category_name"] for m in out["mentions"]] == ["Gas"]
+
+
+class TestSpendCriteriaVsDescription:
+    """Two fields, two jobs.
+
+    `description` says what a category is FOR and often restates its
+    funding rule. `spend_criteria` says what gets CHARGED to it. Only the
+    second can decide where a purchase belongs, and the categorise
+    experiment found description text with no classification signal
+    makes the model worse — so the funding half must not reach it.
+    """
+
+    @staticmethod
+    def _cats() -> list[Category]:
+        return [
+            Category(name="Date Fund", kind="spending", balance_cents=0,
+                     description="Whatever is left over at the end goes here.",
+                     spend_criteria="Fun spending over $40 — meals out "
+                                    "together, films, outings."),
+            Category(name="Gas", kind="spending", balance_cents=0,
+                     description="Saves up to $300 per paycheck.",
+                     spend_criteria="Fuel at a pump. Uber rides are Date Fund."),
+            Category(name="Old Style", kind="spending", balance_cents=0,
+                     description="Groceries from a shop."),
+        ]
+
+    def test_a_quote_from_spend_criteria_verifies(self) -> None:
+        from app.ai.tasks import _validate_suggestion
+        out = _validate_suggestion({
+            "category": "Gas", "confidence": "high", "why": "fuel",
+            "matched_phrase": "Fuel at a pump",
+        }, self._cats(), "SHELL OIL 4412")
+        assert out["attribution_verified"] is True
+
+    def test_a_quote_from_the_funding_half_does_not_verify(self) -> None:
+        """The funding description is never shown to the categoriser, so
+        citing it means the model invented the citation."""
+        from app.ai.tasks import _validate_suggestion
+        out = _validate_suggestion({
+            "category": "Gas", "confidence": "high", "why": "x",
+            "matched_phrase": "Saves up to $300 per paycheck",
+        }, self._cats(), "SHELL OIL 4412")
+        assert out["attribution_verified"] is False
+        assert out["matched_phrase"] is None
+
+    def test_the_chosen_text_shown_is_the_spending_boundary(self) -> None:
+        from app.ai.tasks import _validate_suggestion
+        out = _validate_suggestion({
+            "category": "Date Fund", "confidence": "high", "why": "x",
+            "matched_phrase": "",
+        }, self._cats(), "OLIVE GARDEN 00492")
+        assert "Fun spending over $40" in out["chosen_description"]
+        assert "left over" not in out["chosen_description"]
+
+    def test_a_category_with_only_a_description_still_works(self) -> None:
+        """Nobody has to migrate anything for this to keep functioning."""
+        from app.ai.tasks import _validate_suggestion
+        out = _validate_suggestion({
+            "category": "Old Style", "confidence": "high", "why": "x",
+            "matched_phrase": "Groceries from a shop",
+        }, self._cats(), "SAFEWAY #1842")
+        assert out["attribution_verified"] is True
+        assert out["chosen_description"] == "Groceries from a shop."
+
+    def test_mentions_search_both_fields_and_say_which(self) -> None:
+        """The user wants to know if anything they wrote names this
+        merchant, wherever they wrote it."""
+        from app.ai.tasks import _mentions
+        hits = _mentions("UBER TRIP 4KX2M", self._cats())
+        assert len(hits) == 1
+        assert hits[0]["category_name"] == "Gas"
+        assert hits[0]["field"] == "spend_criteria"

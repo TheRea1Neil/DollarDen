@@ -87,7 +87,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="qwen2.5vl:7b")
     ap.add_argument("--arm", default="nuanced",
-                    choices=["plain", "generic", "nuanced"])
+                    choices=["plain", "generic", "nuanced", "mixed"])
     a = ap.parse_args()
 
     cats = "\n".join(render(c) for c in categories(a.arm))

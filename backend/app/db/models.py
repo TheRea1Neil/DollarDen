@@ -190,7 +190,18 @@ class Category(Base):
     user_id: Mapped[uuid.UUID] = _user_fk()
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)  # spending|savings_bucket|obligation
+    # What this category is FOR. Human-facing, and read by the
+    # assistant when it writes summaries and advice.
     description: Mapped[str | None] = mapped_column(Text)
+    # What gets CHARGED here -- the only half that can decide where a
+    # purchase belongs.
+    #
+    # Measured: carrying the funding sentence alongside it scored
+    # IDENTICALLY (83%, same failures), so this is not an accuracy fix.
+    # It is a field whose label tells the user what to write. Asked for
+    # a "description", people write "whatever is left over goes here",
+    # which is true and useless for filing.
+    spend_criteria: Mapped[str | None] = mapped_column(Text)
     # Cache of sum(allocations). Never written outside the ledger service.
     balance_cents: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     target_cents: Mapped[int | None] = mapped_column(BigInteger)

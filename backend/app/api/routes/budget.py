@@ -65,6 +65,8 @@ class CategoryIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     kind: str
     description: str | None = None
+    # What gets charged here, kept separate from what it is for.
+    spend_criteria: str | None = None
     target_cents: int | None = Field(default=None, ge=0)
     alert_at_cents: int | None = Field(default=None, ge=0)
     sort_order: int = 0
@@ -81,6 +83,7 @@ class CategoryPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     kind: str | None = None
     description: str | None = None
+    spend_criteria: str | None = None
     target_cents: int | None = Field(default=None, ge=0)
     alert_at_cents: int | None = Field(default=None, ge=0)
     sort_order: int | None = None
@@ -98,6 +101,7 @@ class CategoryOut(BaseModel):
     name: str
     kind: str
     description: str | None
+    spend_criteria: str | None
     balance_cents: int
     target_cents: int | None
     alert_at_cents: int | None
@@ -112,6 +116,7 @@ def _cat_out(c: Category) -> CategoryOut:
     return CategoryOut(
         id=str(c.id), name=c.name, kind=c.kind, description=c.description,
         balance_cents=c.balance_cents, target_cents=c.target_cents,
+        spend_criteria=c.spend_criteria,
         alert_at_cents=c.alert_at_cents, sort_order=c.sort_order,
         archived=c.archived_at is not None,
         below_alert=c.alert_at_cents is not None and c.balance_cents < c.alert_at_cents,
@@ -789,6 +794,7 @@ class NewCategoryIn(BaseModel):
     # that could never get a description, which is how a budget ends up
     # with none of them.
     description: str | None = None
+    spend_criteria: str | None = None
     target_cents: int | None = Field(default=None, ge=0)
     alert_at_cents: int | None = Field(default=None, ge=0)
 
@@ -1112,6 +1118,7 @@ class ProposedCategoryIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     kind: str
     description: str | None = None
+    spend_criteria: str | None = None
     target_cents: int | None = Field(default=None, ge=0)
     alert_at_cents: int | None = Field(default=None, ge=0)
 
@@ -1197,7 +1204,8 @@ def apply_proposal(
 
         cat = Category(
             user_id=user.id, name=spec.name, kind=spec.kind,
-            description=spec.description, target_cents=spec.target_cents,
+            description=spec.description, spend_criteria=spec.spend_criteria,
+            target_cents=spec.target_cents,
             alert_at_cents=spec.alert_at_cents, sort_order=len(by_name),
         )
         db.add(cat)
@@ -1641,7 +1649,8 @@ def apply_category(
     )
     cat = Category(
         user_id=user.id, name=spec.name, kind=spec.kind,
-        description=spec.description, target_cents=spec.target_cents,
+        description=spec.description, spend_criteria=spec.spend_criteria,
+        target_cents=spec.target_cents,
         alert_at_cents=spec.alert_at_cents, sort_order=int(count or 0),
     )
     db.add(cat)

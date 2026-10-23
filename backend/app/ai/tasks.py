@@ -629,6 +629,14 @@ SINGLE_SCHEMA = {
                  "enum": ["spending", "savings_bucket", "obligation"]},
         "description": {"type": "string",
                         "description": "what this category is for, one sentence"},
+        "spend_criteria": {
+            "type": "string",
+            "description": "what gets CHARGED here, as a boundary: which "
+                           "purchases belong and which belong elsewhere. "
+                           "e.g. 'Fuel at a pump; Uber rides are Date "
+                           "Fund.' This is what decides where a charge "
+                           "goes, so be specific about the edge.",
+        },
         "target_cents": {"type": "integer",
                          "description": "refill target in CENTS, 30000 means $300"},
         "alert_at_cents": {"type": "integer"},
@@ -752,6 +760,7 @@ def _validate_single(
         "name": name,
         "kind": kind,
         "description": str(raw.get("description", "")).strip(),
+        "spend_criteria": str(raw.get("spend_criteria", "")).strip() or None,
         "target_cents": _as_int(raw.get("target_cents")),
         "alert_at_cents": _as_int(raw.get("alert_at_cents")),
         "suggested_rule": rule or None,
@@ -976,15 +985,19 @@ DESCRIBE_SCHEMA = {
     "properties": {
         "description": {
             "type": "string",
-            "description": "one sentence saying what belongs in this "
-                           "category and what does not",
+            "description": "one sentence on what this category is FOR",
+        },
+        "spend_criteria": {
+            "type": "string",
+            "description": "one sentence on what gets CHARGED here, "
+                           "stated as a boundary: what belongs and what "
+                           "belongs elsewhere",
         },
     },
-    "required": ["description"],
+    "required": ["description", "spend_criteria"],
 }
 
-DESCRIBE_PROMPT = """Write one sentence describing what a budget category
-is for.
+DESCRIBE_PROMPT = """Write two short lines about a budget category.
 
   name:        {name}
   kind:        {kind}
@@ -997,12 +1010,23 @@ Their other categories, so the line draws a boundary rather than
 overlapping one:
 {others}
 
-Write it in the user's voice, plainly, as if they wrote it themselves.
-Say what belongs here and — where it is not obvious — what does not,
-because the useful part of a description is usually the edge. For
-example: "Groceries from a shop; eating out comes out of Fun."
+Two separate things, and do not mix them:
 
-One sentence. No preamble. Return JSON only."""
+`description` — what this category is FOR. Its purpose. One sentence.
+
+`spend_criteria` — what gets CHARGED to it. This is the one that
+decides where a purchase lands, so state the EDGE: what belongs here
+and what belongs somewhere else instead. Name real merchants or payees
+where you can, and a threshold if one applies. For example:
+  "Groceries from a shop; eating out together is Date Fund."
+  "Fuel at a pump only; Uber and Lyft are Date Fund."
+  "Discretionary buys over $40 that are not food."
+
+Do NOT restate the funding rule in `spend_criteria` — "whatever is left
+over goes here" says nothing about what gets charged, and putting it
+there makes filing WORSE.
+
+In the user's voice, plainly. No preamble. Return JSON only."""
 
 
 async def run_describe_category(
@@ -1048,11 +1072,31 @@ async def run_describe_category(
     res = await provider.chat(prompt, schema=DESCRIBE_SCHEMA)
     raw = _parse_json(res.content)
     text = str(raw.get("description", "")).strip()
+    criteria = str(raw.get("spend_criteria", "")).strip()
+
+    notices: list[str] = []
+    # Funding language in the field the categoriser reads is not WRONG
+    # -- measured identically -- but it means the field is not doing its
+    # job, because the user has written something that cannot decide
+    # where a charge goes.
+    if criteria and any(
+        p in criteria.lower()
+        for p in ("left over", "leftover", "remainder", "whatever is left",
+                  "per paycheck", "each paycheck")
+    ):
+        notices.append(
+            "The 'what gets charged here' line talks about funding rather "
+            "than spending. Rewrite it as what belongs here, or filing "
+            "will get worse rather than better."
+        )
+
     return {
         "description": text,
-        "applicable": bool(text),
-        "problems": [] if text else ["the assistant did not write anything"],
-        "notices": [],
+        "spend_criteria": criteria,
+        "applicable": bool(text or criteria),
+        "problems": [] if (text or criteria)
+                    else ["the assistant did not write anything"],
+        "notices": notices,
     }
 
 
@@ -1137,8 +1181,12 @@ async def run_suggest_category(
     lines = []
     for c in cats:
         line = f"  - {c.name} ({c.kind})"
-        if c.description:
-            line += f": {c.description}"
+        # `spend_criteria` only -- the spending boundary, which is the
+        # half that can decide anything. Sending the funding half too
+        # measured identically rather than worse, so this is tidiness
+        # and prompt economy, not a correctness fix.
+        if c.spend_criteria:
+            line += f": {c.spend_criteria}"
         lines.append(line)
 
     names = [c.name for c in cats]
@@ -1182,13 +1230,17 @@ def _mentions(merchant: str, cats: list[Category]) -> list[dict[str, str]]:
 
     hits: list[dict[str, str]] = []
     for c in cats:
-        if not c.description:
-            continue
-        low = c.description.lower()
-        for w in sorted(words):
-            if w in low:
-                hits.append({"category_name": c.name, "word": w,
-                             "description": c.description})
+        # Both, here: the user wants to know whether anything they wrote
+        # names this merchant, wherever they wrote it.
+        for field, text in (("spend_criteria", c.spend_criteria),
+                            ("description", c.description)):
+            if not text:
+                continue
+            low = text.lower()
+            found = next((w for w in sorted(words) if w in low), None)
+            if found:
+                hits.append({"category_name": c.name, "word": found,
+                             "field": field, "description": text})
                 break
     return hits
 
@@ -1220,10 +1272,10 @@ def _validate_suggestion(
     # produce a plausible paraphrase instead, and an attribution the
     # user cannot find in their own description is worse than none --
     # the whole point is to show which words are doing the work.
+    source = cat.spend_criteria or cat.description or ""
     verified = bool(
-        phrase
-        and cat.description
-        and phrase.lower().strip(' ."\'') in cat.description.lower()
+        phrase and source
+        and phrase.lower().strip(' ."\'') in source.lower()
     )
 
     return {
@@ -1243,6 +1295,6 @@ def _validate_suggestion(
         # description that keeps turning up here against the wrong
         # charges is one worth rewording.
         "mentions": mentions,
-        "chosen_description": cat.description or None,
+        "chosen_description": cat.spend_criteria or cat.description or None,
         "unsure": False,
     }

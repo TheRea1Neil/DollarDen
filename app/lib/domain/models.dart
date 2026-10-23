@@ -7,7 +7,17 @@ class Category {
   final String id;
   final String name;
   final String kind; // spending | savings_bucket | obligation
+
+  /// What this category is FOR. Read by the assistant when it writes
+  /// summaries; often restates the funding rule.
   final String? description;
+
+  /// What gets CHARGED here — the only half the categoriser is shown.
+  ///
+  /// Not an accuracy fix: sending the funding sentence too measured
+  /// identically. It is a field whose label asks for the thing that
+  /// can actually decide where a charge goes.
+  final String? spendCriteria;
   final int balanceCents;
   final int? targetCents;
   final int? alertAtCents;
@@ -26,6 +36,7 @@ class Category {
     required this.belowAlert,
     required this.overspent,
     this.description,
+    this.spendCriteria,
     this.targetCents,
     this.alertAtCents,
   });
@@ -35,6 +46,7 @@ class Category {
         name: j['name'] as String,
         kind: j['kind'] as String,
         description: j['description'] as String?,
+        spendCriteria: j['spend_criteria'] as String?,
         balanceCents: j['balance_cents'] as int,
         targetCents: j['target_cents'] as int?,
         alertAtCents: j['alert_at_cents'] as int?,

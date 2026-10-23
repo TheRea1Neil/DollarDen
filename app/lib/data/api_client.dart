@@ -172,13 +172,17 @@ class ApiClient {
     int? targetCents,
     int? alertAtCents,
     String? description,
+    String? spendCriteria,
   }) async {
     final r = await _withRetry((o) => _dio.post('/budget/categories', data: {
           'name': name,
           'kind': kind,
           if (targetCents != null) 'target_cents': targetCents,
           if (alertAtCents != null) 'alert_at_cents': alertAtCents,
-          if (description != null && description.isNotEmpty) 'description': description,
+          if (description != null && description.isNotEmpty)
+            'description': description,
+          if (spendCriteria != null && spendCriteria.isNotEmpty)
+            'spend_criteria': spendCriteria,
         }, options: o));
     if (r.statusCode != 201) _fail(r);
     return Category.fromJson((r.data as Map).cast<String, dynamic>());

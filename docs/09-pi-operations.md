@@ -180,8 +180,38 @@ systemctl --user enable --now podman-restart.service   # needs linger, already o
 ```
 
 `podman-restart.service` runs `podman start --all --filter
-should-start-on-boot=true` at login. Verified by stopping the container
-and running that unit directly, rather than assuming.
+should-start-on-boot=true` at login.
+
+That was not sufficient on its own. The container passes `/dev/dri/card0`
+through for GPU access, and the unit runs at session start **before
+amdgpu has created that device node**, so at real boot it failed with
+
+```
+crun: cannot stat `/dev/dri/card0`: No such file or directory
+```
+
+exit 125, with nothing retrying — the machine came up with no Ollama on
+it. Surfaced after a SteamOS 3.9.4 update, though the update only caused
+the reboot that exposed it. `renderD128` existed at boot; `card0` did
+not.
+
+The fix is a drop-in that waits for the device:
+
+```
+~/.config/systemd/user/podman-restart.service.d/wait-for-gpu.conf
+  [Unit]  After=graphical-session.target
+  [Service] ExecStartPre=... wait up to 60s for /dev/dri/card0 ...
+```
+
+Bounded, and it proceeds anyway on timeout so a machine with no GPU
+still boots. There is deliberately no `Restart=`: systemd does not
+honour it on `Type=oneshot`, and a line that looks like a retry but is
+not would be worse than none.
+
+**Worth knowing:** my earlier "verified" test ran the unit manually on a
+warm system, where the device already existed. That proved the unit
+worked and said nothing about the boot race. Testing the mechanism is
+not testing the timing.
 
 ### A wedge under sustained 14B inference
 

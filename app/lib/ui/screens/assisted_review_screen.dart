@@ -6,6 +6,8 @@ import '../../core/theme.dart';
 import '../../data/api_client.dart';
 import '../../data/providers.dart';
 import '../../domain/models.dart';
+import 'add_category_screen.dart';
+import 'category_editor_screen.dart';
 
 /// Walk the review backlog, one charge at a time, with a suggestion.
 ///
@@ -34,7 +36,14 @@ class _AssistedReviewScreenState extends ConsumerState<AssistedReviewScreen> {
   String? _error;
   int _filed = 0;
   int _skipped = 0;
-  bool _remember = true;
+  /// Off by default.
+  ///
+  /// A matcher created here BEATS the assistant permanently — the
+  /// charge never reaches it again. Learning that from one observation
+  /// is wrong most of the time: few merchants always belong to one
+  /// category, and the ones that do are obvious enough to set
+  /// deliberately.
+  bool _remember = false;
 
   ReviewItem? get _item =>
       _index < widget.items.length ? widget.items[_index] : null;
@@ -110,21 +119,97 @@ class _AssistedReviewScreenState extends ConsumerState<AssistedReviewScreen> {
     final picked = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
+      isScrollControlled: true,
       builder: (ctx) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            for (final c in cats)
-              ListTile(
-                title: Text(c.name),
-                subtitle: Text(Money.format(c.balanceCents)),
-                onTap: () => Navigator.pop(ctx, c.id),
+            // Finding a charge that fits nowhere is exactly when you
+            // realise a category is missing. Without this the only way
+            // out was to abandon the queue.
+            ListTile(
+              leading: const Icon(Icons.auto_awesome),
+              title: const Text('Describe a new category'),
+              subtitle: const Text('Say what it is for; the assistant '
+                  'drafts it, including how to fund it.'),
+              onTap: () => Navigator.pop(ctx, '__ai__'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.add),
+              title: const Text('New category, set up myself'),
+              onTap: () => Navigator.pop(ctx, '__manual__'),
+            ),
+            const Divider(height: 1),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final c in cats)
+                    ListTile(
+                      title: Text(c.name),
+                      subtitle: Text(Money.format(c.balanceCents)),
+                      onTap: () => Navigator.pop(ctx, c.id),
+                    ),
+                ],
               ),
+            ),
           ],
         ),
       ),
     );
-    if (picked != null) await _accept(picked);
+    if (picked == null) return;
+
+    if (picked == '__ai__' || picked == '__manual__') {
+      if (!mounted) return;
+      final made = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => picked == '__ai__'
+              ? AddCategoryScreen(seedRequest: _item?.title)
+              : const CategoryEditorScreen(),
+        ),
+      );
+      ref.invalidate(categoriesProvider);
+      if (made == true && mounted) {
+        // Straight back to picking, with the new one in the list.
+        await _chooseMyself();
+      }
+      return;
+    }
+    await _accept(picked);
+  }
+
+  /// Forget a matcher that is claiming this merchant.
+  Future<void> _forget(ExistingMatcher m) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Stop always filing this in ${m.categoryName}?'),
+        content: Text(
+          'Charges containing "${m.matchesOn}" are filed there '
+          'automatically and never reach the assistant. Removing this '
+          'does not change anything already filed.',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Keep it')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Forget it')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await ref.read(apiProvider).deleteMatcher(m.ruleId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Forgot "${m.matchesOn}"')),
+      );
+      await _ask();
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    }
   }
 
   @override
@@ -210,7 +295,8 @@ class _AssistedReviewScreenState extends ConsumerState<AssistedReviewScreen> {
             ),
             const SizedBox(height: 12),
           ],
-          if (s != null) _SuggestionCard(suggestion: s),
+          if (s != null)
+            _SuggestionCard(suggestion: s, onForget: _forget),
           const SizedBox(height: 16),
           if (s != null && !s.unsure && s.categoryId != null)
             FilledButton.icon(
@@ -240,10 +326,14 @@ class _AssistedReviewScreenState extends ConsumerState<AssistedReviewScreen> {
             contentPadding: EdgeInsets.zero,
             value: _remember,
             onChanged: (v) => setState(() => _remember = v),
-            title: const Text('Remember this merchant'),
-            subtitle: const Text(
-                'Files it automatically next time, without asking the '
-                'assistant again.'),
+            title: const Text('Always file this merchant here'),
+            subtitle: Text(
+              _remember
+                  ? 'Every future charge from this merchant skips review '
+                    'and the assistant entirely. Only worth it when it is '
+                    'always the same category.'
+                  : 'Off — the assistant will look at the next one too.',
+            ),
           ),
         ],
       ),
@@ -254,7 +344,9 @@ class _AssistedReviewScreenState extends ConsumerState<AssistedReviewScreen> {
 /// The suggestion, with whatever actually backs it.
 class _SuggestionCard extends StatelessWidget {
   final CategorySuggestion suggestion;
-  const _SuggestionCard({required this.suggestion});
+  final void Function(ExistingMatcher) onForget;
+  const _SuggestionCard(
+      {required this.suggestion, required this.onForget});
 
   @override
   Widget build(BuildContext context) {
@@ -346,6 +438,37 @@ class _SuggestionCard extends StatelessWidget {
                     'on the merchant name alone — worth a second look, and '
                     'worth a description if this keeps coming up.',
               ),
+
+            // A rule claiming this merchant means the assistant will not
+            // see the next one. Say so, and make it undoable here.
+            for (final m in s.existingMatchers) ...[
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surface.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(children: [
+                  Icon(Icons.push_pin, size: 14,
+                      color: theme.colorScheme.onSurfaceVariant),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Anything containing "${m.matchesOn}" always goes to '
+                      '${m.categoryName}, without asking.',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => onForget(m),
+                    style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact),
+                    child: const Text('Forget'),
+                  ),
+                ]),
+              ),
+            ],
           ],
         ),
       ),

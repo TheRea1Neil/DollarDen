@@ -1156,6 +1156,32 @@ class DescriptionMention {
       );
 }
 
+/// A matcher rule that already claims a charge.
+///
+/// Surfaced with the suggestion because a matcher silently outranks the
+/// assistant — the charge would never reach it again. The moment one
+/// misfires is the only moment the user will think to remove it.
+class ExistingMatcher {
+  final String ruleId;
+  final String categoryId;
+  final String categoryName;
+  final String matchesOn;
+
+  const ExistingMatcher({
+    required this.ruleId,
+    required this.categoryId,
+    required this.categoryName,
+    required this.matchesOn,
+  });
+
+  factory ExistingMatcher.fromJson(Map<String, dynamic> j) => ExistingMatcher(
+        ruleId: j['rule_id'] as String,
+        categoryId: j['category_id'] as String,
+        categoryName: j['category_name'] as String? ?? '',
+        matchesOn: j['matches_on'] as String? ?? '',
+      );
+}
+
 /// Where the assistant thinks a charge belongs, and why.
 class CategorySuggestion {
   final String? categoryId;
@@ -1168,6 +1194,10 @@ class CategorySuggestion {
   final String? matchedPhrase;
   final String? chosenDescription;
   final List<DescriptionMention> mentions;
+
+  /// Rules that already claim this merchant. Non-empty means the
+  /// assistant was never going to be consulted for the next one.
+  final List<ExistingMatcher> existingMatchers;
   final bool unsure;
 
   const CategorySuggestion({
@@ -1175,6 +1205,7 @@ class CategorySuggestion {
     required this.why,
     required this.unsure,
     required this.mentions,
+    this.existingMatchers = const [],
     this.categoryId,
     this.categoryName,
     this.matchedPhrase,
@@ -1192,6 +1223,10 @@ class CategorySuggestion {
         mentions: ((j['mentions'] as List?) ?? const [])
             .map((e) =>
                 DescriptionMention.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        existingMatchers: ((j['existing_matchers'] as List?) ?? const [])
+            .map((e) =>
+                ExistingMatcher.fromJson((e as Map).cast<String, dynamic>()))
             .toList(),
         unsure: j['unsure'] as bool? ?? true,
       );

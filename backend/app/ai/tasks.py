@@ -1165,6 +1165,37 @@ def _suggest_schema(names: list[str]) -> dict[str, Any]:
     }
 
 
+def _existing_matchers(db: Session, user: User, merchant: str) -> list[dict]:
+    """Matcher rules that already claim this charge.
+
+    Shown with the suggestion so a rule learned by accident can be
+    undone where it misfires, rather than only from deep inside the
+    category's settings. A matcher silently outranks the assistant, so
+    the place to notice a bad one is the moment it is wrong.
+    """
+    from app.budget.rules import matches
+    from app.db.models import CategoryRule
+
+    low = merchant.lower()
+    out: list[dict] = []
+    rows = db.execute(
+        select(CategoryRule, Category)
+        .join(Category, Category.id == CategoryRule.category_id)
+        .where(CategoryRule.user_id == user.id, CategoryRule.enabled.is_(True))
+        .order_by(CategoryRule.priority)
+    ).all()
+    for rule, cat in rows:
+        needle = (rule.matcher or {}).get("merchant_contains")
+        if needle and str(needle).lower() in low:
+            out.append({
+                "rule_id": str(rule.id),
+                "category_id": str(cat.id),
+                "category_name": cat.name,
+                "matches_on": str(needle),
+            })
+    return out
+
+
 async def run_suggest_category(
     db: Session, user: User, provider: Any, request: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1197,7 +1228,9 @@ async def run_suggest_category(
         unsure=UNSURE,
     )
     res = await provider.chat(prompt, schema=_suggest_schema(names))
-    return _validate_suggestion(_parse_json(res.content), cats, merchant)
+    out = _validate_suggestion(_parse_json(res.content), cats, merchant)
+    out["existing_matchers"] = _existing_matchers(db, user, merchant)
+    return out
 
 
 # Words too common to mean anything when found in a description.
@@ -1273,10 +1306,30 @@ def _validate_suggestion(
     # user cannot find in their own description is worse than none --
     # the whole point is to show which words are doing the work.
     source = cat.spend_criteria or cat.description or ""
-    verified = bool(
+    quoted = bool(
         phrase and source
         and phrase.lower().strip(' ."\'') in source.lower()
     )
+
+    # A real quote is not the same as a relevant one. The model will
+    # happily quote "eating out together, films, outings" at
+    # SQ *MERCHANT 4821 -- the words are genuinely in the description
+    # and say nothing about the charge. Checking only that the quote
+    # EXISTS dressed three wrong answers up as evidence-backed during
+    # the clean-slate walkthrough.
+    #
+    # So a quote counts only when it also names something in the charge.
+    relevant = False
+    if quoted and merchant:
+        words = {
+            w.strip(".,#*'\"").lower()
+            for w in merchant.replace("*", " ").replace("/", " ").split()
+        }
+        words = {w for w in words if len(w) > 2 and w not in _NOISE
+                 and not w.isdigit()}
+        low_phrase = phrase.lower()
+        relevant = any(w in low_phrase for w in words)
+    verified = quoted and relevant
 
     return {
         "category_id": str(cat.id),

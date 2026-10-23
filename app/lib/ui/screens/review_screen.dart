@@ -6,6 +6,7 @@ import '../../core/theme.dart';
 import '../../data/api_client.dart';
 import '../../data/providers.dart';
 import '../../domain/models.dart';
+import 'add_category_screen.dart';
 import 'assisted_review_screen.dart';
 
 /// The review queue: transactions the deterministic rules could not place.
@@ -143,6 +144,12 @@ class _ReviewCard extends ConsumerWidget {
     );
     if (result == null || !context.mounted) return;
 
+    if (result is _PickReopen) {
+      ref.invalidate(categoriesProvider);
+      await _choose(context, ref);
+      return;
+    }
+
     final api = ref.read(apiProvider);
     try {
       switch (result) {
@@ -164,6 +171,10 @@ class _ReviewCard extends ConsumerWidget {
             item.id, name: name, kind: kind, description: description,
             targetCents: targetCents, remember: remember,
           );
+        case _PickReopen():
+          // Handled before the switch; listed so the match stays
+          // exhaustive and a new result type cannot be forgotten.
+          return;
         case _PickExclude(:final treatment):
           await api.setTreatment(item.transactionId, treatment);
       }
@@ -206,6 +217,11 @@ class _PickNew extends _PickerResult {
       {this.description});
 }
 
+/// "I made a category, show me the list again."
+class _PickReopen extends _PickerResult {
+  const _PickReopen();
+}
+
 class _PickExclude extends _PickerResult {
   final String treatment;
   const _PickExclude(this.treatment);
@@ -221,9 +237,49 @@ class _CategoryPicker extends StatefulWidget {
 }
 
 class _CategoryPickerState extends State<_CategoryPicker> {
-  bool _remember = true;
+  // Off by default: a matcher created here permanently short-circuits
+  // both review and the assistant for that merchant.
+  bool _remember = false;
 
   Future<void> _createCategory(BuildContext context) async {
+    // Offer the assistant here too. Creating a category was manual-only
+    // from this flow, which is the one place you are most likely to be
+    // mid-thought about what the category is actually for.
+    final how = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(Icons.auto_awesome),
+            title: const Text('Describe it'),
+            subtitle: const Text('The assistant drafts it, including how '
+                'to fund it.'),
+            onTap: () => Navigator.pop(ctx, 'ai'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.edit_outlined),
+            title: const Text('Set it up myself'),
+            onTap: () => Navigator.pop(ctx, 'manual'),
+          ),
+        ]),
+      ),
+    );
+    if (how == null || !context.mounted) return;
+
+    if (how == 'ai') {
+      await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => AddCategoryScreen(seedRequest: widget.item.title),
+        ),
+      );
+      // Hand control back so the caller can refresh the list and
+      // reopen, rather than dropping the user out of the flow with a
+      // category they cannot yet pick.
+      if (context.mounted) Navigator.pop(context, const _PickReopen());
+      return;
+    }
+
     final created = await showDialog<_PickNew>(
       context: context,
       builder: (ctx) => _NewCategoryDialog(remember: _remember),
@@ -349,8 +405,10 @@ class _CategoryPickerState extends State<_CategoryPicker> {
             CheckboxListTile(
               value: _remember,
               onChanged: (v) => setState(() => _remember = v ?? false),
-              title: const Text('Remember this merchant'),
-              subtitle: const Text('Categorise it automatically next time'),
+              title: const Text('Always file this merchant here'),
+              subtitle: Text(_remember
+                  ? 'Future charges skip review entirely.'
+                  : 'Off — you will be asked again next time.'),
               contentPadding: EdgeInsets.zero,
             ),
             const SizedBox(height: 8),

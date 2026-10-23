@@ -680,10 +680,12 @@ class TestSuggestionAttribution:
 
     def test_a_real_quote_is_verified(self) -> None:
         from app.ai.tasks import _validate_suggestion
+        # The merchant must be supplied: a quote only counts as evidence
+        # when it also names something in the charge.
         out = _validate_suggestion({
             "category": "Gas", "confidence": "high", "why": "fuel",
             "matched_phrase": "Fuel at a pump, nothing else",
-        }, self._cats())
+        }, self._cats(), "PUMP N GO 4412")
         assert out["category_name"] == "Gas"
         assert out["attribution_verified"] is True
         assert out["matched_phrase"] == "Fuel at a pump, nothing else"
@@ -713,7 +715,7 @@ class TestSuggestionAttribution:
         out = _validate_suggestion({
             "category": "Date Fund", "confidence": "high", "why": "x",
             "matched_phrase": '"the rideshare to get there."',
-        }, self._cats())
+        }, self._cats(), "RIDESHARE CO 88")
         assert out["attribution_verified"] is True
 
     def test_unsure_comes_back_as_no_category(self) -> None:
@@ -816,8 +818,8 @@ class TestSpendCriteriaVsDescription:
         from app.ai.tasks import _validate_suggestion
         out = _validate_suggestion({
             "category": "Gas", "confidence": "high", "why": "fuel",
-            "matched_phrase": "Fuel at a pump",
-        }, self._cats(), "SHELL OIL 4412")
+            "matched_phrase": "Fuel at a pump. Uber rides are Date Fund.",
+        }, self._cats(), "UBER TRIP 4412")
         assert out["attribution_verified"] is True
 
     def test_a_quote_from_the_funding_half_does_not_verify(self) -> None:
@@ -846,7 +848,7 @@ class TestSpendCriteriaVsDescription:
         out = _validate_suggestion({
             "category": "Old Style", "confidence": "high", "why": "x",
             "matched_phrase": "Groceries from a shop",
-        }, self._cats(), "SAFEWAY #1842")
+        }, self._cats(), "CORNER SHOP GROCERIES")
         assert out["attribution_verified"] is True
         assert out["chosen_description"] == "Groceries from a shop."
 
@@ -858,3 +860,108 @@ class TestSpendCriteriaVsDescription:
         assert len(hits) == 1
         assert hits[0]["category_name"] == "Gas"
         assert hits[0]["field"] == "spend_criteria"
+
+
+class TestQuoteMustBeRelevant:
+    """A real quote is not the same as a relevant one.
+
+    The clean-slate walkthrough produced three wrong suggestions that
+    were presented as evidence-backed, because the model quoted a
+    genuine sentence from the chosen category that had nothing to do
+    with the charge.
+    """
+
+    @staticmethod
+    def _cats() -> list[Category]:
+        return [
+            Category(name="Date Fund", kind="spending", balance_cents=0,
+                     spend_criteria="Eating out together, films, outings, "
+                                    "and the rideshare to get there - Uber, "
+                                    "Lyft, Olive Garden."),
+            Category(name="Gas", kind="spending", balance_cents=0,
+                     spend_criteria="Fuel at a pump - Chevron, Shell."),
+        ]
+
+    def test_a_quote_naming_the_merchant_counts(self) -> None:
+        from app.ai.tasks import _validate_suggestion
+        out = _validate_suggestion({
+            "category": "Gas", "confidence": "high", "why": "fuel",
+            "matched_phrase": "Fuel at a pump - Chevron, Shell.",
+        }, self._cats(), "CHEVRON 0093821")
+        assert out["attribution_verified"] is True
+        assert out["matched_phrase"] is not None
+
+    def test_a_real_quote_about_something_else_does_not(self) -> None:
+        """This is the exact failure: the words are genuinely in the
+        description and say nothing about the charge."""
+        from app.ai.tasks import _validate_suggestion
+        out = _validate_suggestion({
+            "category": "Date Fund", "confidence": "high", "why": "x",
+            "matched_phrase": "Eating out together, films, outings",
+        }, self._cats(), "SQ *MERCHANT 4821")
+        assert out["attribution_verified"] is False
+        assert out["matched_phrase"] is None
+
+    def test_an_opaque_charge_gets_no_evidence_at_all(self) -> None:
+        from app.ai.tasks import _validate_suggestion
+        out = _validate_suggestion({
+            "category": "Date Fund", "confidence": "high", "why": "x",
+            "matched_phrase": "films, outings",
+        }, self._cats(), "AMZN MKTP US*2K4JD")
+        assert out["attribution_verified"] is False
+        assert out["mentions"] == []
+
+    def test_olive_garden_still_verifies(self) -> None:
+        """The description names it, so this one is real evidence."""
+        from app.ai.tasks import _validate_suggestion
+        out = _validate_suggestion({
+            "category": "Date Fund", "confidence": "high", "why": "x",
+            "matched_phrase": "Uber, Lyft, Olive Garden",
+        }, self._cats(), "OLIVE GARDEN 00492")
+        assert out["attribution_verified"] is True
+
+
+@requires_db
+class TestExistingMatchersAreSurfaced:
+    """A matcher silently outranks the assistant, so a bad one has to be
+    visible where it misfires."""
+
+    def test_a_matching_rule_is_reported(self, client: TestClient) -> None:
+        from app.ai.tasks import _existing_matchers
+        from app.db.models import User
+        from app.db.session import SessionLocal
+
+        h = _auth(client)
+        uid = uuid.UUID(client.get("/api/auth/me", headers=h).json()["id"])
+        date_fund = client.post("/api/budget/categories",
+                                json={"name": "Date Fund", "kind": "spending"},
+                                headers=h).json()
+        client.post("/api/budget/rules", json={
+            "category_id": date_fund["id"],
+            "matcher": {"merchant_contains": "uber"},
+        }, headers=h)
+
+        with SessionLocal() as db:
+            user = db.get(User, uid)
+            hits = _existing_matchers(db, user, "UBER TRIP 8832K")
+            assert len(hits) == 1
+            assert hits[0]["category_name"] == "Date Fund"
+            assert hits[0]["matches_on"] == "uber"
+            assert hits[0]["rule_id"]
+
+    def test_an_unrelated_merchant_reports_none(self, client: TestClient) -> None:
+        from app.ai.tasks import _existing_matchers
+        from app.db.models import User
+        from app.db.session import SessionLocal
+
+        h = _auth(client)
+        uid = uuid.UUID(client.get("/api/auth/me", headers=h).json()["id"])
+        c = client.post("/api/budget/categories",
+                        json={"name": "Date Fund", "kind": "spending"},
+                        headers=h).json()
+        client.post("/api/budget/rules", json={
+            "category_id": c["id"], "matcher": {"merchant_contains": "uber"},
+        }, headers=h)
+        with SessionLocal() as db:
+            user = db.get(User, uid)
+            assert _existing_matchers(db, user, "SAFEWAY #1842") == []

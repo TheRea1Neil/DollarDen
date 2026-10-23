@@ -12,7 +12,11 @@ import '../../domain/models.dart';
 /// rules the user already settled. This touches one category and inserts
 /// at most one rule.
 class AddCategoryScreen extends ConsumerStatefulWidget {
-  const AddCategoryScreen({super.key});
+  /// A merchant to start from, when this is opened because a charge fit
+  /// nowhere. Saves retyping what you were just looking at.
+  final String? seedRequest;
+
+  const AddCategoryScreen({super.key, this.seedRequest});
 
   @override
   ConsumerState<AddCategoryScreen> createState() => _AddCategoryScreenState();
@@ -25,6 +29,15 @@ class _AddCategoryScreenState extends ConsumerState<AddCategoryScreen> {
   String _progress = '';
   String? _error;
   SuggestedCategory? _draft;
+
+  @override
+  void initState() {
+    super.initState();
+    final seed = widget.seedRequest;
+    if (seed != null && seed.trim().isNotEmpty) {
+      _request.text = 'Somewhere to put charges like "$seed".';
+    }
+  }
 
   @override
   void dispose() {

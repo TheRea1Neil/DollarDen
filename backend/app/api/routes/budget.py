@@ -1936,12 +1936,37 @@ def set_funding(
             SplitPlan.user_id == user.id, SplitPlan.is_active.is_(True)
         )
     ).first()
+
+    created_now = plan is None
     if plan is None:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "There is no active split plan yet. Create one before setting "
-            "how a category is funded.",
-        )
+        # First rule on a fresh account creates the plan. Requiring a
+        # plan to exist first made the whole build-it-by-hand path
+        # impossible: the only way to get one was to accept a
+        # whole-budget proposal from the assistant.
+        #
+        # A plan needs exactly one remainder, so the new one gets the
+        # rule being set plus a remainder into Unallocated — which
+        # exists for exactly this, holding money with no home yet. The
+        # user can move the remainder elsewhere whenever they like.
+        if body.rule_type is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "There is nothing to remove — this category is not funded "
+                "automatically.",
+            )
+        plan = SplitPlan(user_id=user.id, name="Standard", version=1,
+                         is_active=True)
+        db.add(plan)
+        db.flush()
+        if body.rule_type != RuleType.REMAINDER.value:
+            sink = ensure_unallocated(db, user.id)
+            db.add(SplitRule(plan_id=plan.id, category_id=sink.id,
+                             order_index=2, rule_type=RuleType.REMAINDER.value,
+                             params={}, enabled=True))
+            # Flush so the read below sees it. Without this the plan
+            # looks empty and validation rejects it for having no
+            # remainder -- the rule it was just given.
+            db.flush()
 
     rows = db.scalars(
         select(SplitRule).where(SplitRule.plan_id == plan.id)
@@ -1987,13 +2012,23 @@ def set_funding(
         r.order_index = i + 1
     _validate_plan(ordered)
 
-    plan.is_active = False
-    new = SplitPlan(user_id=user.id, name=plan.name,
-                    version=plan.version + 1, is_active=True)
-    db.add(new)
-    db.flush()
+    if created_now:
+        # The plan was made for this request, so write into it rather
+        # than superseding it. Otherwise a brand new budget starts at
+        # version 2 with a discarded version 1 behind it.
+        target = plan
+        for row in rows:
+            db.delete(row)
+        db.flush()
+    else:
+        plan.is_active = False
+        target = SplitPlan(user_id=user.id, name=plan.name,
+                           version=plan.version + 1, is_active=True)
+        db.add(target)
+        db.flush()
+
     for r in ordered:
-        db.add(SplitRule(plan_id=new.id, category_id=uuid.UUID(r.category_id),
+        db.add(SplitRule(plan_id=target.id, category_id=uuid.UUID(r.category_id),
                          order_index=r.order_index, rule_type=r.rule_type,
                          params=r.params, enabled=r.enabled))
     db.commit()

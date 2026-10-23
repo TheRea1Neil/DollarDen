@@ -943,14 +943,16 @@ class TestSetFunding:
         active = [p for p in plans if p["is_active"]][0]
         assert sum(1 for x in active["rules"] if x["rule_type"] == "remainder") == 1
 
-    def test_without_a_plan_it_explains_itself(self, client: TestClient) -> None:
+    def test_without_a_plan_the_first_rule_makes_one(self, client) -> None:
+        """This used to 409. Requiring a plan to exist first made
+        building a budget by hand impossible — see TestFundingFromZero."""
         h = _auth(client)
         solo = _cat(client, h, "Food")
         r = client.put(f"/api/budget/categories/{solo['id']}/funding",
                        json={"rule_type": "fixed", "params": {"amount_cents": 1000}},
                        headers=h)
-        assert r.status_code == 409
-        assert "no active split plan" in r.json()["detail"]
+        assert r.status_code == 200, r.text
+        assert r.json()["funding"]["rule_type"] == "fixed"
 
 
 @requires_db
@@ -1780,3 +1782,96 @@ class TestRememberThisMerchant:
         rule = next(r for r in self._rules(client, h)
                     if r["matcher"].get("merchant_contains") == "kroger")
         assert rule["matcher"]["direction"] == "outflow"
+
+
+@requires_db
+class TestFundingFromZero:
+    """Building a budget by hand, from nothing.
+
+    This path was never walked end to end: setting funding required a
+    plan to already exist, and the only way to get one was to accept a
+    whole-budget AI proposal. Every Save on a fresh account silently did
+    nothing.
+    """
+
+    def test_the_first_rule_creates_the_plan(self, client: TestClient) -> None:
+        h = _auth(client)
+        tithe = _cat(client, h, "Tithing", kind="obligation")
+        assert client.get("/api/budget/plans", headers=h).json() == []
+
+        r = client.put(f"/api/budget/categories/{tithe['id']}/funding", json={
+            "rule_type": "percent", "params": {"rate": "0.10", "of": "gross"},
+        }, headers=h)
+        assert r.status_code == 200, r.text
+        assert r.json()["funding"]["rule_type"] == "percent"
+
+        plans = client.get("/api/budget/plans", headers=h).json()
+        active = [p for p in plans if p["is_active"]]
+        assert len(active) == 1 and active[0]["version"] == 1
+
+    def test_the_new_plan_has_a_remainder_into_unallocated(self, client) -> None:
+        """A plan needs exactly one, and Unallocated is what it is for."""
+        h = _auth(client)
+        tithe = _cat(client, h, "Tithing", kind="obligation")
+        client.put(f"/api/budget/categories/{tithe['id']}/funding", json={
+            "rule_type": "percent", "params": {"rate": "0.10", "of": "gross"},
+        }, headers=h)
+
+        cats = client.get("/api/budget/categories", headers=h).json()
+        sink = next(c for c in cats if c["is_unallocated"])
+        active = [p for p in client.get("/api/budget/plans", headers=h).json()
+                  if p["is_active"]][0]
+        assert active["rules"][-1]["rule_type"] == "remainder"
+        assert active["rules"][-1]["category_id"] == sink["id"]
+
+    def test_a_paycheck_splits_immediately_after(self, client) -> None:
+        """The point of the fix: one rule in and the budget works."""
+        h = _auth(client)
+        tithe = _cat(client, h, "Tithing", kind="obligation")
+        client.put(f"/api/budget/categories/{tithe['id']}/funding", json={
+            "rule_type": "percent", "params": {"rate": "0.10", "of": "gross"},
+        }, headers=h)
+
+        pv = client.post("/api/budget/paychecks/preview",
+                         json={"gross_cents": 200000}, headers=h)
+        assert pv.status_code == 200, pv.text
+        lines = {l["name"]: l["allocated_cents"] for l in pv.json()["lines"]}
+        assert lines["Tithing"] == 20000
+        assert sum(lines.values()) == 200000
+
+    def test_building_the_whole_budget_one_category_at_a_time(self, client) -> None:
+        h = _auth(client)
+        made = {}
+        for name, kind in [("Tithing", "obligation"), ("Rent", "obligation"),
+                           ("Groceries", "spending"), ("Savings", "savings_bucket")]:
+            made[name] = _cat(client, h, name, kind=kind)
+
+        for name, rule, params in [
+            ("Tithing", "percent", {"rate": "0.10", "of": "gross"}),
+            ("Rent", "fixed", {"amount_cents": 35000}),
+            ("Groceries", "refill_to", {"target_cents": 30000}),
+            ("Savings", "remainder", {}),
+        ]:
+            r = client.put(f"/api/budget/categories/{made[name]['id']}/funding",
+                           json={"rule_type": rule, "params": params}, headers=h)
+            assert r.status_code == 200, f"{name}: {r.text}"
+
+        pv = client.post("/api/budget/paychecks/preview",
+                         json={"gross_cents": 200000}, headers=h).json()
+        got = {l["name"]: l["allocated_cents"] for l in pv["lines"]}
+        assert got["Tithing"] == 20000
+        assert got["Rent"] == 35000
+        assert got["Groceries"] == 30000
+        assert got["Savings"] == 115000
+        assert sum(got.values()) == 200000
+        # Unallocated was only ever scaffolding; taking the remainder
+        # explicitly should have displaced it.
+        assert got.get("Unallocated", 0) == 0
+
+    def test_removing_funding_with_no_plan_says_so(self, client) -> None:
+        h = _auth(client)
+        c = _cat(client, h, "Food")
+        r = client.put(f"/api/budget/categories/{c['id']}/funding",
+                       json={"rule_type": None}, headers=h)
+        assert r.status_code == 422
+        assert "nothing to remove" in r.json()["detail"].lower()

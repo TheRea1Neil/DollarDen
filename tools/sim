@@ -12,6 +12,9 @@
 #   sim tap <text>         tap the centre of the first match
 #   sim tapxy <x> <y>      tap a point, when there is nothing to match on
 #   sim type <text>        type into whatever has focus
+#   sim clear [n]          backspace n times (default 60)
+#   sim set <x> <y> <text> tap a field, empty it, type the value
+#   sim field <label> <text>  same, but find the field by its label
 #   sim key <name>         return | delete | home
 #   sim swipe <x1> <y1> <x2> <y2> [dur]
 #   sim scroll up|down     half a screen, from the middle
@@ -63,6 +66,41 @@ case "${1:-}" in
 
   tapxy) "$IDB" ui tap --udid "$(udid)" "${2:?x}" "${3:?y}"; echo "tapped ($2,$3)" ;;
   type)  "$IDB" ui text --udid "$(udid)" "${2:?text}" ;;
+
+  # Tapping a filled field puts the caret in it and typing APPENDS.
+  # There is no clear primitive, so this holds backspace down.
+  clear)
+    n="${2:-60}"
+    for _ in $(seq 1 "$n"); do "$IDB" ui key --udid "$(udid)" 42 >/dev/null 2>&1; done
+    ;;
+
+  # Set a field found by its LABEL. Typing into a growing multi-line
+  # field pushes everything below it down, so fixed coordinates taken
+  # from an earlier screenshot land on the wrong control one step later
+  # -- which silently wrote three categories with no spend criteria
+  # during the first walkthrough. Looking the field up each time is the
+  # whole reason for having the accessibility tree.
+  field)
+    label="${2:?label}"; val="${3:?value}"
+    match="$(find_el "$label" | head -1)"
+    [[ -z "$match" ]] && { echo "no field matching: $label" >&2; exit 1; }
+    read -r x y w h _ <<<"$match"
+    cx=$(( x + w / 2 )); cy=$(( y + h / 2 ))
+    "$IDB" ui tap --udid "$(udid)" "$cx" "$cy"; sleep 0.4
+    for _ in $(seq 1 80); do "$IDB" ui key --udid "$(udid)" 42 >/dev/null 2>&1; done
+    "$IDB" ui text --udid "$(udid)" "$val"
+    echo "set [$label] = ${val:0:40}"
+    ;;
+
+  # Tap a field, empty it, type the new value. What "set this field to
+  # X" should mean, and the thing every form step actually wants.
+  set)
+    x="${2:?x}"; y="${3:?y}"; val="${4:?value}"
+    "$IDB" ui tap --udid "$(udid)" "$x" "$y"; sleep 0.4
+    for _ in $(seq 1 60); do "$IDB" ui key --udid "$(udid)" 42 >/dev/null 2>&1; done
+    "$IDB" ui text --udid "$(udid)" "$val"
+    echo "set ($x,$y) = $val"
+    ;;
   key)
     case "${2:?key}" in
       return) "$IDB" ui key --udid "$(udid)" 40 ;;
@@ -85,6 +123,27 @@ case "${1:-}" in
     ;;
 
   back)      "$IDB" ui tap --udid "$(udid)" 24 70 ;;
+
+  # Scroll until an element with this label is on screen, then tap it.
+  # A button below the fold is invisible to `tap`, and a script that
+  # does not notice happily navigates away without saving.
+  tapdown)
+    label="${2:?label}"
+    for _ in $(seq 1 10); do
+      match="$(find_el "$label" | head -1)"
+      if [[ -n "$match" ]]; then
+        read -r x y w h _ <<<"$match"
+        if (( y > 100 && y < 836 && w > 0 )); then
+          "$IDB" ui tap --udid "$(udid)" $(( x + w / 2 )) $(( y + h / 2 ))
+          echo "tapped [$label] at $(( y + h / 2 ))"
+          exit 0
+        fi
+      fi
+      "$IDB" ui swipe --udid "$(udid)" --duration 0.2 200 620 200 320
+      sleep 0.4
+    done
+    echo "never found [$label] after scrolling" >&2; exit 1
+    ;;
   launch)    "$IDB" launch --udid "$(udid)" "$BUNDLE" ;;
   relaunch)  "$IDB" terminate --udid "$(udid)" "$BUNDLE" 2>/dev/null || true
              sleep 1; "$IDB" launch --udid "$(udid)" "$BUNDLE" ;;

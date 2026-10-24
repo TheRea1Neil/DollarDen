@@ -9,6 +9,7 @@ import '../widgets/category_tile.dart';
 import 'add_category_screen.dart';
 import 'category_editor_screen.dart';
 import 'history_screen.dart';
+import 'insights_screen.dart';
 import 'paycheck_screen.dart';
 
 /// Offer both ways to add a category.
@@ -63,6 +64,13 @@ class HomeScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Budget'),
         actions: [
+          IconButton(
+            tooltip: 'Insights',
+            icon: const Icon(Icons.insights_outlined),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const InsightsScreen()),
+            ),
+          ),
           IconButton(
             tooltip: 'History',
             icon: const Icon(Icons.receipt_long_outlined),

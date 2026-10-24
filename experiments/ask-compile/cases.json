@@ -1,0 +1,106 @@
+[
+  {
+    "q": "How much did I spend on fast food this month?",
+    "today": "2026-10-24",
+    "expect": {"metric": "spend", "period": "this_month",
+               "expense_types": ["Fast food"], "group_by": "none"}
+  },
+  {
+    "q": "how much did i spend on fast food last month",
+    "today": "2026-10-24",
+    "expect": {"metric": "spend", "period": "last_month",
+               "expense_types": ["Fast food"], "group_by": "none"}
+  },
+  {
+    "q": "what did I pay in subscriptions last month?",
+    "today": "2026-10-24",
+    "expect": {"metric": "spend", "period": "last_month",
+               "expense_types": ["Subscriptions"], "group_by": "none"}
+  },
+  {
+    "q": "how much on groceries this week",
+    "today": "2026-10-24",
+    "expect": {"metric": "spend", "period": "this_week",
+               "expense_types": ["Groceries"], "group_by": "none"}
+  },
+  {
+    "q": "where did my money go last month",
+    "today": "2026-10-24",
+    "expect": {"metric": "spend", "period": "last_month",
+               "expense_types": [], "group_by": "expense_type"}
+  },
+  {
+    "q": "how much did I spend on eating out over the last 3 months",
+    "today": "2026-10-24",
+    "expect": {"metric": "spend", "period": "last_3_months",
+               "expense_types": ["Restaurants", "Fast food"],
+               "group_by": "none",
+               "note": "either or both food types is acceptable"}
+  },
+  {
+    "q": "what did I spend at Amazon this year?",
+    "today": "2026-10-24",
+    "expect": {"metric": "spend", "period": "this_year",
+               "merchant": "Amazon", "group_by": "none",
+               "note": "a named shop belongs in merchant, not a coined type"}
+  },
+  {
+    "q": "how many times did I buy fast food last month",
+    "today": "2026-10-24",
+    "expect": {"metric": "count", "period": "last_month",
+               "expense_types": ["Fast food"], "group_by": "none"}
+  },
+  {
+    "q": "what is my average grocery shop",
+    "today": "2026-10-24",
+    "expect": {"metric": "average", "expense_types": ["Groceries"],
+               "group_by": "none",
+               "note": "period is open; any recent range is defensible"}
+  },
+  {
+    "q": "am I spending more on fuel than I was?",
+    "today": "2026-10-24",
+    "expect": {"metric": "spend", "expense_types": ["Fuel"],
+               "group_by": "month",
+               "note": "a comparison question; month trend or a plain total both work"}
+  },
+  {
+    "q": "how much came in last month",
+    "today": "2026-10-24",
+    "expect": {"metric": "income", "period": "last_month", "group_by": "none"}
+  },
+  {
+    "q": "did I save anything in September",
+    "today": "2026-10-24",
+    "expect": {"metric": "net", "period": "custom",
+               "start": "2026-09-01", "end": "2026-09-30",
+               "group_by": "none",
+               "note": "last_month also resolves to September here"}
+  },
+  {
+    "q": "how much do I spend on coffee in a typical month",
+    "today": "2026-10-24",
+    "expect": {"metric": "average", "expense_types": ["Coffee"],
+               "group_by": "month",
+               "note": "monthly breakdown is the honest read of 'typical'"}
+  },
+  {
+    "q": "what did I spend on artisanal cheese last month",
+    "today": "2026-10-24",
+    "expect": {"metric": "spend", "period": "last_month",
+               "merchant": "artisanal cheese",
+               "note": "nothing on the list fits; must NOT coin a type"}
+  },
+  {
+    "q": "break down my spending by envelope this month",
+    "today": "2026-10-24",
+    "expect": {"metric": "spend", "period": "this_month",
+               "group_by": "category"}
+  },
+  {
+    "q": "biggest shops this month",
+    "today": "2026-10-24",
+    "expect": {"metric": "spend", "period": "this_month",
+               "group_by": "merchant"}
+  }
+]

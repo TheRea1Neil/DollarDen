@@ -1630,3 +1630,528 @@ def _validate_item_categories(
         ],
         "undecided": [i for i in range(1, count + 1) if i not in assigned],
     }
+
+
+# --------------------------------------------------------------------------- #
+# Expense type: what a charge WAS
+# --------------------------------------------------------------------------- #
+# A second, separate question from "which envelope does this come out
+# of". The envelope is about funding -- Date Fund, Discretionary -- and
+# the same burrito comes out of a different one depending on who was
+# there. The type is about the purchase itself, and is what makes "how
+# much on fast food" answerable at all.
+#
+# Same model, same shape, same 83%-ish job as picking a category, and
+# the same rule: it suggests, nothing files itself silently.
+TYPE_PROMPT = """What KIND of spending is this charge?
+
+This is not about which budget envelope pays for it. It is about what
+was actually bought, so that spending can be totalled by kind later.
+
+The charge:
+  {merchant}
+  {amount}{item}
+
+Kinds already in use, and standard ones available:
+{types}
+
+Pick the ONE kind that fits best. Prefer a kind marked "in use" over an
+equivalent one marked "available" — two names for the same thing split
+every total between them.
+
+Only answer "{new}" when nothing on the list is a reasonable fit, and
+then give a short, general name that FUTURE charges could also use.
+"Chipotle" is a bad new kind; "Fast food" is a good one.
+
+Answer "{unsure}" when the merchant name does not say what was bought.
+
+Return JSON only."""
+
+NEW_TYPE = "NEW"
+
+
+def _type_schema(names: list[str]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "expense_type": {"type": "string", "enum": names + [NEW_TYPE, UNSURE]},
+            "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+            "new_name": {
+                "type": "string",
+                "description": f"a short general name, ONLY when expense_type is "
+                               f"{NEW_TYPE}; otherwise an empty string",
+            },
+            "new_description": {
+                "type": "string",
+                "description": f"one line saying what belongs in the new kind, ONLY "
+                               f"when expense_type is {NEW_TYPE}; otherwise empty",
+            },
+            "why": {"type": "string", "description": "one short sentence"},
+        },
+        # All required. An optional property is one the model omits --
+        # the lesson from the conditional threshold and from
+        # matched_phrase. Unused ones come back as empty strings.
+        "required": ["expense_type", "confidence", "new_name", "new_description", "why"],
+    }
+
+
+async def run_classify_expense_type(
+    db: Session, user: User, provider: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    """Say what kind of spending a charge is, coining a kind if needed."""
+    from app.analytics import taxonomy
+
+    merchant = (request.get("merchant") or "").strip()
+    if not merchant:
+        raise ValueError("classify_expense_type needs a merchant")
+    amount = request.get("amount_cents")
+    item = (request.get("item_description") or "").strip()
+
+    offered = taxonomy.suggestions_for_prompt(db, user.id)
+    lines = "\n".join(
+        f"  - {o['name']} [{'in use' if o['status'] == 'existing' else 'available'}]"
+        + (f": {o['description']}" if o["description"] else "")
+        for o in offered
+    )
+    names = [o["name"] for o in offered]
+
+    prompt = TYPE_PROMPT.format(
+        merchant=merchant,
+        amount=f"${int(amount or 0) / 100:,.2f}",
+        item=f"\n  line item: {item}" if item else "",
+        types=lines,
+        new=NEW_TYPE,
+        unsure=UNSURE,
+    )
+    res = await provider.chat(prompt, schema=_type_schema(names))
+    out = _validate_expense_type(_parse_json(res.content), offered)
+    out["model"] = res.model
+    return out
+
+
+def _validate_expense_type(
+    raw: dict[str, Any], offered: list[dict[str, str]]
+) -> dict[str, Any]:
+    """Check the answer before anyone acts on it.
+
+    Nothing is created here. The handler returns a PROPOSAL; the route
+    that applies it is what calls taxonomy.resolve_or_create, so a
+    suggestion the user never accepts cannot grow the taxonomy.
+    """
+    from app.analytics.taxonomy import MAX_NAME, slugify
+
+    picked = str(raw.get("expense_type", "")).strip()
+    by_name = {o["name"]: o for o in offered}
+    base = {
+        "confidence": str(raw.get("confidence", "low")).strip().lower(),
+        "why": str(raw.get("why", "")).strip(),
+    }
+
+    if picked == NEW_TYPE:
+        name = str(raw.get("new_name", "")).strip()
+        if not name or len(name) > MAX_NAME:
+            # Asked to coin and unable to, which is a refusal in
+            # disguise. Treat it as one.
+            return {**base, "expense_type_name": None, "is_new": False, "unsure": True}
+
+        # The model is told to prefer an existing kind and still
+        # proposes near-synonyms. Catching the collision here is what
+        # keeps "Fast food" and "Fast Foods" from both existing.
+        slug = slugify(name)
+        for o in offered:
+            if slugify(o["name"]) == slug:
+                return {
+                    **base,
+                    "expense_type_name": o["name"],
+                    "is_new": o["status"] != "existing",
+                    "new_description": o["description"] or None,
+                    "unsure": False,
+                    "collapsed_from": name,
+                }
+        return {
+            **base,
+            "expense_type_name": name,
+            "is_new": True,
+            "new_description": str(raw.get("new_description", "")).strip() or None,
+            "unsure": False,
+        }
+
+    if picked == UNSURE or picked not in by_name:
+        return {**base, "expense_type_name": None, "is_new": False, "unsure": True}
+
+    chosen = by_name[picked]
+    return {
+        **base,
+        "expense_type_name": chosen["name"],
+        # An "available" standard name does not exist as a row yet, so
+        # accepting it still creates one.
+        "is_new": chosen["status"] != "existing",
+        "new_description": chosen["description"] or None,
+        "unsure": False,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Asking a question about your own spending
+# --------------------------------------------------------------------------- #
+# The model COMPILES the question into a query. It does not answer it.
+#
+# This is ADR 0006 applied to reporting. There, the model could describe
+# a split but not perform one; here it can work out that "how much on
+# fast food last month" means sum / type=Fast food / previous calendar
+# month, but it cannot add up forty transactions, and asked to try it
+# will produce a confident, plausible, wrong total. A wrong total is
+# worse than no answer: there is nothing in the sentence to show it is
+# wrong.
+#
+# So: model picks the filter, SQL computes the number, model writes the
+# sentence around a number it was handed. Every figure the user reads
+# came out of the database.
+COMPILE_PROMPT = """Turn a question about someone's own spending into a query.
+
+You are NOT answering the question. You are choosing the filters that
+will be run against their transactions. Do not state or estimate any
+amount.
+
+Today is {today}.
+
+Kinds of spending they use:
+{types}
+
+Their budget envelopes:
+{cats}
+
+The question:
+  {question}
+
+Choose:
+  metric    — "spend" for how much went out, "income" for money in,
+              "net" for the difference, "count" for how many times,
+              "average" for the typical amount per transaction.
+  period    — the stretch of time asked about. "custom" only if a
+              specific range is named, and then fill start and end.
+  group_by  — "expense_type" if they asked for a breakdown by kind,
+              "category" by envelope, "merchant" by shop, "month" or
+              "week" for a trend over time, "none" for a single total.
+  expense_types — kinds to filter to, copied EXACTLY from the list
+              above. Empty when the question is about everything.
+  categories — envelopes to filter to, copied exactly. Usually empty.
+  merchant  — a shop name to match on, when they named a specific
+              place rather than a kind of spending. Otherwise empty.
+
+If the question names something that is not on either list, put it in
+`merchant` rather than inventing a kind.
+
+Return JSON only."""
+
+_PERIOD_CHOICES = [
+    "today", "yesterday", "this_week", "last_week", "this_month", "last_month",
+    "last_7_days", "last_14_days", "last_30_days", "last_90_days",
+    "last_3_months", "last_6_months", "last_12_months",
+    "this_year", "last_year", "all_time", "custom",
+]
+
+
+def _compile_schema(type_names: list[str], cat_names: list[str]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "metric": {"type": "string",
+                       "enum": ["spend", "income", "net", "count", "average"]},
+            "period": {"type": "string", "enum": _PERIOD_CHOICES},
+            "start": {"type": "string",
+                      "description": "YYYY-MM-DD, only when period is custom, "
+                                     "else empty string"},
+            "end": {"type": "string",
+                    "description": "YYYY-MM-DD, only when period is custom, "
+                                   "else empty string"},
+            "group_by": {"type": "string",
+                         "enum": ["none", "expense_type", "category",
+                                  "merchant", "month", "week"]},
+            "expense_types": {"type": "array",
+                              "items": {"type": "string", "enum": type_names}},
+            "categories": {"type": "array",
+                           "items": {"type": "string", "enum": cat_names}},
+            "merchant": {"type": "string",
+                         "description": "a shop name, or an empty string"},
+        },
+        "required": ["metric", "period", "start", "end", "group_by",
+                     "expense_types", "categories", "merchant"],
+    }
+
+
+PHRASE_PROMPT = """Answer the question using ONLY the figures below.
+
+The question:
+  {question}
+
+What the database returned:
+{facts}
+
+Write two or three short sentences. Lead with the number they asked
+for. If a comparison figure is shown, say which way it moved.
+
+Every amount you write must appear above. Do not add up, work out or
+estimate anything that is not already there — if a figure is not
+listed, it is not known, and saying so is correct. No preamble, no
+advice unless it follows directly from the numbers."""
+
+
+async def run_ask(
+    db: Session, user: User, provider: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    """Answer a plain-English question with figures computed in SQL."""
+    from datetime import date as _date
+
+    from app.analytics import queries as Q
+    from app.analytics import taxonomy
+    from app.analytics.period import PeriodError, resolve
+
+    question = (request.get("question") or "").strip()
+    if not question:
+        raise ValueError("ask requires a question")
+
+    today = _date.fromisoformat(request["today"]) if request.get("today") else _date.today()
+
+    types = taxonomy.active(db, user.id)
+    cats = [c for c in _categories(db, user)]
+    type_names = [t.name for t in types]
+    cat_names = [c.name for c in cats]
+
+    prompt = COMPILE_PROMPT.format(
+        today=today.isoformat(),
+        question=question,
+        types="\n".join(
+            f"  - {t.name}" + (f": {t.description}" if t.description else "")
+            for t in types
+        ) or "  (none yet)",
+        cats="\n".join(f"  - {c.name}" for c in cats) or "  (none yet)",
+    )
+    res = await provider.chat(prompt, schema=_compile_schema(type_names, cat_names))
+    raw = _parse_json(res.content)
+
+    # --- resolve the compiled spec against real rows -------------------
+    period_key = str(raw.get("period") or "this_month")
+    spec: Any = period_key
+    if period_key == "custom":
+        spec = {"start": raw.get("start"), "end": raw.get("end")}
+    try:
+        period = resolve(spec, today=today)
+    except (PeriodError, ValueError):
+        # A period we cannot parse is the one failure that must not be
+        # papered over: answering for the wrong month looks identical
+        # to answering for the right one.
+        period = resolve("this_month", today=today)
+        unparsed_period = True
+    else:
+        unparsed_period = False
+
+    by_type_slug = {taxonomy.slugify(t.name): t for t in types}
+    by_cat_name = {c.name.lower(): c for c in cats}
+
+    wanted_types, wanted_cats, unresolved = [], [], []
+    for n in raw.get("expense_types") or []:
+        t = by_type_slug.get(taxonomy.slugify(str(n)))
+        (wanted_types.append(t.id) if t else unresolved.append(str(n)))
+    for n in raw.get("categories") or []:
+        c = by_cat_name.get(str(n).strip().lower())
+        (wanted_cats.append(c.id) if c else unresolved.append(str(n)))
+
+    group_by = str(raw.get("group_by") or "none")
+    q = Q.SpendQuery(
+        period=period,
+        metric=str(raw.get("metric") or "spend"),  # type: ignore[arg-type]
+        group_by=None if group_by == "none" else group_by,  # type: ignore[arg-type]
+        expense_type_ids=tuple(wanted_types),
+        category_ids=tuple(wanted_cats),
+        merchant_contains=(str(raw.get("merchant") or "").strip() or None),
+        limit=12,
+    )
+    result = Q.run(db, user.id, q)
+
+    # --- let the model put the computed figures into words -------------
+    answer = _fallback_sentence(result)
+    try:
+        phrased = await provider.chat(
+            PHRASE_PROMPT.format(question=question, facts=_facts_block(result))
+        )
+        text = phrased.content.strip()
+        if text:
+            answer = text
+    except Exception as exc:  # noqa: BLE001
+        # The numbers are already correct; only the prose failed. A
+        # plain sentence beats failing the whole question.
+        log.warning("phrasing failed, using the plain sentence: %s", exc)
+
+    return {
+        "question": question,
+        "answer": answer,
+        # Returned so the UI can show WHAT was actually asked of the
+        # data. A question the model read differently than the user
+        # meant is invisible otherwise -- the wrong answer looks the
+        # same as the right one.
+        "query": {
+            "metric": q.metric,
+            "period": period.as_dict(),
+            "group_by": q.group_by,
+            "expense_types": [t.name for t in types if t.id in set(wanted_types)],
+            "categories": [c.name for c in cats if c.id in set(wanted_cats)],
+            "merchant": q.merchant_contains,
+        },
+        "result": result.as_dict(),
+        "unresolved_filters": unresolved,
+        "period_not_understood": unparsed_period,
+        "model": res.model,
+    }
+
+
+def _money(cents: int) -> str:
+    return f"${cents / 100:,.2f}"
+
+
+def _facts_block(result: Any) -> str:
+    """The computed result, written out for the phrasing call.
+
+    Deliberately prose-ish rather than JSON: the model is being asked to
+    read numbers out, and JSON invites it to restructure them.
+    """
+    lines = [
+        f"  period: {result.period.label} "
+        f"({result.period.start} to {result.period.end})",
+        f"  {result.metric}: {_money(result.total_cents)}",
+        f"  transactions: {result.count}",
+    ]
+    if result.previous_total_cents is not None and result.previous_period:
+        d = result.delta_cents or 0
+        lines.append(
+            f"  same figure for {result.previous_period.label}: "
+            f"{_money(result.previous_total_cents)} "
+            f"({'up' if d > 0 else 'down' if d < 0 else 'unchanged'} "
+            f"{_money(abs(d))})"
+        )
+    for g in result.groups:
+        lines.append(f"  {g.label}: {_money(g.cents)} over {g.count} transactions")
+    return "\n".join(lines)
+
+
+def _fallback_sentence(result: Any) -> str:
+    """What to say when the phrasing call fails. Always true, never pretty."""
+    verb = {"spend": "Spent", "income": "Received", "net": "Net",
+            "count": "Transactions:", "average": "Average"}.get(result.metric, "Total")
+    if result.metric == "count":
+        return f"{verb} {result.count} in {result.period.label}."
+    return (
+        f"{verb} {_money(result.total_cents)} in {result.period.label}, "
+        f"across {result.count} transaction{'s' if result.count != 1 else ''}."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Narrating the insights screen
+# --------------------------------------------------------------------------- #
+NARRATE_PROMPT = """Explain what these figures say about someone's month.
+
+{facts}
+
+Write at most four short sentences, in plain words, addressed to them.
+Say what changed and what is worth noticing. Every number you use must
+appear above — do not calculate anything new, including percentages or
+totals that are not listed.
+
+Lead with whatever is most worth their attention, not with the largest
+number. No greeting, no sign-off, no generic budgeting advice."""
+
+
+async def run_narrate_insights(
+    db: Session, user: User, provider: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    """Turn the computed insight cards into a short plain-English read.
+
+    The cards arrive already calculated. This step adds language, never
+    arithmetic -- which is why it can safely run on the small local
+    model.
+    """
+    from datetime import date as _date
+
+    from app.analytics import insights
+    from app.analytics.period import resolve
+
+    today = _date.fromisoformat(request["today"]) if request.get("today") else _date.today()
+    period = resolve(request.get("period") or "this_month", today=today)
+    cards = insights.build(db, user.id, period=period, today=today)
+
+    res = await provider.chat(NARRATE_PROMPT.format(facts=_narrate_facts(cards)))
+    return {
+        "period": period.as_dict(),
+        "narrative": res.content.strip(),
+        "cards": cards,
+        "model": res.model,
+    }
+
+
+def _narrate_facts(cards: list[dict[str, Any]]) -> str:
+    out: list[str] = []
+    for c in cards:
+        kind = c.get("kind")
+        if kind == "flow":
+            out.append(
+                f"In: {_money(c['in_cents'])}. Out: {_money(c['out_cents'])}. "
+                f"Net: {_money(c['net_cents'])} over {c['txn_count']} transactions."
+            )
+            if c.get("previous_out_cents") is not None:
+                out.append(f"Spending last period: {_money(c['previous_out_cents'])}.")
+        elif kind == "by_type":
+            out.append("Spending by kind:")
+            out += [
+                f"  {g['label']}: {_money(g['cents'])} "
+                f"(was {_money(g['previous_cents'])})"
+                for g in c["groups"][:8]
+            ]
+        elif kind == "movers":
+            out.append("Biggest changes:")
+            out += [
+                f"  {i['label']}: {_money(i['now_cents'])}, "
+                f"{'up' if i['delta_cents'] > 0 else 'down'} "
+                f"{_money(abs(i['delta_cents']))}"
+                for i in c["items"]
+            ]
+        elif kind == "recurring":
+            out.append(
+                f"{c['count']} repeating charges costing {_money(c['monthly_cents'])} "
+                f"a month."
+            )
+            out += [
+                f"  {i['merchant']}: {_money(i['typical_cents'])} {i['cadence']}"
+                for i in c["items"][:6]
+            ]
+            out += [f"  {i['merchant']} appears to have stopped." for i in c.get("ended", [])]
+        elif kind == "unusual":
+            out += [
+                f"{i['label']} is {_money(i['cents'])}, against a usual "
+                f"{_money(i['typical_cents'])}."
+                for i in c["items"]
+            ]
+        elif kind == "envelopes":
+            over = [i for i in c["items"] if i["overspent"]]
+            out += [
+                f"{i['name']}: funded {_money(i['funded_cents'])}, "
+                f"spent {_money(i['spent_cents'])}."
+                for i in over[:5]
+            ]
+        elif kind == "pace":
+            out.append(
+                f"{c['days_elapsed']} of {c['days_total']} days in, "
+                f"{_money(c['spent_cents'])} spent, on course for "
+                f"{_money(c['projected_cents'])}."
+            )
+        elif kind == "top_merchants":
+            out += [
+                f"{g['label']}: {_money(g['cents'])} ({g['share_pct']}% of spending)"
+                for g in c["items"][:4]
+            ]
+        elif kind == "untyped":
+            out.append(
+                f"{_money(c['cents'])} ({c['share_pct']}% of spending) has no kind "
+                f"assigned, so the breakdown above is incomplete."
+            )
+    return "\n".join(out) or "No spending recorded."

@@ -2,7 +2,7 @@
 
 A running status note: what exists, what is known-broken, what is next,
 and the things that would be expensive to rediscover. Written
-2026-10-23.
+2026-10-23, updated 2026-10-24.
 
 ## Shape of the thing
 
@@ -14,7 +14,7 @@ and the things that would be expensive to rediscover. Written
 | AI | Ollama on the gaming PC (`deck`), woken on demand over Wake-on-LAN |
 | Model | `qwen2.5vl:7b`. `qwen3:14b` was tried and removed — see ADR 0006 |
 
-294 backend tests, 36 Dart tests.
+413 backend tests, 36 Dart tests.
 
 ## What works today
 
@@ -60,7 +60,40 @@ and the things that would be expensive to rediscover. Written
 - **Assisted review**: walk the backlog, one charge at a time, with a
   suggested category and what backed it.
 
+**Analytics** (added 2026-10-24)
+- A second axis: `expense_types` records what a charge WAS, independent
+  of which envelope paid for it, so "how much on fast food" is
+  answerable across pots. See ADR 0008.
+- Insights screen: in/out/net, spend by kind against last period,
+  biggest movers, repeating charges, a type against its own median,
+  funded-vs-spent per envelope, month pace, top merchants, and an
+  explicit "not yet labelled" figure. Every total opens into the rows
+  behind it.
+- Ask a question in plain English. The model compiles the question into
+  a query; SQL computes the figure; the model phrases it. Every answer
+  shows the period and filters it was read as. See ADR 0009.
+- Expense types screen: the vocabulary (rename, merge, archive) plus a
+  labelling queue with AI suggestion per charge.
+- Duplicate guard on type creation: names compare as slugs, so "Fast
+  Foods" resolves to an existing "Fast food" instead of forking the
+  taxonomy.
+- Subscription detection is deterministic — three charges, a regular
+  gap, a stable amount. No model involved.
+- Works entirely with AI switched off; the model only adds prose.
+
 ## Known broken or missing
+
+- **`experiments/ask-compile/` has never been run.** The deck was
+  unreachable on 2026-10-24, so the accuracy of the question-compile
+  step is unmeasured. The display mitigations (showing the resolved
+  period and filters, reporting unresolved filters) hold at any
+  accuracy, but the feature's quality is unknown.
+- **Nothing is labelled retroactively.** All spending from before
+  2026-10-24 has no expense type, so the insights breakdown starts
+  mostly "Untyped" until the labelling queue is worked through.
+- **Expense type is not suggested during paycheck/transaction review
+  yet.** The classifier works and is wired into the labelling queue
+  only; a charge should get a category and a kind in one pass.
 
 - **No push notifications.** The paycheck prompt is in-app only. Real
   push needs an APNs key from Neil's Apple developer account.

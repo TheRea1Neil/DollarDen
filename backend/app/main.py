@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api.routes import ai, auth, backup, budget, health, plaid
+from app.api.routes import ai, analytics, auth, backup, budget, health, plaid
 from app.core.config import get_settings
 
 logging.basicConfig(
@@ -62,6 +62,7 @@ def create_app() -> FastAPI:
     app.include_router(backup.router, prefix="/api")
     app.include_router(budget.router, prefix="/api")
     app.include_router(ai.router, prefix="/api")
+    app.include_router(analytics.router, prefix="/api")
     return app
 
 

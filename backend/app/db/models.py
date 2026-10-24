@@ -218,7 +218,10 @@ class Allocation(Base):
     """Append-only ledger. A category's balance is the sum of its entries."""
 
     __tablename__ = "allocations"
-    __table_args__ = (Index("ix_allocations_user_cat_time", "user_id", "category_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_allocations_user_cat_time", "user_id", "category_id", "created_at"),
+        Index("ix_allocations_user_type_time", "user_id", "expense_type_id", "created_at"),
+    )
 
     id: Mapped[uuid.UUID] = _pk()
     user_id: Mapped[uuid.UUID] = _user_fk()
@@ -235,9 +238,58 @@ class Allocation(Base):
         PG_UUID(as_uuid=True), ForeignKey("paychecks.id", ondelete="CASCADE")
     )
     amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)  # +into / -out of
+    # What this money WAS, as opposed to which envelope it came out of.
+    # Set on outflows only; funding a category is not an expense. See
+    # ExpenseType and migration 0007.
+    expense_type_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("expense_types.id", ondelete="SET NULL")
+    )
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     confidence: Mapped[float | None] = mapped_column(Numeric(3, 2))
     note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _now()
+
+
+class ExpenseType(Base):
+    """What a charge WAS. The reporting axis, orthogonal to the envelope.
+
+    A category answers "which pot did this come out of". That question
+    has a different answer from "what did I buy", and only the second
+    one can be aggregated across the budget -- fast food comes out of
+    Date Fund some weeks and Discretionary others, and Discretionary
+    holds a dozen unrelated kinds of spending.
+
+    Types may be coined by the model when nothing existing fits, which
+    is why `slug`, `created_by` and `merged_into_id` exist: unchecked
+    creation fragments the taxonomy, and a fragmented taxonomy makes
+    every number on the insights screen quietly wrong.
+    """
+
+    __tablename__ = "expense_types"
+    __table_args__ = (
+        Index("ix_expense_types_user_id", "user_id"),
+        Index(
+            "uq_expense_types_user_slug_active",
+            "user_id",
+            "slug",
+            unique=True,
+            postgresql_where="archived_at IS NULL",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    user_id: Mapped[uuid.UUID] = _user_fk()
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    slug: Mapped[str] = mapped_column(String(80), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(String(16), nullable=False, default="user")
+    # Null while a type the assistant invented is still unconfirmed.
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Merged away, but kept so historical allocations still resolve.
+    merged_into_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("expense_types.id", ondelete="SET NULL")
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _now()
 
 

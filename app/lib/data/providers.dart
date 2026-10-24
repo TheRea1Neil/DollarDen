@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../domain/insights.dart';
 import '../domain/models.dart';
 import 'api_client.dart';
 import 'plaid_link_service.dart';
@@ -106,4 +107,43 @@ final plaidLinkProvider = Provider<PlaidLinkService>((ref) {
   final service = PlaidLinkService(ref.watch(apiProvider));
   ref.onDispose(service.dispose);
   return service;
+});
+
+// --------------------------------------------------------------------- //
+// Analytics
+//
+// The figures and the prose are deliberately separate providers. The
+// numbers come from SQL and are always available; the narrative needs
+// the inference host, which sleeps and takes ten seconds to wake. Tying
+// them together would make the whole screen wait on the slowest, least
+// essential part of it (ADR 0003).
+// --------------------------------------------------------------------- //
+
+/// Which stretch of time the insights screen is showing.
+final insightsPeriodProvider = StateProvider<String>((_) => 'this_month');
+
+final insightsProvider = FutureProvider<Insights>((ref) async {
+  ref.watch(authStateProvider);
+  final period = ref.watch(insightsPeriodProvider);
+  return ref.watch(apiProvider).insights(period: period);
+});
+
+final expenseTypesProvider = FutureProvider<List<ExpenseType>>((ref) async {
+  ref.watch(authStateProvider);
+  final period = ref.watch(insightsPeriodProvider);
+  return ref.watch(apiProvider).expenseTypes(period: period);
+});
+
+final recurringProvider = FutureProvider<RecurringReport>((ref) async {
+  ref.watch(authStateProvider);
+  return ref.watch(apiProvider).recurring();
+});
+
+/// Spending that is filed into an envelope but has no kind yet.
+///
+/// Watched by the insights screen so the labelling queue is visible
+/// rather than something the user has to go looking for.
+final untypedSpendingProvider = FutureProvider<List<SpendRow>>((ref) async {
+  ref.watch(authStateProvider);
+  return ref.watch(apiProvider).untypedSpending();
 });

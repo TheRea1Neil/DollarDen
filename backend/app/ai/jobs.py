@@ -42,6 +42,11 @@ KINDS = {
     "categorise_items",
     "summary",
     "advise",
+    # Analytics. `ask` compiles a question into a query and phrases the
+    # result; it never computes the figures (see tasks.run_ask).
+    "classify_expense_type",
+    "ask",
+    "narrate_insights",
 }
 
 # A job still `running` after this long is assumed dead -- almost always a

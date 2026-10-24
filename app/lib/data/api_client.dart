@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:dio/dio.dart';
 
+import '../domain/insights.dart';
 import '../domain/models.dart';
 import 'token_store.dart';
 
@@ -731,6 +732,272 @@ class ApiClient {
           options: o,
         ));
     if (r.statusCode != 200) _fail(r);
+  }
+
+  // ----------------------------------------------------------------- //
+  // Analytics
+  //
+  // Every figure here is computed server-side in SQL. The AI endpoints
+  // below add language on top; they never produce a number, so the
+  // screen is fully usable with the inference host asleep.
+  // ----------------------------------------------------------------- //
+
+  /// Today, as the PHONE sees it.
+  ///
+  /// The Pi runs on UTC. Asked at 22:00 on the 31st, a server-side
+  /// `today` would answer for next month, and "this month" would come
+  /// back empty for no visible reason.
+  static String _localToday() {
+    final n = DateTime.now();
+    return '${n.year.toString().padLeft(4, '0')}-'
+        '${n.month.toString().padLeft(2, '0')}-'
+        '${n.day.toString().padLeft(2, '0')}';
+  }
+
+  Future<Insights> insights({String period = 'this_month'}) async {
+    final r = await _withRetry((o) => _dio.get('/analytics/insights',
+        queryParameters: {'period': period, 'today': _localToday()},
+        options: o));
+    if (r.statusCode != 200) _fail(r);
+    return Insights.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
+  Future<SpendResult> spend({
+    String period = 'this_month',
+    String? groupBy,
+    String metric = 'spend',
+    List<String> expenseTypeIds = const [],
+    List<String> categoryIds = const [],
+    String? merchant,
+    int limit = 20,
+  }) async {
+    final r = await _withRetry((o) => _dio.get('/analytics/spend',
+        queryParameters: {
+          'period': period,
+          'today': _localToday(),
+          'metric': metric,
+          if (groupBy != null) 'group_by': groupBy,
+          if (expenseTypeIds.isNotEmpty) 'expense_type_id': expenseTypeIds,
+          if (categoryIds.isNotEmpty) 'category_id': categoryIds,
+          if (merchant != null && merchant.isNotEmpty) 'merchant': merchant,
+          'limit': limit,
+        },
+        options: o));
+    if (r.statusCode != 200) _fail(r);
+    return SpendResult.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
+  /// The rows behind a figure, so every total on screen opens up.
+  Future<List<SpendRow>> spendTransactions({
+    String period = 'this_month',
+    List<String> expenseTypeIds = const [],
+    List<String> categoryIds = const [],
+    String? merchant,
+    int limit = 100,
+  }) async {
+    final r = await _withRetry((o) => _dio.get('/analytics/spend/transactions',
+        queryParameters: {
+          'period': period,
+          'today': _localToday(),
+          if (expenseTypeIds.isNotEmpty) 'expense_type_id': expenseTypeIds,
+          if (categoryIds.isNotEmpty) 'category_id': categoryIds,
+          if (merchant != null && merchant.isNotEmpty) 'merchant': merchant,
+          'limit': limit,
+        },
+        options: o));
+    if (r.statusCode != 200) _fail(r);
+    return ((r.data as Map)['transactions'] as List? ?? const [])
+        .map((e) => SpendRow.fromJson((e as Map).cast<String, dynamic>()))
+        .toList();
+  }
+
+  Future<RecurringReport> recurring() async {
+    final r = await _withRetry((o) => _dio.get('/analytics/recurring',
+        queryParameters: {'today': _localToday()}, options: o));
+    if (r.statusCode != 200) _fail(r);
+    return RecurringReport.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
+  Future<List<ExpenseType>> expenseTypes({String period = 'last_90_days'}) async {
+    final r = await _withRetry((o) => _dio.get('/analytics/expense-types',
+        queryParameters: {'period': period, 'today': _localToday()}, options: o));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as List)
+        .map((e) => ExpenseType.fromJson((e as Map).cast<String, dynamic>()))
+        .toList();
+  }
+
+  Future<List<TypeSuggestion>> expenseTypeSuggestions() async {
+    final r = await _withRetry(
+        (o) => _dio.get('/analytics/expense-types/suggestions', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return ((r.data as Map)['suggestions'] as List? ?? const [])
+        .map((e) => TypeSuggestion.fromJson((e as Map).cast<String, dynamic>()))
+        .toList();
+  }
+
+  /// Types the assistant coined that nobody has confirmed yet.
+  Future<List<ExpenseType>> unreviewedExpenseTypes() async {
+    final r = await _withRetry(
+        (o) => _dio.get('/analytics/expense-types/unreviewed', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return (r.data as List)
+        .map((e) => ExpenseType.fromJson((e as Map).cast<String, dynamic>()))
+        .toList();
+  }
+
+  Future<ExpenseType> createExpenseType(String name, {String? description}) async {
+    final r = await _withRetry((o) => _dio.post('/analytics/expense-types',
+        data: {'name': name, if (description != null) 'description': description},
+        options: o));
+    if (r.statusCode != 201) _fail(r);
+    return ExpenseType.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
+  Future<ExpenseType> updateExpenseType(
+      String id, Map<String, dynamic> changes) async {
+    final r = await _withRetry((o) =>
+        _dio.patch('/analytics/expense-types/$id', data: changes, options: o));
+    if (r.statusCode != 200) _fail(r);
+    return ExpenseType.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
+  /// Fold one kind into another, moving its history with it.
+  Future<ExpenseType> mergeExpenseType(String id, String intoId) async {
+    final r = await _withRetry((o) => _dio.post(
+        '/analytics/expense-types/$id/merge',
+        data: {'into_id': intoId},
+        options: o));
+    if (r.statusCode != 200) _fail(r);
+    return ExpenseType.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
+  Future<void> archiveExpenseType(String id) async {
+    final r = await _withRetry(
+        (o) => _dio.delete('/analytics/expense-types/$id', options: o));
+    if (r.statusCode != 204) _fail(r);
+  }
+
+  /// Label one charge. [name] is resolved against existing kinds first,
+  /// so passing "Fast Foods" reuses "Fast food" instead of forking it.
+  Future<void> setTransactionExpenseType(
+    String transactionId, {
+    String? expenseTypeId,
+    String? name,
+    String? description,
+    bool fromAi = false,
+  }) async {
+    final r = await _withRetry((o) => _dio.post(
+        '/analytics/transactions/$transactionId/expense-type',
+        data: {
+          if (expenseTypeId != null) 'expense_type_id': expenseTypeId,
+          if (name != null) 'name': name,
+          if (description != null) 'description': description,
+          'created_by': fromAi ? 'ai' : 'user',
+        },
+        options: o));
+    if (r.statusCode != 200) _fail(r);
+  }
+
+  /// Label one line of an itemised receipt.
+  Future<void> setAllocationExpenseType(
+    String allocationId, {
+    String? expenseTypeId,
+    String? name,
+    String? description,
+    bool fromAi = false,
+  }) async {
+    final r = await _withRetry((o) => _dio.post(
+        '/analytics/allocations/$allocationId/expense-type',
+        data: {
+          if (expenseTypeId != null) 'expense_type_id': expenseTypeId,
+          if (name != null) 'name': name,
+          if (description != null) 'description': description,
+          'created_by': fromAi ? 'ai' : 'user',
+        },
+        options: o));
+    if (r.statusCode != 200) _fail(r);
+  }
+
+  /// Filed spending with no kind yet: the labelling queue.
+  Future<List<SpendRow>> untypedSpending({
+    String period = 'last_90_days',
+    int limit = 50,
+  }) async {
+    final r = await _withRetry((o) => _dio.get('/analytics/untyped',
+        queryParameters: {'period': period, 'today': _localToday(), 'limit': limit},
+        options: o));
+    if (r.statusCode != 200) _fail(r);
+    return ((r.data as Map)['transactions'] as List? ?? const [])
+        .map((e) => SpendRow.fromJson({
+              ...(e as Map).cast<String, dynamic>(),
+              'expense_type': '',
+            }))
+        .toList();
+  }
+
+  // --- AI on top of the figures ------------------------------------- //
+
+  /// Ask a question in plain English.
+  ///
+  /// The model compiles the question into a query; the server runs it
+  /// and hands back both the number and the query it ran, so the UI can
+  /// show what was actually asked.
+  Future<SpendingAnswer> askAboutSpending(
+    String question, {
+    void Function(AiJob)? onProgress,
+  }) async {
+    final job = await queueJob('ask', {
+      'question': question,
+      'today': _localToday(),
+    });
+    final done = await awaitJob(job.id, onProgress: onProgress);
+    if (done.status != 'done' || done.result == null) {
+      throw ApiException(done.error ?? 'The assistant could not answer that.');
+    }
+    return SpendingAnswer.fromJson(done.result!);
+  }
+
+  /// A plain-words read of the month, with the cards it was based on.
+  Future<({String narrative, Insights insights})> narrateInsights({
+    String period = 'this_month',
+    void Function(AiJob)? onProgress,
+  }) async {
+    final job = await queueJob('narrate_insights', {
+      'period': period,
+      'today': _localToday(),
+    });
+    final done = await awaitJob(job.id, onProgress: onProgress);
+    if (done.status != 'done' || done.result == null) {
+      throw ApiException(done.error ?? 'The assistant could not summarise that.');
+    }
+    final r = done.result!;
+    return (
+      narrative: r['narrative'] as String? ?? '',
+      insights: Insights.fromJson({
+        'period': r['period'],
+        'cards': r['cards'],
+      }),
+    );
+  }
+
+  /// What kind of spending a charge is. Suggests; does not file.
+  Future<TypeSuggestionResult> suggestExpenseType({
+    required String merchant,
+    required int amountCents,
+    String? itemDescription,
+    void Function(AiJob)? onProgress,
+  }) async {
+    final job = await queueJob('classify_expense_type', {
+      'merchant': merchant,
+      'amount_cents': amountCents,
+      if (itemDescription != null) 'item_description': itemDescription,
+    });
+    final done = await awaitJob(job.id, onProgress: onProgress);
+    if (done.status != 'done' || done.result == null) {
+      throw ApiException(done.error ?? 'The assistant could not classify that.');
+    }
+    return TypeSuggestionResult.fromJson(done.result!);
   }
 
   Future<bool> health() async {

@@ -159,6 +159,18 @@ def _apply_filters(stmt, q: SpendQuery):
     return stmt
 
 
+def _is_narrowed(q: "SpendQuery") -> bool:
+    """Whether this query is restricted to part of the budget.
+
+    Used to decide whether whole-budget income (a paycheck) belongs in
+    the answer. It does not belong in a figure about one envelope, one
+    kind of spending or one shop.
+    """
+    return bool(
+        q.expense_type_ids or q.category_ids or q.merchant_contains or q.min_cents
+    )
+
+
 def _totals(db: Session, stmt) -> tuple[int, int]:
     """Sum of magnitudes, and how many distinct transactions produced it.
 
@@ -243,10 +255,21 @@ def run(db: Session, user_id: uuid.UUID, q: SpendQuery) -> QueryResult:
     in_cents, in_n = (0, 0)
     if q.metric in ("income", "net"):
         in_cents, in_n = _totals(db, _inflow_select(user_id, q))
-        if q.metric == "income":
-            # A paycheck is income even when none of it has been
-            # allocated yet, so income comes from the paycheck table as
-            # well as from positive allocations.
+        # A paycheck is income even when none of it has been allocated
+        # yet, so income comes from the paycheck table as well as from
+        # positive allocations.
+        #
+        # This counts for `net` too. Adding it to `income` alone left
+        # the two disagreeing on the same screen: on real data income
+        # read +$5,509.02 while net read -$2,076.13, because net saw
+        # only refunds. Caught by running this against the live ledger;
+        # the test fixtures had no paychecks.
+        #
+        # Only when nothing narrows the query, though. A paycheck
+        # belongs to no category and no kind of spending, so adding the
+        # full amount to "net for Groceries" would invent income that
+        # envelope never received.
+        if not _is_narrowed(q):
             in_cents += _paycheck_total(db, user_id, q.period)
 
     if q.metric == "spend":

@@ -14,7 +14,7 @@ from app.analytics import taxonomy
 from app.analytics.period import Period, month_period
 from app.budget.ledger import Entry, post
 from app.core.security import hash_password
-from app.db.models import Account, Category, PlaidItem, Transaction, User
+from app.db.models import Account, Category, Paycheck, PlaidItem, Transaction, User
 from app.db.session import SessionLocal
 from tests.conftest import requires_db
 
@@ -224,6 +224,79 @@ class TestMetrics:
             u, _ = _user(db)
             assert Q.run(db, u.id, Q.SpendQuery(
                 period=THIS_MONTH, metric="average")).total_cents == 0
+
+
+@requires_db
+class TestIncomeAndNet:
+    """Paychecks are income. They must count the same way in both figures.
+
+    This is a regression test for a real inconsistency: `income` added
+    the paycheck table and `net` did not, so on live data income read
+    +$5,509.02 and net read -$2,076.13 on the same screen. The unit
+    fixtures had no paychecks, so nothing here caught it -- only running
+    the queries against the real ledger did.
+    """
+
+    def _with_paycheck(self, db):
+        u, acct = _user(db)
+        food = _cat(db, u, "Food")
+        db.add(Paycheck(user_id=u.id, gross_cents=200_000,
+                        received_on=date(2026, 10, 15)))
+        db.flush()
+        _spend(db, u, acct, food, 30_000, on=date(2026, 10, 20))
+        return u, acct, food
+
+    def test_income_includes_a_paycheck(self):
+        with SessionLocal() as db:
+            u, _, _ = self._with_paycheck(db)
+            assert Q.run(db, u.id, Q.SpendQuery(
+                period=THIS_MONTH, metric="income")).total_cents == 200_000
+
+    def test_net_includes_the_same_paycheck(self):
+        with SessionLocal() as db:
+            u, _, _ = self._with_paycheck(db)
+            assert Q.run(db, u.id, Q.SpendQuery(
+                period=THIS_MONTH, metric="net")).total_cents == 170_000
+
+    def test_income_and_net_agree(self):
+        with SessionLocal() as db:
+            u, _, _ = self._with_paycheck(db)
+            inc = Q.run(db, u.id, Q.SpendQuery(period=THIS_MONTH, metric="income"))
+            spend = Q.run(db, u.id, Q.SpendQuery(period=THIS_MONTH, metric="spend"))
+            net = Q.run(db, u.id, Q.SpendQuery(period=THIS_MONTH, metric="net"))
+            assert net.total_cents == inc.total_cents - spend.total_cents
+
+    def test_a_refund_counts_as_income(self):
+        with SessionLocal() as db:
+            u, acct = _user(db)
+            food = _cat(db, u, "Food")
+            t = Transaction(
+                user_id=u.id, account_id=acct.id,
+                plaid_transaction_id=f"tx-{uuid.uuid4().hex[:14]}",
+                inflow_cents=2_500, date=date(2026, 10, 9), name="Refund",
+            )
+            db.add(t); db.flush()
+            post(db, u.id, [Entry(food.id, 2_500, "manual")], transaction_id=t.id)
+
+            assert Q.run(db, u.id, Q.SpendQuery(
+                period=THIS_MONTH, metric="income")).total_cents == 2_500
+
+    def test_a_paycheck_is_left_out_of_a_single_envelopes_net(self):
+        """It belongs to no envelope, so adding it would invent income."""
+        with SessionLocal() as db:
+            u, _, food = self._with_paycheck(db)
+            net = Q.run(db, u.id, Q.SpendQuery(
+                period=THIS_MONTH, metric="net", category_ids=(food.id,)))
+            assert net.total_cents == -30_000
+
+    def test_a_paycheck_outside_the_period_is_not_counted(self):
+        with SessionLocal() as db:
+            u, _ = _user(db)
+            db.add(Paycheck(user_id=u.id, gross_cents=200_000,
+                            received_on=date(2026, 9, 15)))
+            db.flush()
+            assert Q.run(db, u.id, Q.SpendQuery(
+                period=THIS_MONTH, metric="income")).total_cents == 0
 
 
 @requires_db

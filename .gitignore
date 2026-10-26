@@ -56,3 +56,10 @@ app/macos/Flutter/ephemeral/
 app/ios/Flutter/ephemeral/
 **/Flutter/Generated.xcconfig
 **/Flutter/flutter_export_environment.sh
+
+# Receipt photographs used for testing. The OCR TEXT is kept as a
+# fixture (backend/tests/fixtures/), redacted; the photographs are not
+# committed — they carry a card number and transaction ids in plain
+# sight, and git keeps them forever.
+*.jpg
+*.jpeg

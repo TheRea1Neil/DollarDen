@@ -4,6 +4,7 @@ app/main.py
 app/ai/__init__.py
 app/ai/jobs.py
 app/ai/provider.py
+app/ai/receipt_text.py
 app/ai/tasks.py
 app/analytics/__init__.py
 app/analytics/insights.py
@@ -60,6 +61,7 @@ tests/test_ledger.py
 tests/test_plaid_sync.py
 tests/test_plaid_webhook.py
 tests/test_ratelimit.py
+tests/test_receipt_text.py
 tests/test_reconcile.py
 tests/test_split_engine.py
 tests/test_token_backup.py

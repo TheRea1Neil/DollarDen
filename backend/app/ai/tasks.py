@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.ai import receipt_text
 from app.budget.reconcile import compute as compute_reconciliation
 from app.db.models import Category, User, UserGoal
 
@@ -1424,6 +1425,52 @@ Return JSON only."""
 
 TEXT_RECEIPT_PROMPT = RECEIPT_PROMPT + "\n\nThe receipt:\n\n{text}"
 
+# Used when the deterministic pass has already found the structure, which
+# is the normal case for OCR text. The model is handed only the candidate
+# item rows and told what they must add up to, instead of being asked to
+# work out which lines are purchases -- the judgement it got wrong on the
+# first real receipt. See app/ai/receipt_text.py.
+STRUCTURED_RECEIPT_PROMPT = """Read these receipt lines and list what was bought.
+
+Every amount in CENTS as a whole number: $4.99 is 499, $12.00 is 1200.
+
+Each line is one purchase, printed as: description, then a product code,
+then the price. Take the PRICE, never the product code — a long run of
+digits with no decimal point is a barcode, not money.
+
+{targets}
+Some rows may have been joined together or split by the scan. If one
+line clearly holds two purchases, return both. If a line has no price,
+still return it with amount_cents 0 rather than dropping it.
+
+Totals, tax, card and terminal lines have already been removed. Every
+line below is something that was bought.
+
+The lines:
+
+{text}
+
+Return JSON only."""
+
+
+def _targets_line(st: Any) -> str:
+    """Tell the model what the receipt says it should find."""
+    bits = []
+    if st.item_count is not None:
+        bits.append(f"The receipt says {st.item_count} items were sold.")
+    if st.subtotal_cents is not None:
+        bits.append(
+            f"They must add up to {st.subtotal_cents} cents "
+            f"(${st.subtotal_cents / 100:,.2f}) before tax."
+        )
+    if st.orphan_prices:
+        shown = ", ".join(str(p) for p in st.orphan_prices)
+        bits.append(
+            f"These prices were read with no item beside them and belong to "
+            f"a line that is missing one: {shown} cents."
+        )
+    return ("\n".join(bits) + "\n") if bits else ""
+
 
 async def run_receipt_parse(
     db: Session, user: User, provider: Any, request: dict[str, Any]
@@ -1440,15 +1487,45 @@ async def run_receipt_parse(
     if not image_b64 and not text:
         raise ValueError("give the receipt as an image or as text")
 
+    expected = _as_int(request.get("expected_cents"))
+
     if image_b64:
         res = await provider.chat(RECEIPT_PROMPT, images=[image_b64],
                                   schema=RECEIPT_SCHEMA)
-    else:
-        res = await provider.chat(TEXT_RECEIPT_PROMPT.format(text=text[:8000]),
-                                  schema=RECEIPT_SCHEMA)
+        return _validate_receipt(_parse_json(res.content), expected_cents=expected)
 
-    return _validate_receipt(_parse_json(res.content),
-                             expected_cents=_as_int(request.get("expected_cents")))
+    # Text path: read the structure first, deterministically.
+    structure = receipt_text.extract(text)
+    if structure.item_lines:
+        prompt = STRUCTURED_RECEIPT_PROMPT.format(
+            targets=_targets_line(structure),
+            text="\n".join(structure.item_lines)[:8000],
+        )
+    else:
+        # Nothing looked like an item -- a handwritten slip, or a layout
+        # the patterns do not know. Fall back rather than return nothing.
+        prompt = TEXT_RECEIPT_PROMPT.format(text=text[:8000])
+        structure = None
+
+    res = await provider.chat(prompt, schema=RECEIPT_SCHEMA)
+    out = _validate_receipt(_parse_json(res.content), expected_cents=expected)
+
+    if structure is not None:
+        # The receipt's own figures beat anything inferred from the
+        # items, so they overwrite rather than supplement.
+        if structure.subtotal_cents is not None:
+            out["subtotal_cents"] = structure.subtotal_cents
+        if structure.tax_cents is not None:
+            out["tax_cents"] = structure.tax_cents
+        if structure.total_cents is not None:
+            out["total_cents"] = structure.total_cents
+        out["notices"] = (
+            receipt_text.reconcile(out.get("items") or [], structure)
+            + list(out.get("notices") or [])
+        )
+        out["structure"] = structure.as_dict()
+
+    return out
 
 
 def _validate_receipt(

@@ -1640,41 +1640,104 @@ def _items_schema(names: list[str], count: int) -> dict[str, Any]:
 async def run_categorise_items(
     db: Session, user: User, provider: Any, request: dict[str, Any]
 ) -> dict[str, Any]:
-    """Assign a category to every line of a receipt in one call.
+    """Decide which category each receipt line belongs to.
 
-    One request rather than one per line: the model sees the whole
-    receipt, which is the context that makes "BANANAS" obviously
-    groceries, and eight lines do not cost eight round trips.
+    Memory first. A line filed before at this shop is not a question --
+    supermarket slips print truncated codes like COTTAGE CH and
+    GV MXDVG 12Z, which a model cannot reliably reason about and which
+    only ever need teaching once. Asking again every shop is the thing
+    that makes itemising tedious.
+
+    Only the remainder goes to the model, so a familiar receipt is also
+    faster and may not need the inference host at all.
     """
+    from app.budget import item_memory
+
     items = request.get("items") or []
     if not items:
-        raise ValueError("there are no items to categorise")
-    merchant = (request.get("merchant") or "a shop").strip()
+        raise ValueError("categorise_items needs items")
+    merchant = (request.get("merchant") or "").strip()
 
     cats = [c for c in _categories(db, user) if not c.is_unallocated]
     if not cats:
         raise ValueError("there are no categories to choose from")
+    by_id = {str(c.id): c for c in cats}
 
-    cat_lines = []
-    for c in cats:
-        line = f"  - {c.name} ({c.kind})"
-        if c.spend_criteria:
-            line += f": {c.spend_criteria}"
-        cat_lines.append(line)
+    descriptions = [str(it.get("description", "")) for it in items]
+    known = item_memory.recall(db, user.id, merchant, descriptions)
 
-    shown = []
-    for i, it in enumerate(items[:60], 1):
-        desc = str(it.get("description", "")).strip()
-        amount = _as_signed_int(it.get("amount_cents")) or 0
-        shown.append(f"  {i}. {desc} — ${amount / 100:,.2f}")
+    assigned: dict[int, dict[str, Any]] = {}
+    unknown: list[tuple[int, dict[str, Any]]] = []
+    for n, it in enumerate(items, 1):
+        rec = known.get(str(it.get("description", "")))
+        cat = by_id.get(str(rec.category_id)) if rec else None
+        if rec is not None and cat is not None:
+            assigned[n] = {
+                "category_id": str(cat.id),
+                "category_name": cat.name,
+                "source": "memory",
+                "memory_scope": rec.source,
+                "times_seen": rec.times_seen,
+                "expense_type_id": (
+                    str(rec.expense_type_id) if rec.expense_type_id else None
+                ),
+            }
+        else:
+            unknown.append((n, it))
 
-    names = [c.name for c in cats]
-    prompt = ITEMS_PROMPT.format(
-        merchant=merchant, cats="\n".join(cat_lines),
-        items="\n".join(shown), unsure=UNSURE,
-    )
-    res = await provider.chat(prompt, schema=_items_schema(names, len(shown)))
-    return _validate_item_categories(_parse_json(res.content), cats, len(shown))
+    model_name = None
+    if unknown:
+        # Renumber 1..N for the model. Memory may have removed lines
+        # from the middle, and showing it "1, 4, 7" invites answers
+        # against numbers the validator would reject. `unknown` keeps
+        # the mapping back to the receipt's real line numbers.
+        shown = "\n".join(
+            f"  {shown_n}. {it.get('description', '')}  "
+            f"${int(it.get('amount_cents') or 0) / 100:,.2f}"
+            for shown_n, (_, it) in enumerate(unknown, 1)
+        )
+        prompt = ITEMS_PROMPT.format(
+            merchant=merchant or "(unknown)",
+            cats="\n".join(
+                f"  - {c.name}"
+                + (f": {c.spend_criteria}" if c.spend_criteria else "")
+                for c in cats
+            ),
+            items=shown,
+            unsure=UNSURE,
+        )
+        res = await provider.chat(
+            prompt, schema=_items_schema([c.name for c in cats], len(unknown))
+        )
+        model_name = res.model
+        picked = _validate_item_categories(
+            _parse_json(res.content), cats, len(unknown)
+        )
+        for row in picked["lines"]:
+            shown_n = int(row.get("line") or 0)
+            if not (1 <= shown_n <= len(unknown)):
+                continue
+            if row.get("category_id"):
+                real_line = unknown[shown_n - 1][0]
+                assigned[real_line] = {
+                    "category_id": row["category_id"],
+                    "category_name": row["category_name"],
+                    "source": "model",
+                }
+
+    return {
+        "lines": [
+            {"line": n, **assigned.get(n, {
+                "category_id": None, "category_name": None, "source": None})}
+            for n in range(1, len(items) + 1)
+        ],
+        "undecided": [n for n in range(1, len(items) + 1) if n not in assigned],
+        "from_memory": sum(
+            1 for v in assigned.values() if v.get("source") == "memory"
+        ),
+        "asked_model": len(unknown),
+        "model": model_name,
+    }
 
 
 def _validate_item_categories(

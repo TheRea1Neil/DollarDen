@@ -1,6 +1,6 @@
 # ADR 0007 — Receipts are read on the phone, not by the vision model
 
-**Status:** accepted · **Date:** 2026-10-23
+**Status:** accepted · **Date:** 2026-10-23 · **Re-tested 2026-10-26, decision unchanged, reason replaced**
 
 ## Context
 
@@ -73,3 +73,56 @@ Even if the vision model worked, this would be the right shape:
 - **Do not reach for the vision path for anything else on this host
   without testing it first.** It fails silently and plausibly, which is
   the worst way for a thing to be broken.
+
+
+---
+
+## Addendum, 2026-10-26 — the premise above is obsolete; the decision is not
+
+The reason recorded above was that ollama's vision path did not work on
+this ROCm/RDNA4 build. **It works now.** Same ollama (0.40.7), same
+model, after a SteamOS update:
+
+> *"This receipt is from Walmart, and the TOTAL is $22.25."*
+
+Correct, in 8.6 seconds, from a photograph of curled thermal paper. So
+the decision had to be re-earned rather than inherited.
+
+Re-tested against the real Galaxy S21 receipt photo, production prompt
+and schema, three runs each (`experiments/receipt-vision/`):
+
+| Model | Items | Items sum (truth $21.60) | subtotal/tax/total | Time |
+|---|---|---|---|---|
+| qwen2.5vl:7b | 8, 8, 8 | $50.08 ×3 | 2160/65/2225 ✓ | 6s |
+| gemma3:12b | 8, 9, 9 | $29.48, $26.42, $25.77 | tax wrong ✗ | 11–14s |
+
+**Both read the receipt. Neither reads the price column.** qwen gets
+every *stated* figure exactly right and every *item* price wrong by
+decimal placement (`0.98 → 9.80`). gemma fixes some of those and
+invents duplicate rows instead, returning a different total every run.
+
+The deciding property is consistency. qwen is deterministically wrong;
+gemma is non-deterministically wrong. For a ledger, an unstable reader
+is worse than a stable one with a known flaw.
+
+**Revised reason:** the photo is read on the phone not because vision is
+broken, but because **a vision model cannot read a price column
+accurately enough for money**. OCR reads digits reliably and cannot
+hallucinate a line that was never printed.
+
+Two further findings worth keeping:
+
+- **Vision does not remove the need for the deterministic line filter.**
+  Both models returned SUBTOTAL, TAX, TOTAL, VISA TEND and CHANGE DUE as
+  purchases — the same judgement failure the text path had, and the
+  reason `app/ai/receipt_text.py` exists.
+- **The two readers are complementary, not redundant.** OCR reads digits
+  and scrambles rows; vision reads names and rows and scrambles digits.
+  qwen read `COTTAGE CH` correctly where OCR produced `J22.88`. A
+  plausible future use is vision as a second opinion on names when
+  `reconcile()` reports the lines do not add up. Not built; noted.
+
+All six runs would have been caught by the existing checksum: items
+summing to $50.08 against a stated subtotal of $21.60 is impossible.
+That is the architecture working as intended, whichever reader produced
+the numbers.

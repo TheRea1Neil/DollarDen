@@ -21,9 +21,11 @@ app/api/routes/auth.py
 app/api/routes/backup.py
 app/api/routes/budget.py
 app/api/routes/health.py
+app/api/routes/item_memory.py
 app/api/routes/plaid.py
 app/budget/__init__.py
 app/budget/categorize.py
+app/budget/item_memory.py
 app/budget/ledger.py
 app/budget/paycheck.py
 app/budget/reconcile.py
@@ -57,6 +59,7 @@ tests/test_analytics_taxonomy.py
 tests/test_auth_and_isolation.py
 tests/test_budget_api.py
 tests/test_budget_flow.py
+tests/test_item_memory.py
 tests/test_ledger.py
 tests/test_plaid_sync.py
 tests/test_plaid_webhook.py

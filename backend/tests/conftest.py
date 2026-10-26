@@ -63,7 +63,7 @@ def _clean_tables():
     with SessionLocal() as s:
         s.execute(
             text(
-                "TRUNCATE allocations, review_items, receipts, ai_jobs, paychecks, "
+                "TRUNCATE item_memory, allocations, review_items, receipts, ai_jobs, paychecks, "
                 "expense_types, "
                 "split_rules, split_plans, category_rules, categories, transactions, "
                 "accounts, plaid_items, user_goals, sessions, users RESTART IDENTITY CASCADE"

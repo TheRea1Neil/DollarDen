@@ -391,6 +391,45 @@ class Receipt(Base):
     created_at: Mapped[datetime] = _now()
 
 
+class ItemMemory(Base):
+    """Where one receipt line was filed last time.
+
+    Scoped to a merchant, because "GV MXDVG 12Z" is Walmart's house
+    brand and means nothing elsewhere. A lookup that misses falls back
+    to the same description at other shops, and uses it only when they
+    all agree -- see app/budget/item_memory.py.
+
+    Not a CategoryRule: this pre-fills a line on a screen the user is
+    about to submit, and never moves money on its own.
+    """
+
+    __tablename__ = "item_memory"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "merchant_slug", "description_slug",
+            name="uq_item_memory_user_merchant_desc",
+        ),
+        Index("ix_item_memory_user_id", "user_id"),
+        Index("ix_item_memory_user_desc", "user_id", "description_slug"),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    user_id: Mapped[uuid.UUID] = _user_fk()
+    merchant_slug: Mapped[str] = mapped_column(String(120), nullable=False)
+    description_slug: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(String(200), nullable=False)
+    category_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("categories.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    expense_type_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("expense_types.id", ondelete="SET NULL")
+    )
+    times_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _now()
+
+
 class AIJob(Base):
     __tablename__ = "ai_jobs"
 

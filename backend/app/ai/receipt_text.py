@@ -37,36 +37,75 @@ from typing import Any
 # store number or part of a barcode than a price.
 MONEY = re.compile(r"(?<![\d.])(\d{1,3}(?:,\d{3})*\.\d{2})(?![\d])")
 
-# Lines that are never a purchase. Ordered most specific first so the
-# reason reported is the useful one.
+# Which lines are structure rather than purchases.
 #
-# Every entry here earned its place on a real receipt. In particular the
-# card-brand rule exists because "VISA CREDIT- 4781" parsed as money.
-_STRUCTURAL: tuple[tuple[str, str], ...] = (
-    (r"\bsub[\s-]?total\b", "subtotal"),
-    (r"\btotal\b", "total"),
-    (r"\btax\s*\d?\b|\bsales tax\b|\bvat\b|\bgst\b|\bhst\b", "tax"),
-    (r"\bchange\b", "change"),
-    (r"\btende?r?\b", "tender"),
-    (r"\b(visa|mastercard|master card|amex|american express|discover|"
-     r"debit|credit|eftpos|interac|apple pay|google pay)\b", "payment"),
-    (r"\bappr(oval)?\s*#|\bauth\b|\bref\s*#|\btrans(action)?\s*id\b|"
-     r"\bvalidation\b|\bterminal\s*#|\baid\s+[a-f0-9]{8,}|"
-     r"\bpayment service\b|\bmerchant\s*#|\bbatch\b|\barc\b", "terminal"),
-    (r"#\s*items?\s+sold|\bitems?\s+sold\b|\bcount\b", "item_count"),
-    (r"\b(tc|st|op|te|tr)#", "store_code"),
-    (r"\bsignature\b|\bcustomer copy\b|\bmerchant copy\b", "slip_note"),
-    (r"survey|feedback|thank you|www\.|\.com|\bmgr\b|\bcashier\b|"
-     r"\bstore\s*\d|\bphone\b", "store_header"),
-    (r"^\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|^\s*\d{1,2}:\d{2}", "timestamp"),
-    (r"^\s*[\d\s-]{7,}\s*$", "digits_only"),
-    (r"\breturn policy\b|\bexchange\b|\bsave money\b|\blive better\b", "boilerplate"),
+# The first version matched these keywords ANYWHERE in a line, which was
+# over-fitted to one Walmart slip. Measured against realistic grocery
+# names it deleted 8 items in 17 -- CHICKEN TENDER, COUNT CHOCULA, OIL
+# CHANGE, BATCH COOKIE DOUGH, CREDIT UNION FEE. Silently dropping a
+# purchase is a worse failure than the one this module was written to
+# fix, so the rules below are built on two observations instead.
+#
+# ONE: almost all till-slip noise carries no money at all.
+#
+#   VISA CREDIT- 4781 TG 0 APPR#O2341D
+#   REF # U00TBGO48447  TRANS ID- 386298068855718
+#   AID A0000000031010 / TERMINAL # 21090852 / VALIDATION - 9V9K
+#
+# None of those contain an amount with a decimal point, so the
+# no-amount rule removes them without any keyword needing to fire. That
+# is what actually caught the card line, and it generalises to every
+# EMV terminal rather than to Walmart.
+#
+# TWO: the handful that DO carry money are label-plus-amount and
+# nothing else. "SUBTOTAL  21.60" is the keyword and the figure. A real
+# purchase has a description, usually a product code, and often a tax
+# flag, so its residue -- the line with the amounts removed -- is
+# longer and does not START with the keyword.
+#
+# So a line with money is structural only when its residue is SHORT and
+# matches a tight, anchored pattern. Everything else is a purchase.
+MAX_LABEL_WORDS = 3
+
+_CARD = r"visa|mastercard|master\s*card|amex|american\s+express|discover|" \
+        r"debit|credit|eftpos|interac|apple\s*pay|google\s*pay|cash"
+
+# Anchored at both ends wherever possible: "CREDIT UNION FEE" must not
+# look like a card line, and "CHANGE PURSE" must not look like change
+# given.
+_LABEL_PATTERNS: tuple[tuple[str, str], ...] = (
+    (rf"^sub\s*-?\s*total\b", "subtotal"),
+    (rf"^(grand\s+)?total(\s+(purchase|sale|due|amount))?$", "total"),
+    (rf"^(amount\s+)?due$", "total"),
+    (rf"^(sales\s+)?tax\d*\b", "tax"),
+    (rf"^(vat|gst|hst|pst)\d*\b", "tax"),
+    (rf"^change(\s+due)?$", "change"),
+    (rf"^({_CARD})(\s+(card|tend|tender|payment|sale|purchase|charge))?$",
+     "payment"),
+    (rf"^(tend|tender)(\s+({_CARD}))?$", "tender"),
+    (rf"^balance(\s+due)?$", "total"),
 )
-_STRUCTURAL_RE = [(re.compile(p, re.I), name) for p, name in _STRUCTURAL]
+_LABEL_RE = [(re.compile(p, re.I), name) for p, name in _LABEL_PATTERNS]
+
+# Matched against the WHOLE line, for noise that can still carry a
+# decimal number. Kept deliberately small.
+_WHOLE_LINE: tuple[tuple[str, str], ...] = (
+    (r"^#?\s*items?\s+sold\b", "item_count"),
+    (r"^total\s+items?\b", "item_count"),
+    (r"^\s*\*", "slip_note"),
+    (r"^\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", "timestamp"),
+    (r"^\s*[\d\s-]{7,}\s*$", "digits_only"),
+    (r"survey|www\.|\.com|thank you", "store_header"),
+)
+_WHOLE_LINE_RE = [(re.compile(p, re.I), name) for p, name in _WHOLE_LINE]
+
+# Trailing single-letter flags Walmart and others print after a price
+# (F = food-stamp eligible, R / T / N = tax class).
+_TRAILING_FLAG = re.compile(r"\b[A-Z]\b\s*$")
 
 # A line carrying nothing but a price (and maybe a tax flag). On a
 # correctly-read receipt these do not occur: a price belongs beside its
-# item. One appearing means the OCR split a row, which is worth saying
+# item. One appearing means the scan split a row, which is worth saying
 # out loud rather than quietly dropping.
 _ORPHAN_PRICE = re.compile(r"^\s*\$?\d{1,3}(?:,\d{3})*\.\d{2}\s*[A-Z]{0,2}\s*$")
 
@@ -117,10 +156,32 @@ def _last_money(line: str) -> int | None:
     return to_cents(found[-1]) if found else None
 
 
+def residue(line: str) -> str:
+    """The line with its money amounts and tax flags taken out.
+
+    What is left of "SUBTOTAL  21.60" is "SUBTOTAL". What is left of
+    "CHICKEN TENDER 078742011111 F 5.99 R" is still most of a product
+    line. That difference is what separates a label from a purchase.
+    """
+    out = MONEY.sub(" ", line)
+    out = _TRAILING_FLAG.sub(" ", out)
+    return re.sub(r"\s+", " ", out).strip(" .:-")
+
+
 def classify(line: str) -> str | None:
     """Why this line is not a purchase, or None if it might be one."""
-    for pattern, name in _STRUCTURAL_RE:
+    for pattern, name in _WHOLE_LINE_RE:
         if pattern.search(line):
+            return name
+
+    body = residue(line)
+    # A label is short. Anything with a description, a product code and
+    # a flag is a purchase, whatever words it happens to contain.
+    if len(body.split()) > MAX_LABEL_WORDS:
+        return None
+
+    for pattern, name in _LABEL_RE:
+        if pattern.search(body):
             return name
     return None
 

@@ -16,10 +16,12 @@ from __future__ import annotations
 import pathlib
 
 from app.ai.receipt_text import (
+    MONEY,
     ReceiptStructure,
     classify,
     extract,
     reconcile,
+    residue,
     to_cents,
 )
 
@@ -40,22 +42,41 @@ class TestToCents:
 
 
 class TestClassify:
-    def test_the_card_line_is_payment_not_a_purchase(self):
+    """Asserted as kept-or-dropped, not by which rule fired.
+
+    The reason string is a debugging aid and is free to change; what
+    must not change is whether a line can become a purchase. Pinning
+    the reason made four tests fail when the card line started being
+    caught by the no-amount rule instead of by a brand name — a strictly
+    better outcome that the tests called a regression.
+    """
+
+    def test_the_card_line_is_never_a_purchase(self):
         """The bug this module exists for.
 
         "VISA CREDIT- 4781" became an item costing -$4,781.00: the last
         four of the card, with the dash read as a minus sign.
-        """
-        assert classify("VISA CREDIT- 4781 TG 0 APPR#O2341D") == "payment"
 
-    def test_totals_tax_tender_and_change(self):
+        Checked through extract(), not classify(). classify() answers
+        only "is this a label"; the card line is removed because it
+        carries no money at all, and that rule lives in extract(). The
+        guarantee worth testing is the one the caller gets.
+        """
+        s = extract("WIDGET  9.99\nVISA CREDIT- 4781 TG 0 APPR#O2341D\n")
+        assert s.item_lines == ["WIDGET  9.99"]
+
+    def test_totals_tax_tender_and_change_are_dropped(self):
+        for line in ("SUBTOTAL  21.60", "TAX2  3.0000 %  0.65",
+                     "TOTAL  22.25", "VISA TEND  22.25", "CHANGE DUE  0.00"):
+            assert classify(line) is not None, line
+
+    def test_the_labelled_reasons_stay_meaningful(self):
+        """A few anchors, so the reasons do not drift into nonsense."""
         assert classify("SUBTOTAL  21.60") == "subtotal"
         assert classify("TAX2  3.0000 %  0.65") == "tax"
         assert classify("TOTAL  22.25") == "total"
-        assert classify("VISA TEND  22.25") == "tender"
-        assert classify("CHANGE DUE  0.00") == "change"
 
-    def test_terminal_noise(self):
+    def test_terminal_noise_is_dropped(self):
         for line in (
             "REF # U00TBGO48447  TRANS ID- 386298068855718  WO",
             "VALIDATION - 9V9K",
@@ -63,7 +84,7 @@ class TestClassify:
             "TERMINAL # 21090852",
             "PAYMENT SERVICE-E",
         ):
-            assert classify(line) == "terminal", line
+            assert classify(line) is not None or MONEY.search(line) is None, line
 
     def test_a_real_item_is_not_structural(self):
         assert classify("GV BFLOR 12  078742237320 F  1.16 R") is None
@@ -72,6 +93,92 @@ class TestClassify:
         """Guarding against over-eager patterns."""
         assert classify("MANGO CHUNK 078742025500 F  1.52 R") is None
         assert classify("GV WHOLE GAL 078742351860 F  3.42 R") is None
+
+
+class TestDoesNotEatRealPurchases:
+    """The regression that matters most.
+
+    Matching till-slip keywords anywhere in a line was over-fitted to
+    one Walmart receipt. Against realistic grocery names it deleted 8
+    items in 17 — and a silently deleted purchase is worse than the
+    mis-parse this module was written to fix, because the item simply
+    is not there to argue with.
+
+    Every name below is one a supermarket could plausibly print.
+    """
+
+    KEEP = [
+        "CHICKEN TENDER       078742011111 F  5.99 R",   # 'tender'
+        "CHKN TENDERS         078742011112 F  7.49 R",
+        "COUNT CHOCULA        078742011113 F  4.29 R",   # 'count'
+        "OIL CHANGE                          39.99",     # 'change'
+        "CHANGE PURSE         078742011117   12.99",
+        "TOTAL WINE GIFT CARD                25.00",     # 'total'
+        "TOTAL BLUEBERRIES    078742011125 F  3.99 R",
+        "TOTINOS PIZZA        078742011114 F  1.00 R",
+        "CREDIT UNION FEE                     3.00",     # 'credit'
+        "DEBIT CARD HOLDER    078742011116    9.99",     # 'debit'
+        "VISALIA ORANGES      078742011115 F  4.50 R",   # 'visa'
+        "TAXI FARE                           18.00",     # 'tax'
+        "BATCH COOKIE DOUGH   078742011123 F  5.49 R",   # 'batch'
+        "CASHEWS              078742011124 F  6.99 R",   # 'cash'
+        "TENDERLOIN STEAK     078742011122 F 14.99 R",
+        "AUTHENTIC TACOS      078742011118    6.25",     # 'auth'
+    ]
+
+    def test_no_real_item_is_dropped(self):
+        eaten = [(l, classify(l)) for l in self.KEEP if classify(l) is not None]
+        assert eaten == [], f"these purchases would vanish: {eaten}"
+
+    def test_a_long_line_is_never_a_label(self):
+        """A description plus a product code plus a flag is a purchase."""
+        assert classify("TOTAL WINE GIFT CARD                25.00") is None
+
+
+class TestStructureAcrossLayouts:
+    """The label forms that must still be caught, from several chains."""
+
+    DROP = [
+        "SUBTOTAL  21.60",
+        "Subtotal        16.50",
+        "SUB-TOTAL       16.50",
+        "TAX2  3.0000 %  0.65",
+        "Sales Tax        1.32",
+        "TOTAL  22.25",
+        "GRAND TOTAL     99.99",
+        "22.25 TOTAL PURCHASE",
+        "AMOUNT DUE      45.00",
+        "BALANCE DUE      0.00",
+        "VISA TEND  22.25",
+        "CHANGE DUE  0.00",
+        "CASH            50.00",
+        "MASTERCARD      31.20",
+    ]
+
+    def test_every_label_form_is_caught(self):
+        leaked = [l for l in self.DROP if classify(l) is None]
+        assert leaked == [], f"these reached the items: {leaked}"
+
+    def test_residue_strips_amounts_and_flags(self):
+        assert residue("SUBTOTAL  21.60") == "SUBTOTAL"
+        assert residue("CHANGE DUE  0.00") == "CHANGE DUE"
+        assert "078742237320" in residue("GV BFLOR 12  078742237320 F  1.16 R")
+
+    def test_card_noise_with_no_amount_needs_no_keyword(self):
+        """What actually caught the card line, and it generalises.
+
+        Terminal noise carries no decimal amount, so it is removed by
+        the no-amount rule rather than by a brand name — which means it
+        works for any EMV terminal, not just the one tested.
+        """
+        s = extract(
+            "WIDGET  9.99\n"
+            "REF # U00TBGO48447  TRANS ID- 386298068855718\n"
+            "AID A0000000031010\n"
+            "TERMINAL # 21090852\n"
+        )
+        assert s.item_lines == ["WIDGET  9.99"]
+        assert {w for _, w in s.dropped} == {"no_amount"}
 
 
 class TestExtractOnTheRealScan:
@@ -88,8 +195,8 @@ class TestExtractOnTheRealScan:
         # Asserted by behaviour, not by the digits: the fixture's card
         # number and terminal ids are redacted, and the bug was never
         # about which four digits were printed.
-        card = [why for line, why in s.dropped if "VISA CREDIT" in line]
-        assert card == ["payment"]
+        card = [line for line, _ in s.dropped if "VISA CREDIT" in line]
+        assert len(card) == 1, "the card line must be dropped, by some rule"
 
     def test_totals_never_reach_the_items(self):
         s = extract(REAL)

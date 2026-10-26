@@ -46,6 +46,7 @@ class AIProvider(abc.ABC):
         images: list[str] | None = None,
         schema: dict[str, Any] | None = None,
         model: str | None = None,
+        temperature: float = 0.0,
     ) -> ChatResult: ...
 
     @abc.abstractmethod
@@ -85,6 +86,7 @@ class OllamaProvider(AIProvider):
         images: list[str] | None = None,
         schema: dict[str, Any] | None = None,
         model: str | None = None,
+        temperature: float = 0.0,
     ) -> ChatResult:
         chosen = model or (
             self.settings.ai_model_vision if images else self.settings.ai_model_text
@@ -98,6 +100,27 @@ class OllamaProvider(AIProvider):
             "model": chosen,
             "messages": [message],
             "stream": False,
+            # Temperature 0 -- greedy decoding, no sampling.
+            #
+            # This was previously unset, which does NOT mean zero: ollama
+            # falls back to each model's Modelfile, and those disagree
+            # wildly. qwen2.5vl:7b ships temperature 0.0001; gemma3:12b
+            # ships temperature 1 with top_k 64 and top_p 0.95. So the
+            # same code was effectively deterministic on one model and
+            # heavily sampled on another, with nothing in the request
+            # saying so.
+            #
+            # Worse, it did not match what was measured. Every experiment
+            # in experiments/ pins temperature 0 -- ADR 0006's allocation
+            # arms and the categorisation precision figure both -- so the
+            # numbers those ADRs quote described a configuration the app
+            # never actually ran.
+            #
+            # Nothing here wants creativity. These calls extract figures,
+            # pick a label from a fixed list, or compile a query. For all
+            # of them the most likely token is the right one, and a
+            # different answer to the same receipt on Tuesday is a bug.
+            "options": {"temperature": temperature},
         }
         if schema is not None:
             # Constrain the output shape. More reliable than tool calling for

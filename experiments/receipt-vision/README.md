@@ -39,38 +39,59 @@ GV BFLOR  1.16    GV BRUSPR  1.52   MANGO CHUNK 3.42  GV WHOLE GAL 3.16
                   SUBTOTAL 21.60    TAX 0.65          TOTAL 22.25
 ```
 
-Three runs each:
+### First attempt was not a fair test
+
+Three runs each, no temperature set — which is what the app itself was
+doing. The results looked decisive and were partly an artefact:
 
 | Model | Items | Items sum | subtotal / tax / total | Time |
 |---|---|---|---|---|
 | truth | 8 | **$21.60** | 2160 / 65 / 2225 | — |
 | qwen2.5vl:7b | 8, 8, 8 | $50.08 ×3 | **2160 / 65 / 2225** ✓ | 6s |
-| gemma3:12b | 8, 9, 9 | $29.48, $26.42, $25.77 | 2160 / **2225 or 2160** ✗ / 2225 | 11–14s |
+| gemma3:12b | 8, 9, 9 | $29.48, $26.42, $25.77 | tax ✗ | 11–14s |
 
-## What this says
+Neil asked whether temperature was pinned. It was not, and "unset" does
+not mean zero — ollama falls back to each model's Modelfile:
 
-**Both read the receipt. Neither reads the price column.**
+    qwen2.5vl:7b    temperature 0.0001
+    gemma3:12b      temperature 1, top_k 64, top_p 0.95
 
-- **qwen2.5vl** nails every *stated* figure — subtotal, tax and total
-  exact on all three runs — and reads all eight item names in order,
-  including `COTTAGE CH`, which the OCR mangled into `J22.88`. Its item
-  prices are wrong by decimal placement: `0.98 → 9.80`, `1.16 → 11.60`,
-  `1.52 → 15.20`. Wrong the same way every run.
-- **gemma3:12b** gets some prices right that qwen gets wrong (4.24 and
-  3.16 both correct), and is otherwise worse: it invents duplicate rows
-  (`GV MNG 12Z` twice at different prices), returns 8 or 9 items
-  depending on the run, and puts the TOTAL in the tax field.
+So qwen was running greedy and gemma was being heavily sampled. The
+"gemma returns a different total every run" finding measured its
+Modelfile, not the model. **Retracted.**
 
-The deciding difference is consistency. qwen is **deterministically
-wrong** — same answer every time, so a correction could in principle be
-learned. gemma is **non-deterministically wrong**: three runs, three
-different totals, none right. For money, an unstable reader is worse
-than a stable one with a known flaw.
+### Re-run with temperature pinned to 0
 
-Both also returned SUBTOTAL, TAX, TOTAL, VISA TEND and CHANGE DUE as
-things that were bought — the same judgement failure the text path had.
-**So vision does not remove the need for the line filter.** That was
-Neil's hope for dropping the regex, and it does not survive the test.
+| Model | Items | Items sum | subtotal / tax / total | Time |
+|---|---|---|---|---|
+| truth | 8 | **$21.60** | 2160 / 65 / 2225 | — |
+| qwen2.5vl:7b | 8, 8, 8 | $50.08 ×3 | **2160 / 65 / 2225** ✓ | 5.7s |
+| gemma3:12b | 8, 8, 8 | **$25.77 ×3** | 2160 / **2160** ✗ / 2225 | 11s |
+
+Both are now perfectly deterministic. Per item:
+
+| Printed | Truth | qwen | gemma |
+|---|---|---|---|
+| COTTAGE CH | 2.88 | **2.88** ✓ | **2.88** ✓ |
+| HF SMK SGE | 4.24 | 2.40 | **4.24** ✓ |
+| HF SMK SGE | 4.24 | 2.40 | **4.24** ✓ |
+| GV MXDVG 12Z | 0.98 | 9.80 | 4.99 |
+| GV BFLOR 12 | 1.16 | 11.60 | 1.52 |
+| GV BRUSPR 12 | 1.52 | 15.20 | **1.52** ✓ |
+| MANGO CHUNK | 3.42 | 4.20 | 3.22 |
+| GV WHOLE GAL | 3.16 | 1.60 | **3.16** ✓ |
+| | **correct** | **1 / 8** | **4 / 8** |
+
+**gemma3:12b is four times better on prices.** qwen's errors are
+systematic decimal placement (`0.98 → 9.80`, `1.16 → 11.60`); gemma
+reads the column far more often and fails differently — it garbles item
+NAMES (`HF SNK SGE`, `GV MNG`, `GV BELUR`) and puts the subtotal in the
+tax field.
+
+Neither sums to $21.60, so neither is usable on its own. But the honest
+summary is: gemma reads prices better, qwen reads names and stated
+totals better, and the earlier claim that gemma was unstable was my
+measurement error.
 
 ## Decision
 
@@ -78,21 +99,46 @@ Neil's hope for dropping the regex, and it does not survive the test.
 cannot read a price column accurately enough for a ledger". OCR reads
 digits reliably and cannot hallucinate an item that is not printed.
 
-What changed is that vision is now worth something. Comparing the two:
+What changed is that vision is now worth something. No single reader
+is good at everything:
 
-| | reads digits | reads names and layout |
-|---|---|---|
-| ML Kit OCR | **reliable** | poor — scrambles rows on curled paper |
-| vision model | poor | **good** — got `COTTAGE CH` where OCR failed |
+| | reads digits | reads names | reads stated totals |
+|---|---|---|---|
+| ML Kit OCR | **reliable** | poor — scrambles rows on curled paper | n/a |
+| qwen2.5vl:7b | 1/8 | **good** — got `COTTAGE CH` where OCR failed | **exact** |
+| gemma3:12b | **4/8** | poor — `HF SNK SGE`, `GV BELUR` | tax wrong |
 
-That is complementary, not redundant, and suggests a use: vision as a
-**second opinion on names and row structure** when the deterministic
-reconciler says the lines do not add up. Not built; noted.
+That is complementary rather than redundant, and suggests a use:
+vision as a **second opinion** when `reconcile()` reports the lines do
+not add up — qwen for names and row structure, gemma for a disputed
+price. Not built; noted.
 
-What already works regardless: every one of the six runs above would be
-caught by `receipt_text.reconcile()`, because items summing to $50.08
-against a stated subtotal of $21.60 is arithmetically impossible. The
-checksum does its job whichever reader produced the numbers.
+Worth saying plainly: a second reader is only useful because the
+subtotal gives something to arbitrate against. Two readers disagreeing
+with no checksum would just be two guesses.
+
+What already works regardless: every run above, at either temperature
+and from either model, would be caught by `receipt_text.reconcile()` —
+items summing to $50.08 or $25.77 against a stated subtotal of $21.60
+is arithmetically impossible. The checksum does its job whichever
+reader produced the numbers, which is the whole argument for having it.
+
+## The bug this experiment found
+
+Pinning temperature was not just an experimental control. The app was
+sending **no `options` at all**, so every call ran at whatever the
+model's Modelfile specified — 0.0001 for qwen, 1 for gemma. The same
+code was effectively greedy on one model and heavily sampled on
+another, and nothing in the request said which.
+
+It also meant production did not match its own measurements: every
+experiment in `experiments/` pins `temperature: 0`, so the figures
+ADR 0006 quotes described a configuration that never shipped. In
+practice the text model was already at 0.0001 so little changed, but it
+was luck, and swapping models would have silently changed behaviour.
+
+Fixed in `app/ai/provider.py`: temperature 0 by default on every call,
+overridable per call.
 
 ## Reproducing
 

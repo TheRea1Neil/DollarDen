@@ -89,21 +89,26 @@ Correct, in 8.6 seconds, from a photograph of curled thermal paper. So
 the decision had to be re-earned rather than inherited.
 
 Re-tested against the real Galaxy S21 receipt photo, production prompt
-and schema, three runs each (`experiments/receipt-vision/`):
+and schema, **temperature pinned to 0**, three runs each
+(`experiments/receipt-vision/`):
 
 | Model | Items | Items sum (truth $21.60) | subtotal/tax/total | Time |
 |---|---|---|---|---|
-| qwen2.5vl:7b | 8, 8, 8 | $50.08 ×3 | 2160/65/2225 ✓ | 6s |
-| gemma3:12b | 8, 9, 9 | $29.48, $26.42, $25.77 | tax wrong ✗ | 11–14s |
+| qwen2.5vl:7b | 8, 8, 8 | $50.08 ×3 | 2160/65/2225 ✓ | 5.7s |
+| gemma3:12b | 8, 8, 8 | $25.77 ×3 | 2160/**2160** ✗/2225 | 11s |
 
-**Both read the receipt. Neither reads the price column.** qwen gets
-every *stated* figure exactly right and every *item* price wrong by
-decimal placement (`0.98 → 9.80`). gemma fixes some of those and
-invents duplicate rows instead, returning a different total every run.
+**Both read the receipt. Neither reads the price column well enough.**
+Per item, qwen gets **1 of 8** prices right and gemma **4 of 8**. qwen's
+errors are systematic decimal placement (`0.98 → 9.80`); gemma reads
+prices far better and garbles item names instead (`HF SNK SGE`,
+`GV BELUR`) while putting the subtotal in the tax field.
 
-The deciding property is consistency. qwen is deterministically wrong;
-gemma is non-deterministically wrong. For a ledger, an unstable reader
-is worse than a stable one with a known flaw.
+A first pass without pinning temperature appeared to show gemma was
+unstable — three runs, three totals. That was wrong, and it was a
+measurement error rather than a property of the model: ollama was
+falling back to each model's Modelfile, which sets 0.0001 for qwen and
+**1** for gemma. Pinned at 0 both are perfectly deterministic. The
+claim is retracted; the experiment README records it.
 
 **Revised reason:** the photo is read on the phone not because vision is
 broken, but because **a vision model cannot read a price column
@@ -122,7 +127,14 @@ Two further findings worth keeping:
   plausible future use is vision as a second opinion on names when
   `reconcile()` reports the lines do not add up. Not built; noted.
 
-All six runs would have been caught by the existing checksum: items
-summing to $50.08 against a stated subtotal of $21.60 is impossible.
-That is the architecture working as intended, whichever reader produced
-the numbers.
+Every run, at either temperature and from either model, would have been
+caught by the existing checksum: items summing to $50.08 or $25.77
+against a stated subtotal of $21.60 is impossible. That is the
+architecture working as intended, whichever reader produced the
+numbers.
+
+The re-test also surfaced a production bug unrelated to receipts: the
+provider sent no sampling options at all, so every AI call ran at the
+model's Modelfile temperature rather than the `temperature: 0` every
+experiment in `experiments/` was measured at. Fixed in
+`app/ai/provider.py`.

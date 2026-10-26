@@ -1103,3 +1103,65 @@ class TestItemCategories:
                        {"line": 0, "category": "Groceries"}]},
             self._cats(), 2)
         assert out["undecided"] == [1, 2]
+
+
+class TestSamplingIsPinned:
+    """Determinism is a correctness property here, not a preference.
+
+    Sending no options meant ollama fell back to each model's
+    Modelfile, and those disagree: qwen2.5vl:7b ships temperature
+    0.0001, gemma3:12b ships 1 with top_k 64 and top_p 0.95. Identical
+    code was greedy on one model and heavily sampled on another, and
+    neither matched the `temperature: 0` every experiment was measured
+    at.
+    """
+
+    def _payload(self, **kwargs):
+        import asyncio
+        import json
+        from unittest.mock import patch
+
+        from app.ai.provider import OllamaProvider
+        from app.core.config import get_settings
+
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"message": {"content": "{}"}}
+
+        class _Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, json=None):
+                captured.update(json or {})
+                return _Resp()
+
+        with patch("httpx.AsyncClient", lambda **kw: _Client()):
+            p = OllamaProvider("http://x", get_settings())
+            asyncio.run(p.chat("hello", **kwargs))
+        return captured
+
+    def test_temperature_zero_by_default(self):
+        assert self._payload()["options"]["temperature"] == 0.0
+
+    def test_options_are_always_sent(self):
+        """Absent options means 'use the Modelfile', not 'use zero'."""
+        assert "options" in self._payload()
+
+    def test_an_explicit_temperature_is_honoured(self):
+        assert self._payload(temperature=0.7)["options"]["temperature"] == 0.7
+
+    def test_schema_requests_are_pinned_too(self):
+        out = self._payload(schema={"type": "object"})
+        assert out["options"]["temperature"] == 0.0
+        assert out["format"] == {"type": "object"}

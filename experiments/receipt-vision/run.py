@@ -57,8 +57,13 @@ def _prompt() -> str:
     return body[:body.index('"""')]
 
 
-def ask(model: str, b64: str) -> tuple[dict | None, float]:
+def ask(model: str, b64: str, temperature: float = 0.0) -> tuple[dict | None, float]:
+    # Pinned, always. Unset does NOT mean zero -- ollama falls back to
+    # the model's Modelfile, and qwen2.5vl ships 0.0001 while gemma3
+    # ships 1. The first run of this experiment did not pin it and
+    # measured those defaults instead of the models.
     payload = {"model": model, "stream": False, "format": SCHEMA,
+               "options": {"temperature": temperature},
                "messages": [{"role": "user", "content": _prompt(), "images": [b64]}]}
     req = urllib.request.Request(
         f"{DECK}/api/chat", data=json.dumps(payload).encode(),
@@ -91,6 +96,7 @@ def main() -> int:
     ap.add_argument("models", nargs="*", default=None)
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--image", default=None)
+    ap.add_argument("--temperature", type=float, default=0.0)
     args = ap.parse_args()
 
     image = args.image
@@ -104,12 +110,13 @@ def main() -> int:
     b64 = base64.b64encode(pathlib.Path(image).read_bytes()).decode()
     print(f"image: {image}  ({len(b64) // 1024} KB base64)")
     print(f"truth: {TRUTH_ITEMS} items, sum {TRUTH_SUM}, "
-          f"{TRUTH_SUBTOTAL}/{TRUTH_TAX}/{TRUTH_TOTAL}\n")
+          f"{TRUTH_SUBTOTAL}/{TRUTH_TAX}/{TRUTH_TOTAL}")
+    print(f"temperature: {args.temperature}\n")
 
     for model in (args.models or DEFAULT_MODELS):
         for n in range(1, args.runs + 1):
             try:
-                parsed, secs = ask(model, b64)
+                parsed, secs = ask(model, b64, args.temperature)
             except Exception as exc:  # noqa: BLE001
                 print(f"  {model:14} run{n}: FAILED {exc}")
                 continue

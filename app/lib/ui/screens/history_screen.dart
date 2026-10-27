@@ -7,6 +7,7 @@ import '../../core/theme.dart';
 import '../../data/api_client.dart';
 import '../../data/providers.dart';
 import '../../domain/models.dart';
+import 'scan_receipt_screen.dart';
 
 /// Every transaction and where its money went.
 ///
@@ -323,6 +324,39 @@ class _HistoryCard extends ConsumerWidget {
             ),
             const SizedBox(height: 10),
             _Destination(item: item),
+            // Splitting a charge that already filed. Only offered for
+            // spending that is actually in the budget: a transfer moves
+            // money already accounted for, and a deposit is not a
+            // receipt.
+            if (!item.excluded &&
+                !item.awaitingReview &&
+                item.paycheckId == null &&
+                MoneyFlow.ofSigned(item.amountCents).isOut) ...[
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () async {
+                    final changed = await Navigator.of(context).push<bool>(
+                      MaterialPageRoute(
+                        builder: (_) => ScanReceiptScreen(
+                          transactionId: item.id,
+                          amountCents: item.amountCents,
+                          title: item.title,
+                          alreadyFiled: true,
+                        ),
+                      ),
+                    );
+                    if (changed == true) await onChanged();
+                  },
+                  icon: const Icon(Icons.receipt_long_outlined, size: 16),
+                  label: const Text('Itemise'),
+                  style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      visualDensity: VisualDensity.compact),
+                ),
+              ),
+            ],
             if (item.paycheckApplied) ...[
               const SizedBox(height: 4),
               Align(

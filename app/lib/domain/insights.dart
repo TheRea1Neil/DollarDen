@@ -400,3 +400,109 @@ class TypeSuggestionResult {
         collapsedFrom: j['collapsed_from'] as String?,
       );
 }
+
+/// One line read off a receipt photo.
+class ScannedLine {
+  final String description;
+  final int amountCents;
+  final String category;
+  final String? categoryId;
+
+  /// The model could not account for this, or named a category that no
+  /// longer exists. Shown so a bad line is visible rather than buried.
+  final bool needsReview;
+
+  const ScannedLine({
+    required this.description,
+    required this.amountCents,
+    required this.category,
+    this.categoryId,
+    this.needsReview = false,
+  });
+
+  factory ScannedLine.fromJson(Map<String, dynamic> j) => ScannedLine(
+        description: j['description'] as String? ?? '',
+        amountCents: j['amount_cents'] as int? ?? 0,
+        category: j['category'] as String? ?? 'Unsure',
+        categoryId: j['category_id'] as String?,
+        needsReview: j['needs_review'] as bool? ?? false,
+      );
+
+  ScannedLine copyWith({int? amountCents, String? category, String? categoryId}) =>
+      ScannedLine(
+        description: description,
+        amountCents: amountCents ?? this.amountCents,
+        category: category ?? this.category,
+        categoryId: categoryId ?? this.categoryId,
+        needsReview: needsReview,
+      );
+}
+
+/// How a scanned receipt divides across envelopes — the number that
+/// actually matters, as opposed to any individual line.
+class CategorySplit {
+  final String category;
+  final String? categoryId;
+  final int amountCents;
+
+  const CategorySplit({
+    required this.category,
+    this.categoryId,
+    required this.amountCents,
+  });
+
+  factory CategorySplit.fromJson(Map<String, dynamic> j) => CategorySplit(
+        category: j['category'] as String? ?? 'Unsure',
+        categoryId: j['category_id'] as String?,
+        amountCents: j['amount_cents'] as int? ?? 0,
+      );
+}
+
+class ReceiptScan {
+  final List<ScannedLine> items;
+  final List<CategorySplit> split;
+  final int totalCents;
+  final int targetCents;
+
+  /// True when the model's own reading added up. False means a
+  /// remainder line was needed — the total still matches the bank.
+  final bool closedWithoutRemainder;
+  final int remainderCents;
+  final int toolCalls;
+  final double seconds;
+  final String model;
+
+  const ReceiptScan({
+    required this.items,
+    required this.split,
+    required this.totalCents,
+    required this.targetCents,
+    required this.closedWithoutRemainder,
+    required this.remainderCents,
+    required this.toolCalls,
+    required this.seconds,
+    required this.model,
+  });
+
+  factory ReceiptScan.fromJson(Map<String, dynamic> j) => ReceiptScan(
+        items: ((j['items'] as List?) ?? const [])
+            .map((e) => ScannedLine.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        split: ((j['category_split'] as List?) ?? const [])
+            .map((e) => CategorySplit.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        totalCents: j['total_cents'] as int? ?? 0,
+        targetCents: j['target_cents'] as int? ?? 0,
+        closedWithoutRemainder: j['closed_without_remainder'] as bool? ?? false,
+        remainderCents: j['remainder_cents'] as int? ?? 0,
+        toolCalls: j['tool_calls'] as int? ?? 0,
+        seconds: (j['seconds'] as num?)?.toDouble() ?? 0,
+        model: j['model'] as String? ?? '',
+      );
+
+  /// Always true by construction — the backend reconciles before
+  /// returning. Asserted here so a protocol change cannot slip past.
+  bool get balances => totalCents == targetCents;
+
+  int get reviewCount => items.where((i) => i.needsReview).length;
+}

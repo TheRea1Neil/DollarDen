@@ -12,7 +12,13 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import current_user
 from app.budget.categorize import resolve_review, signed_amount
-from app.budget.ledger import Entry, LedgerError, audit_balances, post
+from app.budget.ledger import (
+    Entry,
+    LedgerError,
+    allocations_for_transaction,
+    audit_balances,
+    post,
+)
 from app.budget.treatment import Treatment, explain
 from app.budget.paycheck import apply_plan, candidates, predict_next, unapply
 from app.budget.reconcile import (
@@ -811,6 +817,118 @@ class ResolveIn(BaseModel):
     remember: bool = False
     # Create this category and allocate the whole transaction to it.
     new_category: NewCategoryIn | None = None
+
+
+class RefileSplit(BaseModel):
+    category_id: str
+    amount_cents: int
+    description: str | None = None
+
+
+class RefileIn(BaseModel):
+    splits: list[RefileSplit] = Field(default_factory=list, max_length=200)
+
+
+@router.post("/transactions/{transaction_id}/refile")
+def refile_transaction(
+    transaction_id: str,
+    body: RefileIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Re-split a transaction that is already filed.
+
+    Itemising used to be reachable only from the review queue, so a
+    charge that auto-filed correctly could never be broken up later --
+    and a Target run that lands wholly in Groceries is exactly the case
+    worth splitting after the fact.
+
+    The ledger is append-only, so nothing is edited. The existing
+    allocations are REVERSED with opposing entries and the new split is
+    posted alongside, which leaves the history readable: you can see
+    what it was, that it was undone, and what it became.
+
+    The splits must still sum to the transaction's own amount. Letting
+    them drift would silently change what the budget thinks was spent.
+    """
+    txn = _own(db, Transaction, transaction_id, user)
+    if txn.removed_at is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "That transaction has been removed.")
+    if not Treatment(txn.treatment).affects_budget:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Transfers and card payments are not split; they move money that "
+            "was already accounted for.")
+    if not body.splits:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            "Give at least one split.")
+
+    want = signed_amount(txn)
+    got = sum(s.amount_cents for s in body.splits)
+    if got != want:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"The splits come to ${got / 100:,.2f} but the charge was "
+            f"${want / 100:,.2f}. They have to match.")
+
+    existing = allocations_for_transaction(db, txn)
+    reversed_cents = 0
+    if existing:
+        entries = [
+            Entry(a.category_id, -a.amount_cents, "correction",
+                  note=f"re-itemised (was {a.amount_cents})")
+            for a in existing if a.amount_cents != 0
+        ]
+        if entries:
+            post(db, user.id, entries, transaction_id=txn.id)
+            reversed_cents = sum(abs(e.amount_cents) for e in entries)
+
+    fresh = []
+    for sp in body.splits:
+        cat = _own(db, Category, sp.category_id, user)
+        if sp.amount_cents == 0:
+            continue
+        fresh.append(Entry(cat.id, -sp.amount_cents, "receipt_split",
+                           note=(sp.description or None)))
+    if not fresh:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            "Every split was zero.")
+    try:
+        post(db, user.id, fresh, transaction_id=txn.id)
+    except LedgerError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+    # Reached from the review queue too, where the transaction still has
+    # an open review item. Leaving it open would put a charge back in the
+    # queue that has just been filed, so the same endpoint closes it.
+    open_review = db.scalars(
+        select(ReviewItem).where(
+            ReviewItem.user_id == user.id,
+            ReviewItem.transaction_id == txn.id,
+            ReviewItem.resolved_at.is_(None),
+        )
+    ).first()
+    resolved_review = None
+    if open_review is not None:
+        open_review.resolved_at = datetime.now(UTC)
+        open_review.resolution = {
+            "method": "itemised",
+            "splits": [
+                {"category_id": str(e.category_id), "amount_cents": -e.amount_cents}
+                for e in fresh
+            ],
+        }
+        resolved_review = str(open_review.id)
+
+    db.commit()
+    return {
+        "transaction_id": str(txn.id),
+        "reversed_cents": reversed_cents,
+        "splits": len(fresh),
+        "amount_cents": want,
+        "resolved_review_id": resolved_review,
+    }
 
 
 @router.post("/review/{review_id}/resolve", status_code=status.HTTP_204_NO_CONTENT)

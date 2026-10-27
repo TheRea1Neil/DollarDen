@@ -8,7 +8,7 @@ import '../../data/providers.dart';
 import '../../domain/models.dart';
 import 'add_category_screen.dart';
 import 'assisted_review_screen.dart';
-import 'receipt_screen.dart';
+import 'scan_receipt_screen.dart';
 
 /// The review queue: transactions the deterministic rules could not place.
 ///
@@ -153,7 +153,13 @@ class _ReviewCard extends ConsumerWidget {
 
     if (result is _PickItemise) {
       await Navigator.of(context).push<bool>(
-        MaterialPageRoute(builder: (_) => ReceiptScreen(item: item)),
+        MaterialPageRoute(
+          builder: (_) => ScanReceiptScreen(
+            transactionId: item.transactionId,
+            amountCents: item.amountCents,
+            title: item.merchantName ?? item.name,
+          ),
+        ),
       );
       ref.invalidate(reviewProvider);
       ref.invalidate(summaryProvider);

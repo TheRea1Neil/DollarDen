@@ -1000,6 +1000,56 @@ class ApiClient {
     return TypeSuggestionResult.fromJson(done.result!);
   }
 
+  /// Read a receipt photo into balanced, categorised line items.
+  ///
+  /// [amountCents] is the real charge and is not optional: the whole
+  /// design rests on the model being unable to argue with the total
+  /// (see backend app/ai/receipt_loop.py). The result ALWAYS sums to
+  /// it — anything the model could not account for comes back as one
+  /// line flagged for review.
+  Future<ReceiptScan> scanReceipt({
+    required String imageBase64,
+    required int amountCents,
+    void Function(AiJob)? onProgress,
+  }) async {
+    final job = await queueJob('receipt_scan', {
+      'image_b64': imageBase64,
+      'expected_cents': amountCents,
+    });
+    final done = await awaitJob(job.id, onProgress: onProgress,
+        timeout: const Duration(minutes: 8));
+    if (done.status != 'done' || done.result == null) {
+      throw ApiException(done.error ?? 'The assistant could not read that receipt.');
+    }
+    return ReceiptScan.fromJson(done.result!);
+  }
+
+  /// Re-split a transaction that is already filed.
+  ///
+  /// The splits must sum to the charge; the server refuses otherwise,
+  /// because a split that drifts would quietly change what the budget
+  /// thinks was spent.
+  Future<void> refileTransaction(
+    String transactionId,
+    List<({String categoryId, int amountCents, String? description})> splits,
+  ) async {
+    final r = await _withRetry((o) => _dio.post(
+          '/budget/transactions/$transactionId/refile',
+          data: {
+            'splits': [
+              for (final s in splits)
+                {
+                  'category_id': s.categoryId,
+                  'amount_cents': s.amountCents,
+                  if (s.description != null) 'description': s.description,
+                }
+            ]
+          },
+          options: o,
+        ));
+    if (r.statusCode != 200) _fail(r);
+  }
+
   Future<bool> health() async {
     try {
       final r = await _dio.get('/health');

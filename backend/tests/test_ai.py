@@ -1161,6 +1161,18 @@ class TestSamplingIsPinned:
     def test_an_explicit_temperature_is_honoured(self):
         assert self._payload(temperature=0.7)["options"]["temperature"] == 0.7
 
+    def test_thinking_is_sent_explicitly_even_when_off(self):
+        """Omitting it means "use the model's default", not "off".
+
+        gemma4 reasons by default. Unsent, it spent its whole budget
+        thinking and returned empty content, which reached callers as
+        "model returned unparseable JSON" with nothing naming the cause.
+        """
+        assert self._payload()["think"] is False
+
+    def test_thinking_can_be_turned_on(self):
+        assert self._payload(think=True)["think"] is True
+
     def test_schema_requests_are_pinned_too(self):
         out = self._payload(schema={"type": "object"})
         assert out["options"]["temperature"] == 0.0

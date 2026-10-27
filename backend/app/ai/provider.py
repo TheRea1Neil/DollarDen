@@ -148,8 +148,20 @@ class OllamaProvider(AIProvider):
         }
         if tools:
             payload["tools"] = tools
-        if think:
-            payload["think"] = True
+        # Sent ALWAYS, including False.
+        #
+        # Omitting it does not mean "off" -- ollama falls back to the
+        # model's own default, and gemma4 is a thinking model that
+        # reasons by default. Left unsent it spent the whole token
+        # budget thinking and returned empty content, which surfaces as
+        #
+        #     ValueError: model returned unparseable JSON
+        #
+        # intermittently, on any task, with nothing in the error
+        # pointing at the cause. Same shape of bug as the temperature
+        # one: unset is not a safe default, it is whatever the model
+        # ships with.
+        payload["think"] = bool(think)
         # A thinking model spends its token budget reasoning before it
         # answers. At ollama's default it ran out mid-thought and
         # returned an empty string -- which reads as a model failure and

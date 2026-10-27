@@ -6,10 +6,11 @@ configuration: the app must be fully usable with AI disabled (ADR 0003).
 from __future__ import annotations
 
 import abc
+import json
 import asyncio
 import logging
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -29,6 +30,17 @@ class ChatResult:
     model: str
     total_duration_ns: int | None = None
     eval_count: int | None = None
+    # Tools the model asked us to run, each {"name": str, "arguments": dict}.
+    # Empty for every non-tool call, so existing callers are unaffected.
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    # Reasoning text, when the model is a thinking one and thinking is on.
+    # Kept separate from `content`: ollama returns them in different
+    # fields, and a thinking model can fill this while leaving content
+    # empty, which looks like a failure unless you can see it.
+    thinking: str = ""
+    # "stop" | "length" | ... -- `length` means the token budget ran out
+    # mid-answer, which is a configuration problem, not a model one.
+    done_reason: str | None = None
 
     @property
     def tokens_per_second(self) -> float | None:
@@ -47,6 +59,11 @@ class AIProvider(abc.ABC):
         schema: dict[str, Any] | None = None,
         model: str | None = None,
         temperature: float = 0.0,
+        tools: list[dict[str, Any]] | None = None,
+        messages: list[dict[str, Any]] | None = None,
+        think: bool = False,
+        num_ctx: int | None = None,
+        num_predict: int | None = None,
     ) -> ChatResult: ...
 
     @abc.abstractmethod
@@ -87,18 +104,25 @@ class OllamaProvider(AIProvider):
         schema: dict[str, Any] | None = None,
         model: str | None = None,
         temperature: float = 0.0,
+        tools: list[dict[str, Any]] | None = None,
+        messages: list[dict[str, Any]] | None = None,
+        think: bool = False,
+        num_ctx: int | None = None,
+        num_predict: int | None = None,
     ) -> ChatResult:
         chosen = model or (
             self.settings.ai_model_vision if images else self.settings.ai_model_text
         )
-        message: dict[str, Any] = {"role": "user", "content": prompt}
-        if images:
-            # Ollama takes base64-encoded images on the message.
-            message["images"] = images
+        if messages is None:
+            message: dict[str, Any] = {"role": "user", "content": prompt}
+            if images:
+                # Ollama takes base64-encoded images on the message.
+                message["images"] = images
+            messages = [message]
 
         payload: dict[str, Any] = {
             "model": chosen,
-            "messages": [message],
+            "messages": messages,
             "stream": False,
             # Temperature 0 -- greedy decoding, no sampling.
             #
@@ -122,6 +146,18 @@ class OllamaProvider(AIProvider):
             # different answer to the same receipt on Tuesday is a bug.
             "options": {"temperature": temperature},
         }
+        if tools:
+            payload["tools"] = tools
+        if think:
+            payload["think"] = True
+        # A thinking model spends its token budget reasoning before it
+        # answers. At ollama's default it ran out mid-thought and
+        # returned an empty string -- which reads as a model failure and
+        # is actually a budget one. Both are explicit here.
+        if num_ctx is not None:
+            payload["options"]["num_ctx"] = num_ctx
+        if num_predict is not None:
+            payload["options"]["num_predict"] = num_predict
         if schema is not None:
             # Constrain the output shape. More reliable than tool calling for
             # this workload, and vision-model tool support is less proven.
@@ -135,11 +171,26 @@ class OllamaProvider(AIProvider):
         except Exception as exc:
             raise AIUnavailable(f"Ollama call failed: {exc}") from exc
 
+        msg = data.get("message", {}) or {}
+        calls = []
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            args = fn.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:  # noqa: BLE001
+                    args = {}
+            calls.append({"name": fn.get("name"), "arguments": args or {}})
+
         return ChatResult(
-            content=data.get("message", {}).get("content", ""),
+            content=msg.get("content") or "",
             model=chosen,
             total_duration_ns=data.get("total_duration"),
             eval_count=data.get("eval_count"),
+            tool_calls=calls,
+            thinking=msg.get("thinking") or "",
+            done_reason=data.get("done_reason"),
         )
 
 

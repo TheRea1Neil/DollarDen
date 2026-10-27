@@ -1773,6 +1773,57 @@ def _validate_item_categories(
 
 
 # --------------------------------------------------------------------------- #
+# Reading a receipt photo with the scratchpad loop
+# --------------------------------------------------------------------------- #
+async def run_receipt_scan(
+    db: Session, user: User, provider: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    """Photo in, balanced and categorised line items out.
+
+    Needs the real charge amount: the whole design rests on the total
+    being something the model cannot argue with (app/ai/receipt_loop.py).
+    Without it there is nothing to check the lines against and the model
+    will quietly adjust the total to match its own mistakes.
+    """
+    from app.ai import receipt_loop
+
+    image_b64 = (request.get("image_b64") or "").strip()
+    if not image_b64:
+        raise ValueError("receipt_scan needs a photo")
+    target = _as_int(request.get("expected_cents"))
+    if not target or target <= 0:
+        raise ValueError(
+            "receipt_scan needs the charge amount; the lines are checked "
+            "against it")
+
+    cats = [c for c in _categories(db, user) if not c.is_unallocated]
+    if not cats:
+        raise ValueError("there are no categories to file against")
+    pairs = [(c.name, (c.spend_criteria or c.description or "").strip())
+             for c in cats]
+
+    result = await receipt_loop.run_loop(
+        provider, image_b64=image_b64, target_cents=target, categories=pairs,
+        think=bool(request.get("think", False)),
+    )
+    out = result.as_dict()
+
+    # Resolve names to ids here. The model only ever handles names --
+    # an id is a token it has no way to verify, and a wrong one would be
+    # indistinguishable from a right one.
+    by_name = {c.name: c for c in cats}
+    for item in out["items"]:
+        cat = by_name.get(item["category"])
+        item["category_id"] = str(cat.id) if cat else None
+        if cat is None and item["category"] != "Unsure":
+            item["needs_review"] = True
+    for row in out["category_split"]:
+        cat = by_name.get(row["category"])
+        row["category_id"] = str(cat.id) if cat else None
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Expense type: what a charge WAS
 # --------------------------------------------------------------------------- #
 # A second, separate question from "which envelope does this come out
@@ -1993,7 +2044,23 @@ _PERIOD_CHOICES = [
 
 
 def _compile_schema(type_names: list[str], cat_names: list[str]) -> dict[str, Any]:
-    return {
+    """Build the compile schema, omitting filters the user has none of.
+
+    An `enum: []` is not merely useless, it is INVALID -- gemma4 rejects
+    the whole request with
+
+        400  JSON schema conversion failed: enum must be a non-empty array
+
+    and a fresh account has no expense types, so every question asked
+    before the first type exists failed outright. The previous model
+    accepted the malformed schema silently, which is why this only
+    surfaced on switching.
+
+    Dropping the property is better than loosening it to a free string:
+    a filter the user cannot possibly have is one the model should not
+    be offered.
+    """
+    schema: dict[str, Any] = {
         "type": "object",
         "properties": {
             "metric": {"type": "string",
@@ -2008,16 +2075,20 @@ def _compile_schema(type_names: list[str], cat_names: list[str]) -> dict[str, An
             "group_by": {"type": "string",
                          "enum": ["none", "expense_type", "category",
                                   "merchant", "month", "week"]},
-            "expense_types": {"type": "array",
-                              "items": {"type": "string", "enum": type_names}},
-            "categories": {"type": "array",
-                           "items": {"type": "string", "enum": cat_names}},
             "merchant": {"type": "string",
                          "description": "a shop name, or an empty string"},
         },
-        "required": ["metric", "period", "start", "end", "group_by",
-                     "expense_types", "categories", "merchant"],
+        "required": ["metric", "period", "start", "end", "group_by", "merchant"],
     }
+    if type_names:
+        schema["properties"]["expense_types"] = {
+            "type": "array", "items": {"type": "string", "enum": type_names}}
+        schema["required"].append("expense_types")
+    if cat_names:
+        schema["properties"]["categories"] = {
+            "type": "array", "items": {"type": "string", "enum": cat_names}}
+        schema["required"].append("categories")
+    return schema
 
 
 PHRASE_PROMPT = """Answer the question using ONLY the figures below.

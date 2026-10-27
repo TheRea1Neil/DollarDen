@@ -315,3 +315,54 @@ class TestClassifyValidation:
             [],
         )
         assert out["unsure"] is True
+
+
+class TestCompileSchemaIsValid:
+    """An empty enum is not just useless, it is rejected outright.
+
+    gemma4 answers a schema containing `enum: []` with
+
+        400  JSON schema conversion failed: enum must be a non-empty array
+
+    A fresh account has no expense types, so every question asked before
+    the first type existed failed. The previous model accepted the
+    malformed schema silently, so nothing caught it until the model
+    changed.
+    """
+
+    def _enums(self, node):
+        found = []
+        if isinstance(node, dict):
+            if "enum" in node:
+                found.append(node["enum"])
+            for v in node.values():
+                found += self._enums(v)
+        elif isinstance(node, list):
+            for v in node:
+                found += self._enums(v)
+        return found
+
+    def test_no_empty_enum_on_a_fresh_account(self):
+        from app.ai.tasks import _compile_schema
+        schema = _compile_schema([], [])
+        assert all(len(e) > 0 for e in self._enums(schema)), schema
+
+    def test_no_empty_enum_with_categories_but_no_types(self):
+        from app.ai.tasks import _compile_schema
+        schema = _compile_schema([], ["Food"])
+        assert all(len(e) > 0 for e in self._enums(schema))
+        assert "expense_types" not in schema["properties"]
+        assert "categories" in schema["properties"]
+
+    def test_required_never_names_a_missing_property(self):
+        from app.ai.tasks import _compile_schema
+        for types, cats in (([], []), ([], ["Food"]), (["Fast food"], []),
+                            (["Fast food"], ["Food"])):
+            schema = _compile_schema(types, cats)
+            assert set(schema["required"]) <= set(schema["properties"]), (types, cats)
+
+    def test_both_present_when_the_user_has_both(self):
+        from app.ai.tasks import _compile_schema
+        schema = _compile_schema(["Fast food"], ["Food"])
+        assert schema["properties"]["expense_types"]["items"]["enum"] == ["Fast food"]
+        assert schema["properties"]["categories"]["items"]["enum"] == ["Food"]

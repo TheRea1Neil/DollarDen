@@ -47,8 +47,8 @@ class Settings(BaseSettings):
     # ---- ai ----
     ai_provider: Literal["deck", "custom", "none"] = "deck"
     ai_deck_url: str = "http://192.168.86.196:11434"
-    ai_model_vision: str = "qwen2.5vl:7b"
-    ai_model_text: str = "qwen2.5vl:7b"
+    ai_model_vision: str = "gemma4:12b"
+    ai_model_text: str = "gemma4:12b"
     ai_confidence_threshold: float = 0.85
     wol_api_url: str = ""
     wol_api_token: str = ""

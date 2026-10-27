@@ -1815,11 +1815,40 @@ async def run_receipt_scan(
     for item in out["items"]:
         cat = by_name.get(item["category"])
         item["category_id"] = str(cat.id) if cat else None
-        if cat is None and item["category"] != "Unsure":
-            item["needs_review"] = True
-    for row in out["category_split"]:
-        cat = by_name.get(row["category"])
-        row["category_id"] = str(cat.id) if cat else None
+
+    # Anything that did not resolve -- "Unsure", or a name no longer in
+    # the budget -- goes to whichever envelope took most of the receipt,
+    # flagged for review. Same rule as the remainder line.
+    #
+    # Not cosmetic: a line with no category_id is skipped when the
+    # splits are built, so the total stops matching the charge and the
+    # screen refuses to submit. Tax lands in "Unsure" on almost every
+    # receipt, so without this nearly nothing could be filed without
+    # hand-placing a line first.
+    placed = [i for i in out["items"] if i["category_id"]]
+    if placed:
+        weights: dict[str, int] = {}
+        for i in placed:
+            weights[i["category_id"]] = (
+                weights.get(i["category_id"], 0) + abs(i["amount_cents"]))
+        dominant_id = max(weights, key=weights.get)
+        dominant = next(c for c in cats if str(c.id) == dominant_id)
+        for item in out["items"]:
+            if not item["category_id"]:
+                item["category_id"] = dominant_id
+                item["category"] = dominant.name
+                item["needs_review"] = True
+
+    # Rebuild the split from the resolved items rather than carrying the
+    # engine's version, which was keyed on the model's own names.
+    split: dict[str, int] = {}
+    for i in out["items"]:
+        split[i["category"]] = split.get(i["category"], 0) + i["amount_cents"]
+    out["category_split"] = [
+        {"category": name, "amount_cents": cents,
+         "category_id": str(by_name[name].id) if name in by_name else None}
+        for name, cents in sorted(split.items(), key=lambda kv: -abs(kv[1]))
+    ]
     return out
 
 

@@ -63,10 +63,13 @@ class _ScanReceiptScreenState extends ConsumerState<ScanReceiptScreen> {
     try {
       file = await picker.pickImage(
         source: source,
-        // Enough for a till slip; the backend downscales anyway, and a
-        // full 12MP photo is slow to upload over cellular.
-        maxWidth: 2000,
-        imageQuality: 88,
+        // 1200px, not 2000. Resolution made no measurable difference to
+        // accuracy when tested, and the image is re-sent with the WHOLE
+        // conversation on every tool call -- a 39-line receipt took 198
+        // seconds largely because ~850KB of photo was reprocessed
+        // fourteen times. Smaller image, same answer, far less waiting.
+        maxWidth: 1200,
+        imageQuality: 80,
       );
     } on PlatformException catch (e) {
       setState(() => _error = 'Could not open the camera: ${e.message}');

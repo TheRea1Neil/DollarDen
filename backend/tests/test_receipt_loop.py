@@ -8,6 +8,7 @@ from __future__ import annotations
 
 
 from app.ai.provider import ChatResult
+from tests.conftest import requires_db
 from app.ai.receipt_loop import (
     MAX_TOOL_CALLS,
     Scratchpad,
@@ -147,6 +148,25 @@ class TestLoop:
         assert r.tool_calls < MAX_TOOL_CALLS, "the repeat guard should stop it early"
         assert sum(l.cents for l in r.lines) == 2225
 
+    async def test_fixes_that_stop_helping_end_the_loop(self):
+        """Each wasted call re-sends the photo; two in a row is enough."""
+        model = StubModel([
+            save([{"description": "a", "amount": 10.00, "category": "Health"}]),
+            fix(0, 9.00), fix(0, 8.00), fix(0, 7.00), fix(0, 6.00),
+            fix(0, 5.00), fix(0, 4.00),
+        ])
+        r = await run_loop(model, image_b64="x", target_cents=2225, categories=CATS)
+        assert r.tool_calls <= 4, f"should bail early, used {r.tool_calls}"
+        assert sum(l.cents for l in r.lines) == 2225
+
+    async def test_a_fix_that_helps_does_not_count_against_it(self):
+        model = StubModel([
+            save([{"description": "a", "amount": 10.00, "category": "Health"}]),
+            fix(0, 15.00), fix(0, 22.25), SUBMIT,
+        ])
+        r = await run_loop(model, image_b64="x", target_cents=2225, categories=CATS)
+        assert r.closed is True and r.submitted is True
+
     async def test_a_runaway_model_is_capped(self):
         model = StubModel([
             save([{"description": f"x{n}", "amount": 1.00, "category": "Health"}])
@@ -191,3 +211,79 @@ class TestLoop:
         r = await run_loop(model, image_b64="x", target_cents=2225, categories=CATS)
         assert any(l.cents < 0 for l in r.lines)
         assert r.closed is True
+
+
+@requires_db
+class TestUnresolvedCategoriesArePlaced:
+    """A line the model could not categorise must not block filing.
+
+    Tax lands in "Unsure" on nearly every receipt. "Unsure" is not an
+    envelope, so it has no id, so the split no longer sums to the charge
+    and the screen refuses to submit -- which would have made almost
+    every real receipt unfileable without hand-placing a line first.
+    """
+
+    def _run(self, client, items):
+        import asyncio
+        import uuid as _u
+
+        from sqlalchemy import select
+
+        from app.ai import tasks
+        from app.ai.provider import ChatResult
+        from app.db.models import User
+        from app.db.session import SessionLocal
+
+        r = client.post("/api/auth/register", json={
+            "email": f"rs-{_u.uuid4().hex[:10]}@x.com",
+            "password": "receipt-scan-passphrase-99"})
+        h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+        for name in ("Food & Groceries", "Personal Discretionary"):
+            client.post("/api/budget/categories",
+                        json={"name": name, "kind": "spending"}, headers=h)
+
+        class Stub:
+            def __init__(self):
+                self.n = 0
+
+            async def chat(self, prompt, **kw):
+                self.n += 1
+                if self.n == 1:
+                    return ChatResult(content="", model="stub", tool_calls=[
+                        {"name": "save_items", "arguments": {"items": items}}])
+                return ChatResult(content="", model="stub", tool_calls=[
+                    {"name": "submit", "arguments": {}}])
+
+        with SessionLocal() as db:
+            uid = db.scalars(select(User.id).order_by(User.created_at.desc())).first()
+            return asyncio.run(tasks.run_receipt_scan(
+                db, db.get(User, uid), Stub(),
+                {"image_b64": "x", "expected_cents": 5722}))
+
+    ITEMS = [
+        {"description": "GV MILK GAL", "amount": 19.98, "category": "Food & Groceries"},
+        {"description": "ATH WORK SHOE", "amount": 34.40,
+         "category": "Personal Discretionary"},
+        {"description": "TAX 1", "amount": 2.84, "category": "Unsure"},
+    ]
+
+    def test_every_line_ends_up_with_a_real_category(self, client):
+        out = self._run(client, self.ITEMS)
+        assert all(i["category_id"] for i in out["items"]), out["items"]
+
+    def test_the_unresolved_line_is_flagged(self, client):
+        out = self._run(client, self.ITEMS)
+        tax = next(i for i in out["items"] if i["description"] == "TAX 1")
+        assert tax["needs_review"] is True
+        assert tax["category"] == "Personal Discretionary", "the dominant envelope"
+
+    def test_the_splits_still_sum_to_the_charge(self, client):
+        """The property the submit button depends on."""
+        out = self._run(client, self.ITEMS)
+        assert sum(i["amount_cents"] for i in out["items"]) == 5722
+        assert sum(s["amount_cents"] for s in out["category_split"]) == 5722
+
+    def test_the_split_carries_ids_the_client_can_file_against(self, client):
+        out = self._run(client, self.ITEMS)
+        assert all(s["category_id"] for s in out["category_split"])
+        assert "Unsure" not in [s["category"] for s in out["category_split"]]

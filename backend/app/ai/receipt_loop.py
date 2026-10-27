@@ -43,8 +43,16 @@ log = logging.getLogger("nnf.ai.receipt_loop")
 # Hard ceiling on tool calls. The prompt also asks the model to stop,
 # but a model that cannot converge must be stopped rather than trusted
 # to stop itself.
-MAX_TOOL_CALLS = 14
-MAX_FIX_ATTEMPTS = 6
+#
+# Lowered from 14 after a real 39-line grocery receipt spent all 14
+# calls and 198 seconds, and still finished with a -$4.72 remainder.
+# Every call re-sends the whole conversation INCLUDING the photo, so
+# the cost is roughly linear in calls -- and the remainder line exists
+# precisely so the model does not have to grind. Six attempts reach the
+# same answer far sooner; a seventh has never been what rescued a
+# receipt.
+MAX_TOOL_CALLS = 7
+MAX_FIX_ATTEMPTS = 4
 
 UNACCOUNTED = "Unaccounted (receipt did not add up)"
 
@@ -310,6 +318,7 @@ async def run_loop(
     # and $19.98 for eight calls, then invented $15.78 to force a match.
     seen_fixes: set[tuple[Any, int | None]] = set()
     stop = False
+    fruitless = 0
 
     while calls < MAX_TOOL_CALLS and not stop:
         res = await provider.chat(
@@ -354,8 +363,27 @@ async def run_loop(
                     stop = True
                 else:
                     seen_fixes.add(key)
+                    before = abs(pad.difference_cents)
                     payload = pad.fix(args.get("index"), args.get("amount"),
                                       args.get("description"), args.get("category"))
+                    after = abs(pad.difference_cents)
+                    if after >= before and after != 0:
+                        # That edit did not bring the total closer. One
+                        # unhelpful fix is noise; two in a row means it
+                        # is guessing, and guessing costs a full image
+                        # round trip each time.
+                        fruitless += 1
+                        if fruitless >= 2:
+                            payload = {
+                                **payload,
+                                "note": "your last two changes did not get "
+                                        "closer. Stop adjusting and call "
+                                        "submit; the remaining difference is "
+                                        "recorded separately.",
+                            }
+                            stop = True
+                    else:
+                        fruitless = 0
             elif name == "submit":
                 payload = pad.summary()
                 if payload["matches"]:

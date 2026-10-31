@@ -189,6 +189,49 @@ def create_job(
     return _job_out(job)
 
 
+@router.post("/jobs/{job_id}/retry", response_model=JobOut)
+def retry_job(
+    job_id: str,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> JobOut:
+    """Run a deferred job now, whatever the GPU is doing.
+
+    The gate exists to protect a game's frame rate, not to overrule the
+    person who owns the machine. If they would rather have the answer
+    than the frames, that is their call to make -- waiting an hour for
+    a receipt is not a reasonable alternative.
+
+    Implemented by exhausting the job's patience rather than adding a
+    separate force flag: the worker already runs a job regardless once
+    `attempts` reaches the limit, so this reuses that one path instead
+    of creating a second way to skip the gate.
+    """
+    try:
+        pk = uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found") from None
+    job = db.scalars(
+        select(AIJob).where(AIJob.id == pk, AIJob.user_id == user.id)
+    ).first()
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
+    if job.status in ("running", "waking"):
+        raise HTTPException(status.HTTP_409_CONFLICT, "That job is already running.")
+    if job.status == "done":
+        raise HTTPException(status.HTTP_409_CONFLICT, "That job already finished.")
+
+    settings = get_settings()
+    job.status = "queued"
+    job.not_before = None
+    job.defer_reason = None
+    job.error = None
+    job.attempts = settings.ai_max_defer_attempts
+    db.commit()
+    db.refresh(job)
+    return _job_out(job)
+
+
 @router.get("/jobs/{job_id}", response_model=JobOut)
 def get_job(
     job_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)

@@ -143,3 +143,52 @@ class TestGate:
         v = await self._verdict(gpu.GpuState(True, busy_percent=99, vram_free_mb=500))
         assert "graphics card" in v.reason.lower()
         assert "trying again" in v.reason.lower()
+
+
+class TestDoesNotBlockOnItsOwnModel:
+    """The gate must not defer because of the memory IT is using.
+
+    gemma4 holds ~9 GB of a 16 GB card, leaving ~7 GB free -- under the
+    10.5 GB the gate demands. So the first job loads the model and
+    every job for the next five minutes is deferred by it. Observed in
+    the wild as:
+
+        graphics card is in use (7,221 MB free, needs 10,500 MB)
+
+    with nothing running but ollama.
+    """
+
+    async def _verdict(self, *, loaded, state):
+        import app.ai.gpu as mod
+
+        async def fake_probe(settings, timeout=5.0):
+            return state
+
+        async def fake_loaded(settings, timeout=5.0):
+            return loaded
+
+        real_p, real_l = mod.probe, mod.model_already_loaded
+        mod.probe, mod.model_already_loaded = fake_probe, fake_loaded
+        try:
+            noon = datetime(2026, 10, 31, 12, 0, tzinfo=DENVER)
+            return await mod.can_run_now(_settings(), now=noon)
+        finally:
+            mod.probe, mod.model_already_loaded = real_p, real_l
+
+    async def test_a_loaded_model_runs_despite_low_free_vram(self):
+        v = await self._verdict(
+            loaded=True,
+            state=gpu.GpuState(True, busy_percent=5, vram_free_mb=7_221))
+        assert v.ok is True, "its own footprint must not block it"
+
+    async def test_a_game_still_defers_when_nothing_is_loaded(self):
+        v = await self._verdict(
+            loaded=False,
+            state=gpu.GpuState(True, busy_percent=90, vram_free_mb=4_000))
+        assert v.ok is False and v.code == "gpu_busy"
+
+    async def test_an_idle_card_with_nothing_loaded_runs(self):
+        v = await self._verdict(
+            loaded=False,
+            state=gpu.GpuState(True, busy_percent=2, vram_free_mb=15_900))
+        assert v.ok is True

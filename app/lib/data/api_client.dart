@@ -6,6 +6,22 @@ import '../domain/insights.dart';
 import '../domain/models.dart';
 import 'token_store.dart';
 
+/// The job is parked waiting for the GPU, or for morning.
+///
+/// Deliberately its own type rather than an ApiException: nothing has
+/// gone wrong, the work is queued, and the screen should say so and
+/// offer to run it anyway rather than showing an error.
+class JobDeferred implements Exception {
+  final AiJob job;
+  JobDeferred(this.job);
+
+  String get reason =>
+      job.deferReason ?? 'Waiting for the computer to be free.';
+
+  @override
+  String toString() => reason;
+}
+
 class ApiException implements Exception {
   final int? statusCode;
   final String message;
@@ -441,10 +457,23 @@ class ApiClient {
     while (DateTime.now().isBefore(deadline)) {
       final job = await getJob(id);
       onProgress?.call(job);
-      if (job.finished) return job;
+      // Deferred stops the poll. The job is waiting for the GPU or for
+      // morning and could be an hour away -- spinning until the
+      // timeout would show the user nothing and tell them less.
+      if (job.settled) return job;
       await Future<void>.delayed(interval);
     }
     throw ApiException('The AI server did not respond in time.');
+  }
+
+  /// Run a deferred job now, whatever the GPU is doing.
+  ///
+  /// The gate protects a game's frame rate; it does not get to overrule
+  /// the person who owns the machine.
+  Future<AiJob> retryJob(String id) async {
+    final r = await _withRetry((o) => _dio.post('/ai/jobs/$id/retry', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return AiJob.fromJson((r.data as Map).cast<String, dynamic>());
   }
 
   Future<Map<String, dynamic>> aiStatus() async {
@@ -1027,6 +1056,10 @@ class ApiClient {
     });
     final done = await awaitJob(job.id, onProgress: onProgress,
         timeout: const Duration(minutes: 8));
+    if (done.waitingForGpu) {
+      // Not a failure. The caller shows why and offers to override.
+      throw JobDeferred(done);
+    }
     if (done.status != 'done' || done.result == null) {
       throw ApiException(done.error ?? 'The assistant could not read that receipt.');
     }

@@ -54,6 +54,10 @@ class _ScanReceiptScreenState extends ConsumerState<ScanReceiptScreen> {
   String _stage = '';
   String? _error;
 
+  /// Set when the job is parked waiting for the GPU. Not an error —
+  /// the work is queued, and the user is offered the override.
+  JobDeferred? _deferred;
+
   int get _sum => _lines.fold(0, (a, l) => a + l.amountCents);
   bool get _balances => _sum == widget.amountCents;
 
@@ -99,6 +103,8 @@ class _ScanReceiptScreenState extends ConsumerState<ScanReceiptScreen> {
         _scan = scan;
         _lines = List.of(scan.items);
       });
+    } on JobDeferred catch (d) {
+      if (mounted) setState(() => _deferred = d);
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } finally {
@@ -140,6 +146,48 @@ class _ScanReceiptScreenState extends ConsumerState<ScanReceiptScreen> {
         _scan = scan;
         _lines = List.of(scan.items);
       });
+    } on JobDeferred catch (d) {
+      if (mounted) setState(() => _deferred = d);
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Run the parked job now, whatever the GPU is doing.
+  Future<void> _runAnyway() async {
+    final parked = _deferred;
+    if (parked == null) return;
+    setState(() {
+      _busy = true;
+      _deferred = null;
+      _stage = 'Starting it now…';
+    });
+    try {
+      await ref.read(apiProvider).retryJob(parked.job.id);
+      final done = await ref.read(apiProvider).awaitJob(
+            parked.job.id,
+            timeout: const Duration(minutes: 8),
+            onProgress: (AiJob j) {
+              if (!mounted) return;
+              setState(() => _stage = j.status == 'running'
+                  ? 'Reading the receipt…'
+                  : 'Waking the assistant…');
+            },
+          );
+      if (!mounted) return;
+      if (done.waitingForGpu) {
+        setState(() => _deferred = JobDeferred(done));
+      } else if (done.ok && done.result != null) {
+        final scan = ReceiptScan.fromJson(done.result!);
+        setState(() {
+          _scan = scan;
+          _lines = List.of(scan.items);
+        });
+      } else {
+        setState(() => _error = done.error ?? 'That did not work.');
+      }
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } finally {
@@ -250,6 +298,11 @@ class _ScanReceiptScreenState extends ConsumerState<ScanReceiptScreen> {
             ),
       body: _busy
           ? _Busy(stage: _stage)
+          : _deferred != null
+              ? _Waiting(
+                  deferred: _deferred!,
+                  onRunAnyway: _runAnyway,
+                )
           : scan == null
               ? _Start(
                   title: widget.title,
@@ -715,6 +768,79 @@ class _PasteSheetState extends State<_PasteSheet> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+
+/// The job is parked waiting for the GPU, or for morning.
+///
+/// Says plainly what is happening and when it would start on its own,
+/// then offers to start it immediately. The gate exists to protect a
+/// game's frame rate; it does not get to overrule the person who owns
+/// the machine, and waiting an hour for a receipt is not a reasonable
+/// alternative to a stuttered frame.
+class _Waiting extends StatelessWidget {
+  final JobDeferred deferred;
+  final VoidCallback onRunAnyway;
+
+  const _Waiting({required this.deferred, required this.onRunAnyway});
+
+  /// "15:36" from the server's ISO timestamp, in local time.
+  String? get _when {
+    final raw = deferred.job.retryAt;
+    if (raw == null) return null;
+    final t = DateTime.tryParse(raw)?.toLocal();
+    if (t == null) return null;
+    final hh = t.hour.toString().padLeft(2, '0');
+    final mm = t.minute.toString().padLeft(2, '0');
+    return '$hh:$mm';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final when = _when;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.hourglass_empty,
+                size: 40, color: theme.colorScheme.outline),
+            const SizedBox(height: 16),
+            Text('Waiting for the computer',
+                style: theme.textTheme.titleMedium),
+            const SizedBox(height: 10),
+            Text(
+              deferred.reason,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium,
+            ),
+            if (when != null) ...[
+              const SizedBox(height: 8),
+              Text('It will start on its own around $when.',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodySmall),
+            ],
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: onRunAnyway,
+              icon: const Icon(Icons.play_arrow),
+              label: const Text('Run it now anyway'),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'This uses the graphics card straight away, which may '
+              'stutter a game that is running.',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.outline),
+            ),
+          ],
+        ),
       ),
     );
   }

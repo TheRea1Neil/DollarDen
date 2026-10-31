@@ -307,7 +307,16 @@ class CashAccount {
 class AiJob {
   final String id;
   final String kind;
-  final String status; // queued | waking | running | done | failed
+  final String status; // queued | waking | running | deferred | done | failed
+
+  /// Why this job is waiting, in words meant for the user — the GPU is
+  /// busy, or it is the middle of the night. Null unless deferred.
+  final String? deferReason;
+
+  /// When it would next be attempted on its own. The user does not have
+  /// to wait for it: see [ApiClient.retryJob].
+  final String? retryAt;
+  final int attempts;
   final Map<String, dynamic>? result;
   final String? error;
 
@@ -317,6 +326,9 @@ class AiJob {
     required this.status,
     this.result,
     this.error,
+    this.deferReason,
+    this.retryAt,
+    this.attempts = 0,
   });
 
   factory AiJob.fromJson(Map<String, dynamic> j) => AiJob(
@@ -325,10 +337,17 @@ class AiJob {
         status: j['status'] as String,
         result: (j['result'] as Map?)?.cast<String, dynamic>(),
         error: j['error'] as String?,
+        deferReason: j['defer_reason'] as String?,
+        retryAt: j['retry_at'] as String?,
+        attempts: j['attempts'] as int? ?? 0,
       );
 
+  /// Deferred is NOT finished, but polling must stop: it could be an
+  /// hour away. The caller surfaces the reason and offers to override.
   bool get finished => status == 'done' || status == 'failed';
   bool get ok => status == 'done';
+  bool get waitingForGpu => status == 'deferred';
+  bool get settled => finished || waitingForGpu;
 
   /// What to tell the user while they wait. "Waking" is worth saying out
   /// loud: a ten second pause looks like a hang otherwise.

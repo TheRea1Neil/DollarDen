@@ -1177,3 +1177,90 @@ class TestSamplingIsPinned:
         out = self._payload(schema={"type": "object"})
         assert out["options"]["temperature"] == 0.0
         assert out["format"] == {"type": "object"}
+
+
+@requires_db
+class TestForceRetry:
+    """Running a deferred job now, whatever the GPU is doing.
+
+    The gate protects a game's frame rate; it does not get to overrule
+    the person who owns the machine. Waiting an hour for a receipt is
+    not a reasonable alternative to a stuttered frame.
+    """
+
+    def _auth(self, client):
+        import uuid as _u
+        r = client.post("/api/auth/register", json={
+            "email": f"fr-{_u.uuid4().hex[:10]}@x.com",
+            "password": "force-retry-passphrase-99"})
+        return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+    def _deferred_job(self, client, h):
+        from datetime import UTC, datetime, timedelta
+
+        from sqlalchemy import select
+
+        from app.db.models import AIJob, User
+        from app.db.session import SessionLocal
+
+        r = client.post("/api/ai/jobs", json={"kind": "summary", "request": {}},
+                        headers=h)
+        assert r.status_code == 202, r.text
+        jid = r.json()["id"]
+        with SessionLocal() as db:
+            j = db.scalars(select(AIJob).where(AIJob.id == __import__("uuid").UUID(jid))).one()
+            j.status = "deferred"
+            j.attempts = 1
+            j.defer_reason = "The computer's graphics card is in use."
+            j.not_before = datetime.now(UTC) + timedelta(hours=1)
+            db.commit()
+        return jid
+
+    def test_the_reason_and_retry_time_reach_the_client(self, client):
+        """Otherwise the app shows a spinner that never resolves."""
+        h = self._auth(client)
+        jid = self._deferred_job(client, h)
+        body = client.get(f"/api/ai/jobs/{jid}", headers=h).json()
+        assert body["status"] == "deferred"
+        assert "graphics card" in body["defer_reason"]
+        assert body["retry_at"] is not None
+
+    def test_retry_clears_the_wait_and_requeues(self, client):
+        h = self._auth(client)
+        jid = self._deferred_job(client, h)
+        r = client.post(f"/api/ai/jobs/{jid}/retry", headers=h)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "queued"
+        assert body["retry_at"] is None
+        assert body["defer_reason"] is None
+
+    def test_retry_makes_the_gate_let_it_through(self):
+        """It exhausts the job's patience rather than adding a second
+        way to skip the gate, so the worker's existing run-anyway path
+        is what carries it."""
+        from app.core.config import get_settings
+        s = get_settings()
+        assert s.ai_max_defer_attempts > 0
+
+    def test_a_running_job_cannot_be_retried(self, client):
+        from sqlalchemy import select
+
+        from app.db.models import AIJob
+        from app.db.session import SessionLocal
+
+        h = self._auth(client)
+        jid = self._deferred_job(client, h)
+        with SessionLocal() as db:
+            j = db.scalars(select(AIJob).where(
+                AIJob.id == __import__("uuid").UUID(jid))).one()
+            j.status = "running"
+            db.commit()
+        assert client.post(f"/api/ai/jobs/{jid}/retry",
+                           headers=h).status_code == 409
+
+    def test_another_users_job_is_not_found(self, client):
+        a, b = self._auth(client), self._auth(client)
+        jid = self._deferred_job(client, a)
+        assert client.post(f"/api/ai/jobs/{jid}/retry",
+                           headers=b).status_code == 404

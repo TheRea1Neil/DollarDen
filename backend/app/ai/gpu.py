@@ -124,6 +124,35 @@ def in_quiet_hours(settings: Settings, now: datetime | None = None) -> bool:
     return local >= start or local < end
 
 
+async def model_already_loaded(settings: Settings, timeout: float = 5.0) -> bool:
+    """Is the model we want already resident on the card?
+
+    If it is, the VRAM it occupies is not an obstacle -- it IS the
+    thing we were going to load. Checking free VRAM in that state makes
+    the gate block on its own footprint: gemma4 holds ~9 GB of a 16 GB
+    card, leaving ~7 GB free, which is under the 10.5 GB the gate
+    demands. The first job loads the model, and every job for the next
+    five minutes is then deferred by it.
+
+    Observed exactly that: "graphics card is in use (7,221 MB free,
+    needs 10,500 MB)" with nothing running but ollama.
+
+    An already-loaded model is the BEST case, not a blocked one.
+    """
+    base = (settings.ai_deck_url or "").rstrip("/")
+    if not base:
+        return False
+    want = (settings.ai_model_text or "").strip()
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as c:
+            r = await c.get(f"{base}/api/ps")
+            r.raise_for_status()
+            loaded = {m.get("name") for m in (r.json().get("models") or [])}
+    except Exception:  # noqa: BLE001
+        return False
+    return want in loaded
+
+
 async def can_run_now(
     settings: Settings, *, needs_vram_mb: int | None = None,
     now: datetime | None = None,
@@ -135,6 +164,11 @@ async def can_run_now(
             reason=(f"Waiting until {settings.ai_quiet_end_hour:02d}:00 — nothing "
                     f"runs overnight so the computer stays asleep."),
         )
+
+    # Already loaded means already paid for. Checking headroom here
+    # would measure our own footprint and defer because of it.
+    if await model_already_loaded(settings):
+        return Verdict(ok=True)
 
     state = await probe(settings)
     if not state.reachable:

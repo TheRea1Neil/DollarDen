@@ -177,12 +177,16 @@ class TestAskCompiles:
         _seed(client, h)
 
         class Stub:
+            """Routing call, then compile, then phrasing."""
+
             def __init__(self):
                 self.calls = 0
 
             async def chat(self, prompt, **kw):
                 self.calls += 1
                 if self.calls == 1:
+                    return ChatResult(content='{"kind":"figures"}', model="stub")
+                if self.calls == 2:
                     return ChatResult(content=(
                         '{"metric":"spend","period":"this_month","start":"","end":"",'
                         '"group_by":"none","expense_types":["Fast food"],'
@@ -218,7 +222,13 @@ class TestAskCompiles:
         _seed(client, h)
 
         class Stub:
+            def __init__(self):
+                self.calls = 0
+
             async def chat(self, prompt, **kw):
+                self.calls += 1
+                if self.calls == 1:
+                    return ChatResult(content='{"kind":"figures"}', model="stub")
                 return ChatResult(content=(
                     '{"metric":"spend","period":"this_month","start":"","end":"",'
                     '"group_by":"none","expense_types":["Artisanal Cheese"],'
@@ -251,6 +261,8 @@ class TestAskCompiles:
             async def chat(self, prompt, **kw):
                 self.calls += 1
                 if self.calls == 1:
+                    return ChatResult(content='{"kind":"figures"}', model="stub")
+                if self.calls == 2:
                     return ChatResult(content=(
                         '{"metric":"spend","period":"this_month","start":"","end":"",'
                         '"group_by":"none","expense_types":[],"categories":[],'
@@ -366,3 +378,161 @@ class TestCompileSchemaIsValid:
         schema = _compile_schema(["Fast food"], ["Food"])
         assert schema["properties"]["expense_types"]["items"]["enum"] == ["Fast food"]
         assert schema["properties"]["categories"]["items"]["enum"] == ["Food"]
+
+
+@requires_db
+class TestAskRoutesAdviceSeparately:
+    """A question about the budget must not go down the SQL path.
+
+    "What categories am I missing" has no figure to look up. Routed to
+    the data path it returns a filter and no advice; the advice path
+    gets the shape of the budget instead and never reports a total.
+    """
+
+    def _ask(self, client, route_kind, question):
+        import asyncio
+
+        from sqlalchemy import select
+
+        from app.ai import tasks
+        from app.ai.provider import ChatResult
+        from app.db.models import User
+
+        h = _auth(client)
+        _seed(client, h)
+
+        class Stub:
+            def __init__(self):
+                self.calls = 0
+                self.prompts = []
+
+            async def chat(self, prompt, **kw):
+                self.calls += 1
+                self.prompts.append(prompt)
+                if self.calls == 1:
+                    return ChatResult(content=f'{{"kind":"{route_kind}"}}', model="stub")
+                if route_kind == "advice":
+                    return ChatResult(content="Add a Health envelope.", model="stub")
+                if self.calls == 2:
+                    return ChatResult(content=(
+                        '{"metric":"spend","period":"this_month","start":"","end":"",'
+                        '"group_by":"none","expense_types":[],"categories":[],'
+                        '"merchant":""}'), model="stub")
+                return ChatResult(content="You spent some money.", model="stub")
+
+        stub = Stub()
+        with SessionLocal() as db:
+            uid = db.scalars(select(User.id).order_by(User.created_at.desc())).first()
+            out = asyncio.run(tasks.run_ask(
+                db, db.get(User, uid), stub,
+                {"question": question, "today": "2026-10-24"}))
+        return out, stub
+
+    def test_an_advice_question_gets_the_budget_not_a_query(self, client):
+        out, stub = self._ask(client, "advice",
+                              "what categories am I missing?")
+        assert out["kind"] == "advice"
+        assert out["query"] is None, "no query ran, so none should be shown"
+        assert out["result"] is None
+        assert "Health" in out["answer"]
+        # The advice prompt must actually contain the budget.
+        assert "HOW THIS BUDGET WORKS" in stub.prompts[1]
+
+    def test_a_figures_question_still_computes_in_sql(self, client):
+        out, _ = self._ask(client, "figures",
+                           "how much did I spend this month?")
+        assert out["kind"] == "figures"
+        assert out["result"]["total_cents"] == 16_250
+        assert out["query"] is not None
+
+    def test_routing_failure_falls_back_to_figures(self, client):
+        """The safer guess: that path shows its working and cannot
+        invent a number."""
+        import asyncio
+
+        from sqlalchemy import select
+
+        from app.ai import tasks
+        from app.ai.provider import ChatResult
+        from app.db.models import User
+
+        h = _auth(client)
+        _seed(client, h)
+
+        class Stub:
+            def __init__(self):
+                self.calls = 0
+
+            async def chat(self, prompt, **kw):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("router exploded")
+                if self.calls == 2:
+                    return ChatResult(content=(
+                        '{"metric":"spend","period":"this_month","start":"","end":"",'
+                        '"group_by":"none","expense_types":[],"categories":[],'
+                        '"merchant":""}'), model="stub")
+                return ChatResult(content="ok", model="stub")
+
+        with SessionLocal() as db:
+            uid = db.scalars(select(User.id).order_by(User.created_at.desc())).first()
+            out = asyncio.run(tasks.run_ask(
+                db, db.get(User, uid), Stub(),
+                {"question": "anything", "today": "2026-10-24"}))
+        assert out["kind"] == "figures"
+
+
+@requires_db
+class TestEmptyMerchantFilterIsReported:
+    """A zero from a filter that matched nothing must not look real.
+
+    Observed live: "how much did I spend on groceries" compiled to
+    merchant="groceries", matched no shop, and answered a confident
+    $0.00 while Food & Groceries held $92.25 of spending. Categories
+    and expense types are validated against a list; a merchant is free
+    text, so the only check available is whether it found anything.
+    """
+
+    def _ask(self, client, merchant):
+        import asyncio
+
+        from sqlalchemy import select
+
+        from app.ai import tasks
+        from app.ai.provider import ChatResult
+        from app.db.models import User
+
+        h = _auth(client)
+        _seed(client, h)
+
+        class Stub:
+            def __init__(self):
+                self.calls = 0
+
+            async def chat(self, prompt, **kw):
+                self.calls += 1
+                if self.calls == 1:
+                    return ChatResult(content='{"kind":"figures"}', model="stub")
+                if self.calls == 2:
+                    return ChatResult(content=(
+                        '{"metric":"spend","period":"this_month","start":"","end":"",'
+                        '"group_by":"none","expense_types":[],"categories":[],'
+                        f'"merchant":"{merchant}"}}'), model="stub")
+                return ChatResult(content="ok", model="stub")
+
+        with SessionLocal() as db:
+            uid = db.scalars(select(User.id).order_by(User.created_at.desc())).first()
+            return asyncio.run(tasks.run_ask(
+                db, db.get(User, uid), Stub(),
+                {"question": "q", "today": "2026-10-24"}))
+
+    def test_a_merchant_that_matches_nothing_is_flagged(self, client):
+        out = self._ask(client, "groceries")
+        assert out["result"]["total_cents"] == 0
+        assert out["unresolved_filters"] == ["groceries"], \
+            "a zero from a bad filter must be distinguishable from a real zero"
+
+    def test_a_merchant_that_matches_is_not_flagged(self, client):
+        out = self._ask(client, "Chick-fil-A")
+        assert out["result"]["total_cents"] > 0
+        assert out["unresolved_filters"] == []

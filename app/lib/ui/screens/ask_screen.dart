@@ -196,15 +196,22 @@ class _AnswerCard extends StatelessWidget {
                   fontStyle: FontStyle.italic,
                 )),
             const SizedBox(height: 10),
-            if (answer.metric != 'count')
+            if (answer.isAdvice)
+              Text(answer.answer, style: theme.textTheme.bodyMedium)
+            else if (answer.metric != 'count')
               Text(Money.format(r.totalCents),
                   style: theme.textTheme.headlineMedium)
             else
               Text('${r.count}', style: theme.textTheme.headlineMedium),
-            const SizedBox(height: 8),
-            Text(answer.answer, style: theme.textTheme.bodyMedium),
+            if (!answer.isAdvice) ...[
+              const SizedBox(height: 8),
+              Text(answer.answer, style: theme.textTheme.bodyMedium),
+            ],
 
-            // What was actually asked of the data.
+            // What was actually asked of the data. Only meaningful for
+            // a figure -- an advice answer ran no query, and showing an
+            // empty filter would imply one.
+            if (!answer.isAdvice) ...[
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -228,23 +235,27 @@ class _AnswerCard extends StatelessWidget {
               ),
             ),
 
-            if (answer.periodNotUnderstood)
+            ],
+            if (!answer.isAdvice && answer.periodNotUnderstood)
               _Note(
                 icon: Icons.schedule,
                 text: 'The dates in that question were not clear, so this '
                     'covers ${answer.period.label}. Try naming a month.',
               ),
-            if (answer.unresolvedFilters.isNotEmpty)
+            if (!answer.isAdvice && answer.unresolvedFilters.isNotEmpty)
               _Note(
                 icon: Icons.help_outline,
                 // Without this, a zero caused by a filter that matched
                 // nothing looks exactly like a genuine zero.
-                text: 'No kind of spending called '
-                    '${answer.unresolvedFilters.join(', ')} exists yet, so it '
-                    'was not included.',
+                text: 'Nothing matched '
+                    '${answer.unresolvedFilters.join(', ')}. That is why the '
+                    'figure is what it is — try an envelope name, or a shop '
+                    'exactly as it appears on your statement.',
               ),
 
-            if (r.previousTotalCents != null && answer.metric != 'count') ...[
+            if (!answer.isAdvice &&
+                r.previousTotalCents != null &&
+                answer.metric != 'count') ...[
               const SizedBox(height: 8),
               Text(
                 'Previous period (${r.previousPeriod?.label ?? 'before'}): '
@@ -254,7 +265,7 @@ class _AnswerCard extends StatelessWidget {
               ),
             ],
 
-            if (r.groups.isNotEmpty) ...[
+            if (!answer.isAdvice && r.groups.isNotEmpty) ...[
               const Divider(height: 24),
               for (final g in r.groups)
                 Padding(

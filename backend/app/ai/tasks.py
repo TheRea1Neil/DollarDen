@@ -2143,6 +2143,64 @@ listed, it is not known, and saying so is correct. No preamble, no
 advice unless it follows directly from the numbers."""
 
 
+# Two kinds of question reach the Ask screen, and they need opposite
+# handling.
+#
+#   "how much did I spend on fast food"  -> a FIGURE. Must be computed
+#       in SQL; a model asked to total forty transactions invents a
+#       plausible wrong number (ADR 0009).
+#   "what categories am I missing"       -> ADVICE. There is no figure
+#       to look up; the model needs the shape of the budget instead.
+#
+# Sending a data question down the advice path gets an invented total.
+# Sending an advice question down the data path gets a filter and no
+# answer. So the first step is deciding which it is -- a small, closed
+# choice, which is the kind of thing the model is reliable at.
+ROUTE_PROMPT = """Which kind of question is this?
+
+  "figures"  — it asks HOW MUCH, how many, or when. It can be answered
+               by adding up their transactions. Examples: how much did
+               I spend on groceries, what did subscriptions cost, am I
+               spending more than last month.
+
+  "advice"   — it asks about the budget itself: whether the envelopes
+               are right, what is missing, whether an amount is
+               sensible, how something works. No total would answer it.
+
+The question:
+  {question}
+
+Return JSON only."""
+
+_ROUTE_SCHEMA = {
+    "type": "object",
+    "properties": {"kind": {"type": "string", "enum": ["figures", "advice"]}},
+    "required": ["kind"],
+}
+
+ADVICE_PROMPT = """Someone is asking about their own budget. Answer them.
+
+{context}
+
+Their goals:
+{goals}
+
+Their question:
+  {question}
+
+Answer in under 200 words, in plain language, using their real envelope
+names and figures from above. Be concrete and specific to THIS budget —
+a general observation about budgeting is worth nothing to them.
+
+Every amount you state must appear above. Do not calculate totals,
+averages or percentages that are not already there; if a figure is not
+shown, say you cannot see it rather than estimating.
+
+If they are asking what is missing, look at what their envelopes
+already cover and name the gaps you can actually justify. Do not pad
+the list — two well-argued suggestions beat six generic ones."""
+
+
 async def run_ask(
     db: Session, user: User, provider: Any, request: dict[str, Any]
 ) -> dict[str, Any]:
@@ -2158,6 +2216,39 @@ async def run_ask(
         raise ValueError("ask requires a question")
 
     today = _date.fromisoformat(request["today"]) if request.get("today") else _date.today()
+
+    # Decide which kind of question this is before doing anything else.
+    route = "figures"
+    try:
+        r = await provider.chat(ROUTE_PROMPT.format(question=question),
+                                schema=_ROUTE_SCHEMA)
+        route = str(_parse_json(r.content).get("kind") or "figures")
+    except Exception as exc:  # noqa: BLE001
+        # Default to figures: that path shows its working and cannot
+        # invent a number, so it is the safer thing to guess.
+        log.warning("question routing failed, treating as figures: %s", exc)
+
+    if route == "advice":
+        from app.ai import budget_context
+
+        res = await provider.chat(ADVICE_PROMPT.format(
+            context=budget_context.build(db, user),
+            goals=_goals(db, user) or "  (none written yet)",
+            question=question,
+        ))
+        return {
+            "question": question,
+            "answer": res.content.strip(),
+            "kind": "advice",
+            # No query ran, so there is nothing to show as "read as" --
+            # the UI keys off this to hide that line rather than
+            # showing an empty filter.
+            "query": None,
+            "result": None,
+            "unresolved_filters": [],
+            "period_not_understood": False,
+            "model": res.model,
+        }
 
     types = taxonomy.active(db, user.id)
     cats = [c for c in _categories(db, user)]
@@ -2215,6 +2306,18 @@ async def run_ask(
     )
     result = Q.run(db, user.id, q)
 
+    # A merchant filter is free text -- the model can write anything,
+    # and anything that matches no shop returns a confident $0.00 that
+    # looks exactly like a real one. Observed: "how much did I spend on
+    # groceries" compiled to merchant="groceries" and answered $0.00
+    # while Food & Groceries held $92.25 of spending.
+    #
+    # Unlike a category or an expense type there is no list to validate
+    # against, so the check is the result itself: zero rows from a
+    # named shop means the name found nothing.
+    if q.merchant_contains and result.count == 0:
+        unresolved.append(q.merchant_contains)
+
     # --- let the model put the computed figures into words -------------
     answer = _fallback_sentence(result)
     try:
@@ -2232,6 +2335,7 @@ async def run_ask(
     return {
         "question": question,
         "answer": answer,
+        "kind": "figures",
         # Returned so the UI can show WHAT was actually asked of the
         # data. A question the model read differently than the user
         # meant is invisible otherwise -- the wrong answer looks the
@@ -2280,7 +2384,7 @@ def _facts_block(result: Any) -> str:
     return "\n".join(lines)
 
 
-def _fallback_sentence(result: Any) -> str:
+def _fallback_sentence(result: Any) -> str:  # noqa: D401
     """What to say when the phrasing call fails. Always true, never pretty."""
     verb = {"spend": "Spent", "income": "Received", "net": "Net",
             "count": "Transactions:", "average": "Average"}.get(result.metric, "Total")

@@ -311,6 +311,11 @@ class SpendRow {
 class SpendingAnswer {
   final String question;
   final String answer;
+
+  /// "figures" — a total computed in SQL, with a query to show.
+  /// "advice" — a question about the budget itself; no query ran, so
+  /// there is no "read as" line to display.
+  final String kind;
   final String metric;
   final AnalyticsPeriod period;
   final List<String> expenseTypes;
@@ -323,6 +328,7 @@ class SpendingAnswer {
   const SpendingAnswer({
     required this.question,
     required this.answer,
+    this.kind = 'figures',
     required this.metric,
     required this.period,
     required this.expenseTypes,
@@ -338,6 +344,7 @@ class SpendingAnswer {
     return SpendingAnswer(
       question: j['question'] as String? ?? '',
       answer: j['answer'] as String? ?? '',
+      kind: j['kind'] as String? ?? 'figures',
       metric: q['metric'] as String? ?? 'spend',
       period: AnalyticsPeriod.fromJson(
           ((q['period'] as Map?) ?? const {}).cast<String, dynamic>()),
@@ -353,6 +360,8 @@ class SpendingAnswer {
       periodNotUnderstood: j['period_not_understood'] as bool? ?? false,
     );
   }
+
+  bool get isAdvice => kind == 'advice';
 
   /// What the query was narrowed to, for the "asked as" line.
   String get filterSummary {

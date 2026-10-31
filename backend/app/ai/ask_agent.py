@@ -55,12 +55,12 @@ def _money(cents: int | None) -> str:
 
 
 def strip_markdown(text: str) -> str:
-    """Remove markup the app would render literally.
+    """Flatten markdown to plain text.
 
-    The screen shows the answer as plain text, so `**bold**` arrives on
-    screen with the asterisks still attached. Asking the model not to
-    use markdown mostly works; this catches the rest, because a
-    prompt instruction is a request and this is a guarantee.
+    No longer used on the answer -- the app renders markdown now -- but
+    kept because any other caller that wants the text without markup
+    needs it, and because the rules were worked out against real model
+    output.
     """
     import re as _re
 
@@ -176,9 +176,9 @@ rather than estimating.
 
 Be brief: under 200 words, plain language, specific to this budget.
 
-Write PLAIN TEXT. No markdown — no **bold**, no bullet characters, no
-headings. The app shows your answer as written, so asterisks appear on
-screen as asterisks. Use ordinary sentences and name things directly.
+Light markdown is fine and is rendered: **bold** for an envelope name
+or a figure worth noticing, and "- " bullets for a short list. Do not
+use headings — the answer is too short to need them.
 
 At most {max_calls} tool calls.
 
@@ -360,5 +360,5 @@ async def run(
     if not final:
         final = ("I could not work that out from your data. Try asking it a "
                  "different way, or more specifically.")
-    return AskResult(answer=strip_markdown(final), steps=steps, tool_calls=calls,
+    return AskResult(answer=final, steps=steps, tool_calls=calls,
                      model=model_name, hit_limit=hit_limit)

@@ -1479,6 +1479,155 @@ def set_opening_balance(
     }
 
 
+class TransferIn(BaseModel):
+    from_category_id: str
+    to_category_id: str
+    amount_cents: int = Field(gt=0)
+    note: str | None = None
+
+
+@router.post("/transfer")
+def transfer(
+    body: TransferIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Move money from one envelope to another.
+
+    The everyday correction: groceries ran over, take it from
+    discretionary. Two opposing entries, so the total allocated is
+    unchanged and the ledger still explains itself -- no money is
+    created or destroyed, it is relabelled.
+
+    Deliberately NOT a balance edit. Setting a balance directly would
+    leave the other envelope silently wrong and the ledger unable to
+    say where the money went.
+    """
+    if body.from_category_id == body.to_category_id:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            "Pick two different categories.")
+    src = _own(db, Category, body.from_category_id, user)
+    dst = _own(db, Category, body.to_category_id, user)
+    for c in (src, dst):
+        if c.archived_at is not None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                f"'{c.name}' is archived.")
+
+    note = body.note or f"moved from {src.name} to {dst.name}"
+    try:
+        post(db, user.id, [
+            Entry(src.id, -body.amount_cents, "manual", note=note),
+            Entry(dst.id, body.amount_cents, "manual", note=note),
+        ])
+    except LedgerError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+    db.commit()
+    db.refresh(src)
+    db.refresh(dst)
+    return {
+        "moved_cents": body.amount_cents,
+        "from": {"id": str(src.id), "name": src.name,
+                 "balance_cents": src.balance_cents},
+        "to": {"id": str(dst.id), "name": dst.name,
+               "balance_cents": dst.balance_cents},
+    }
+
+
+class TargetBalance(BaseModel):
+    category_id: str
+    # ge=0, not gt=0: emptying an envelope is a legitimate target, and
+    # the opening-balance form (gt=0) cannot express it.
+    amount_cents: int = Field(ge=0)
+
+
+class ReallocateIn(BaseModel):
+    """Target balances, not deltas -- what each envelope should hold."""
+
+    allocations: list[TargetBalance] = Field(default_factory=list,
+                                             max_length=200)
+    allow_over_allocation: bool = False
+
+
+@router.post("/reallocate")
+def reallocate(
+    body: ReallocateIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Set every envelope to the balance you want it to hold.
+
+    `/opening-balance` only works on an empty budget, by design -- it
+    is for starting from scratch. This is the same idea afterwards:
+    rebalance the whole budget in one go, when priorities change or the
+    first guess at the split turns out wrong.
+
+    Takes TARGETS rather than deltas, because that is what the user is
+    actually deciding: "Groceries should hold $400". The difference
+    from today's balance is computed here and written as correction
+    entries, so the ledger still shows the move rather than a balance
+    that silently changed.
+
+    Envelopes left out are not touched. Spending history is untouched
+    either way -- this moves allocations, not transactions.
+    """
+    if not body.allocations:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            "Give at least one category a balance.")
+
+    rec = compute_reconciliation(db, user.id)
+    targets: dict[uuid.UUID, int] = {}
+    cats: dict[uuid.UUID, Category] = {}
+    for a in body.allocations:
+        cat = _own(db, Category, a.category_id, user)
+        if cat.archived_at is not None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                f"'{cat.name}' is archived.")
+        if cat.id in targets:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                f"'{cat.name}' is listed twice.")
+        targets[cat.id] = a.amount_cents
+        cats[cat.id] = cat
+
+    # What the whole budget would hold afterwards: the new targets plus
+    # whatever the untouched envelopes still have.
+    untouched = sum(
+        c.balance_cents
+        for c in db.scalars(select(Category).where(
+            Category.user_id == user.id, Category.archived_at.is_(None))).all()
+        if c.id not in targets
+    )
+    wanted_total = sum(targets.values()) + untouched
+    if wanted_total > rec.available_cents and not body.allow_over_allocation:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"That would allocate ${wanted_total / 100:,.2f} but only "
+            f"${rec.available_cents / 100:,.2f} is available "
+            f"(${rec.cash_cents / 100:,.2f} in the bank minus "
+            f"${rec.card_debt_cents / 100:,.2f} owed on cards).",
+        )
+
+    entries: list[Entry] = []
+    for cid, want in targets.items():
+        delta = want - cats[cid].balance_cents
+        if delta == 0:
+            continue
+        entries.append(Entry(cid, delta, "correction", note="rebalanced"))
+    if not entries:
+        return {"changed": 0, "allocated_cents": wanted_total}
+
+    try:
+        post(db, user.id, entries)
+    except LedgerError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    db.commit()
+    return {
+        "changed": len(entries),
+        "allocated_cents": wanted_total,
+        "available_cents": rec.available_cents,
+    }
+
+
 @router.post("/reconcile")
 def reconcile_now(
     user: User = Depends(current_user), db: Session = Depends(get_db)

@@ -31,6 +31,9 @@ dependencies:
   shared_preferences: ^2.3.3
 
   intl: ^0.19.0
+  # Renders the assistant's answers. It emits markdown and the
+  # screen used to show the asterisks literally.
+  flutter_markdown_plus: ^1.0.3
 
   # Native Plaid Link SDK (iOS/Android). The app never sees an
   # access_token -- Link returns a short-lived public_token which the

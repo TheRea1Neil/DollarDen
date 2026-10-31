@@ -1092,6 +1092,45 @@ class ApiClient {
     if (r.statusCode != 200) _fail(r);
   }
 
+  /// Move money from one envelope to another.
+  ///
+  /// Two opposing ledger entries, so the total allocated is unchanged
+  /// and the history can still say where the money went. Not a balance
+  /// edit — that would leave the other envelope silently wrong.
+  Future<void> transferBetweenCategories({
+    required String fromCategoryId,
+    required String toCategoryId,
+    required int amountCents,
+    String? note,
+  }) async {
+    final r = await _withRetry((o) => _dio.post('/budget/transfer', data: {
+          'from_category_id': fromCategoryId,
+          'to_category_id': toCategoryId,
+          'amount_cents': amountCents,
+          if (note != null) 'note': note,
+        }, options: o));
+    if (r.statusCode != 200) _fail(r);
+  }
+
+  /// Set what each envelope should hold, in one go.
+  ///
+  /// TARGETS, not deltas — "Groceries should hold $400". Envelopes left
+  /// out keep what they have. The server refuses a total above what is
+  /// actually in the bank (minus card debt) unless [allowOver].
+  Future<void> reallocate(
+    List<({String categoryId, int amountCents})> targets, {
+    bool allowOver = false,
+  }) async {
+    final r = await _withRetry((o) => _dio.post('/budget/reallocate', data: {
+          'allocations': [
+            for (final t in targets)
+              {'category_id': t.categoryId, 'amount_cents': t.amountCents}
+          ],
+          'allow_over_allocation': allowOver,
+        }, options: o));
+    if (r.statusCode != 200) _fail(r);
+  }
+
   Future<bool> health() async {
     try {
       final r = await _dio.get('/health');

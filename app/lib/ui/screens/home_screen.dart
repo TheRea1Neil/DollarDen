@@ -10,6 +10,7 @@ import 'add_category_screen.dart';
 import 'category_editor_screen.dart';
 import 'history_screen.dart';
 import 'insights_screen.dart';
+import 'move_money_screen.dart';
 import 'paycheck_screen.dart';
 
 /// Offer both ways to add a category.
@@ -53,6 +54,13 @@ Future<void> _newCategory(BuildContext context) async {
   );
 }
 
+/// Entering a paycheck by hand was a testing affordance — real ones
+/// arrive from the bank and are picked up by sync. Kept behind a flag
+/// rather than deleted, since the screen is still useful for seeding a
+/// test account.
+const bool _showManualPaycheck = false;
+
+
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
@@ -64,6 +72,13 @@ class HomeScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Budget'),
         actions: [
+          IconButton(
+            tooltip: 'Move money',
+            icon: const Icon(Icons.swap_horiz),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const MoveMoneyScreen()),
+            ),
+          ),
           IconButton(
             tooltip: 'Insights',
             icon: const Icon(Icons.insights_outlined),
@@ -90,13 +105,19 @@ class HomeScreen extends ConsumerWidget {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => Navigator.of(context).push(
-          MaterialPageRoute<bool>(builder: (_) => const PaycheckScreen()),
-        ),
-        icon: const Icon(Icons.add_card),
-        label: const Text('Paycheck'),
-      ),
+      // The Paycheck button is hidden: paychecks arrive from the bank
+      // and get picked up by sync, so entering one by hand was only
+      // ever for testing. PaycheckScreen still exists and the route
+      // still works — flip this to true to get the button back.
+      floatingActionButton: _showManualPaycheck
+          ? FloatingActionButton.extended(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<bool>(builder: (_) => const PaycheckScreen()),
+              ),
+              icon: const Icon(Icons.add_card),
+              label: const Text('Paycheck'),
+            )
+          : null,
       body: summary.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => _ErrorView(

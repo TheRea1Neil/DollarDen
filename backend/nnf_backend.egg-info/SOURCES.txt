@@ -67,6 +67,7 @@ tests/test_budget_flow.py
 tests/test_gpu_gate.py
 tests/test_item_memory.py
 tests/test_ledger.py
+tests/test_move_money.py
 tests/test_plaid_sync.py
 tests/test_plaid_webhook.py
 tests/test_ratelimit.py

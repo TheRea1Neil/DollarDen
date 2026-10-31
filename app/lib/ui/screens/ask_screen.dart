@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/api_client.dart';
@@ -193,7 +194,20 @@ class _AnswerCard extends StatelessWidget {
                 style: theme.textTheme.bodySmall
                     ?.copyWith(fontStyle: FontStyle.italic)),
             const SizedBox(height: 10),
-            Text(answer.answer, style: theme.textTheme.bodyMedium),
+            // Rendered, not shown raw: the model writes **bold** for
+            // envelope names and figures, and the asterisks used to
+            // land on screen.
+            MarkdownBody(
+              data: answer.answer,
+              selectable: true,
+              styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                p: theme.textTheme.bodyMedium,
+                listBullet: theme.textTheme.bodyMedium,
+                // The answer is a few sentences; default markdown
+                // spacing leaves it looking like a document.
+                blockSpacing: 8,
+              ),
+            ),
 
             for (final s in answer.emptyLookups)
               _Note(

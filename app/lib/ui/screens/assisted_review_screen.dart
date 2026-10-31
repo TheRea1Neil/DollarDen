@@ -8,7 +8,7 @@ import '../../data/providers.dart';
 import '../../domain/models.dart';
 import 'add_category_screen.dart';
 import 'category_editor_screen.dart';
-import 'receipt_screen.dart';
+import 'scan_receipt_screen.dart';
 
 /// Walk the review backlog, one charge at a time, with a suggestion.
 ///
@@ -183,7 +183,13 @@ class _AssistedReviewScreenState extends ConsumerState<AssistedReviewScreen> {
     final item = _item;
     if (item == null) return;
     final filed = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(builder: (_) => ReceiptScreen(item: item)),
+      MaterialPageRoute(
+          builder: (_) => ScanReceiptScreen(
+            transactionId: item.transactionId,
+            amountCents: item.amountCents,
+            title: item.merchantName ?? item.name,
+          ),
+        ),
     );
     if (filed == true) {
       _filed += 1;

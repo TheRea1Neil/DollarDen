@@ -1007,13 +1007,22 @@ class ApiClient {
   /// (see backend app/ai/receipt_loop.py). The result ALWAYS sums to
   /// it — anything the model could not account for comes back as one
   /// line flagged for review.
+  /// Give it [imageBase64] or [text] — one of the two.
+  ///
+  /// Pasted text is a first-class input, not a fallback: sometimes the
+  /// receipt arrived by email, and text is strictly easier to read than
+  /// a photograph of curled thermal paper.
   Future<ReceiptScan> scanReceipt({
-    required String imageBase64,
+    String? imageBase64,
+    String? text,
     required int amountCents,
     void Function(AiJob)? onProgress,
   }) async {
+    assert(imageBase64 != null || text != null,
+        'scanReceipt needs a photo or the receipt text');
     final job = await queueJob('receipt_scan', {
-      'image_b64': imageBase64,
+      if (imageBase64 != null) 'image_b64': imageBase64,
+      if (text != null) 'text': text,
       'expected_cents': amountCents,
     });
     final done = await awaitJob(job.id, onProgress: onProgress,

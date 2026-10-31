@@ -287,3 +287,61 @@ class TestUnresolvedCategoriesArePlaced:
         out = self._run(client, self.ITEMS)
         assert all(s["category_id"] for s in out["category_split"])
         assert "Unsure" not in [s["category"] for s in out["category_split"]]
+
+
+class TestTextInput:
+    """Pasted text is a first-class input, not a fallback.
+
+    Sometimes the receipt arrived by email, and text is strictly easier
+    to read than a photograph of curled thermal paper. Everything after
+    the first message is identical -- same scratchpad, same arithmetic,
+    same remainder.
+    """
+
+    class _Capture:
+        def __init__(self, script):
+            self.script = list(script)
+            self.messages = None
+
+        async def chat(self, prompt, **kw):
+            if self.messages is None:
+                self.messages = kw.get("messages")
+            calls = self.script.pop(0) if self.script else []
+            return ChatResult(content="", model="stub", tool_calls=calls)
+
+    async def test_text_reaches_the_model_and_closes(self):
+        model = self._Capture([
+            save([{"description": "BANANAS", "amount": 22.25,
+                   "category": "Food & Groceries"}]),
+            SUBMIT,
+        ])
+        r = await run_loop(model, text="BANANAS  22.25\nTOTAL  22.25",
+                           target_cents=2225, categories=CATS)
+        assert r.closed is True
+        first = model.messages[0]
+        assert "BANANAS" in first["content"]
+        assert "images" not in first, "text path must not send an image"
+
+    async def test_a_photo_still_goes_as_an_image(self):
+        model = self._Capture([
+            save([{"description": "x", "amount": 22.25, "category": "Health"}]),
+            SUBMIT,
+        ])
+        await run_loop(model, image_b64="QUJD", target_cents=2225, categories=CATS)
+        assert model.messages[0]["images"] == ["QUJD"]
+
+    async def test_neither_is_refused(self):
+        import pytest
+        with pytest.raises(ValueError, match="photo or as text"):
+            await run_loop(self._Capture([]), target_cents=2225, categories=CATS)
+
+    async def test_text_still_gets_a_remainder_when_it_does_not_add_up(self):
+        """The guarantee must not depend on which input was used."""
+        model = self._Capture([
+            save([{"description": "a", "amount": 10.00,
+                   "category": "Food & Groceries"}]),
+            SUBMIT,
+        ])
+        r = await run_loop(model, text="a 10.00", target_cents=2225, categories=CATS)
+        assert r.remainder is not None
+        assert sum(l.cents for l in r.lines) == 2225

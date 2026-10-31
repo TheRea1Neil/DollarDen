@@ -1778,7 +1778,11 @@ def _validate_item_categories(
 async def run_receipt_scan(
     db: Session, user: User, provider: Any, request: dict[str, Any]
 ) -> dict[str, Any]:
-    """Photo in, balanced and categorised line items out.
+    """A receipt in -- photographed or pasted -- balanced lines out.
+
+    Text is a first-class input, not a fallback. Sometimes the receipt
+    arrived by email, and pasted text is strictly easier to read than a
+    photograph of curled thermal paper.
 
     Needs the real charge amount: the whole design rests on the total
     being something the model cannot argue with (app/ai/receipt_loop.py).
@@ -1788,8 +1792,9 @@ async def run_receipt_scan(
     from app.ai import receipt_loop
 
     image_b64 = (request.get("image_b64") or "").strip()
-    if not image_b64:
-        raise ValueError("receipt_scan needs a photo")
+    text = (request.get("text") or "").strip()
+    if not image_b64 and not text:
+        raise ValueError("receipt_scan needs a photo or the receipt text")
     target = _as_int(request.get("expected_cents"))
     if not target or target <= 0:
         raise ValueError(
@@ -1803,7 +1808,8 @@ async def run_receipt_scan(
              for c in cats]
 
     result = await receipt_loop.run_loop(
-        provider, image_b64=image_b64, target_cents=target, categories=pairs,
+        provider, image_b64=image_b64 or None, text=text or None,
+        target_cents=target, categories=pairs,
         think=bool(request.get("think", False)),
     )
     out = result.as_dict()

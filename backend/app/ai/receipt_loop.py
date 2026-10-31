@@ -225,8 +225,8 @@ HOW TO WORK
   2. The tool replies with the sum and the difference from {total}.
      Never add anything up yourself — the tool does it for you.
   3. If the difference is not zero you have misread one or two lines.
-     Look at the image again and call fix_item for each. A common error
-     is an extra or missing leading digit.
+     Look again and call fix_item for each. A common error is an extra
+     or missing leading digit.
   4. When the difference is zero, call submit. You are finished.
 
 NEVER INVENT AN AMOUNT
@@ -281,7 +281,8 @@ class LoopResult:
 async def run_loop(
     provider: Any,
     *,
-    image_b64: str,
+    image_b64: str | None = None,
+    text: str | None = None,
     target_cents: int,
     categories: list[tuple[str, str]],
     think: bool = False,
@@ -297,6 +298,9 @@ async def run_loop(
     """
     import time
 
+    if not image_b64 and not text:
+        raise ValueError("give the receipt as a photo or as text")
+
     pad = Scratchpad(target_cents=target_cents)
     prompt = PROMPT.format(
         total=_money(target_cents),
@@ -304,9 +308,17 @@ async def run_loop(
         max_fix=MAX_FIX_ATTEMPTS,
         max_calls=MAX_TOOL_CALLS,
     )
-    messages: list[dict[str, Any]] = [
-        {"role": "user", "content": prompt, "images": [image_b64]}
-    ]
+    # Text and photo share everything but the first message. The
+    # scratchpad, the arithmetic, the repair loop and the remainder all
+    # behave identically -- only how the lines are READ differs, and
+    # pasted text is strictly easier to read than a photograph.
+    if image_b64:
+        first: dict[str, Any] = {"role": "user", "content": prompt,
+                                 "images": [image_b64]}
+    else:
+        first = {"role": "user",
+                 "content": f"{prompt}\n\nThe receipt:\n\n{(text or '')[:8000]}"}
+    messages: list[dict[str, Any]] = [first]
 
     started = time.monotonic()
     calls = 0

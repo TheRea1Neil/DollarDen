@@ -106,6 +106,47 @@ class _ScanReceiptScreenState extends ConsumerState<ScanReceiptScreen> {
     }
   }
 
+  /// Paste the receipt instead of photographing it.
+  ///
+  /// Same pipeline from here on: the lines still have to add up to the
+  /// charge, and anything unread still becomes a flagged remainder.
+  Future<void> _paste() async {
+    final text = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => const _PasteSheet(),
+    );
+    if (text == null || text.trim().isEmpty) return;
+
+    setState(() {
+      _busy = true;
+      _error = null;
+      _stage = 'Reading the receipt…';
+    });
+    try {
+      final scan = await ref.read(apiProvider).scanReceipt(
+            text: text,
+            amountCents: widget.amountCents,
+            onProgress: (AiJob j) {
+              if (!mounted) return;
+              setState(() => _stage = j.status == 'running'
+                  ? 'Reading the receipt…'
+                  : 'Waking the assistant…');
+            },
+          );
+      if (!mounted) return;
+      setState(() {
+        _scan = scan;
+        _lines = List.of(scan.items);
+      });
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _submit() async {
     if (!_balances) return;
     setState(() {
@@ -217,6 +258,7 @@ class _ScanReceiptScreenState extends ConsumerState<ScanReceiptScreen> {
                   error: _error,
                   onCamera: () => _pick(ImageSource.camera),
                   onGallery: () => _pick(ImageSource.gallery),
+                  onPaste: _paste,
                 )
               : ListView(
                   padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
@@ -260,6 +302,7 @@ class _Start extends StatelessWidget {
   final String? error;
   final VoidCallback onCamera;
   final VoidCallback onGallery;
+  final VoidCallback onPaste;
 
   const _Start({
     required this.title,
@@ -268,6 +311,7 @@ class _Start extends StatelessWidget {
     required this.error,
     required this.onCamera,
     required this.onGallery,
+    required this.onPaste,
   });
 
   @override
@@ -307,6 +351,12 @@ class _Start extends StatelessWidget {
           onPressed: onGallery,
           icon: const Icon(Icons.photo_library_outlined),
           label: const Text('Choose a photo'),
+        ),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: onPaste,
+          icon: const Icon(Icons.content_paste_outlined),
+          label: const Text('Paste the receipt text'),
         ),
         if (error != null) ...[
           const SizedBox(height: 16),
@@ -604,4 +654,68 @@ class _LineSheetState extends State<_LineSheet> {
 
 extension _FirstOrNull<T> on Iterable<T> {
   T? get firstOrNull => isEmpty ? null : first;
+}
+
+
+/// Paste a receipt that arrived as text — an emailed one, say.
+class _PasteSheet extends StatefulWidget {
+  const _PasteSheet();
+
+  @override
+  State<_PasteSheet> createState() => _PasteSheetState();
+}
+
+class _PasteSheetState extends State<_PasteSheet> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          16, 0, 16, 16 + MediaQuery.of(context).viewInsets.bottom),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Paste the receipt', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 4),
+          Text(
+            'The whole thing, as it came. Totals and card lines are '
+            'ignored automatically.',
+            style: theme.textTheme.bodySmall,
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            maxLines: 10,
+            minLines: 6,
+            textCapitalization: TextCapitalization.none,
+            decoration: const InputDecoration(
+              hintText: 'BANANAS            1.46\nMILK 1GAL          3.48\n…',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: () {
+                final v = _controller.text.trim();
+                Navigator.of(context).pop(v.isEmpty ? null : v);
+              },
+              child: const Text('Read it'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

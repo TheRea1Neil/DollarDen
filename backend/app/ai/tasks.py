@@ -2020,380 +2020,47 @@ def _validate_expense_type(
 # --------------------------------------------------------------------------- #
 # Asking a question about your own spending
 # --------------------------------------------------------------------------- #
-# The model COMPILES the question into a query. It does not answer it.
+# Handled by an agent loop in app/ai/ask_agent.py. run_ask below is a
+# thin wrapper over it.
 #
-# This is ADR 0006 applied to reporting. There, the model could describe
-# a split but not perform one; here it can work out that "how much on
-# fast food last month" means sum / type=Fast food / previous calendar
-# month, but it cannot add up forty transactions, and asked to try it
-# will produce a confident, plausible, wrong total. A wrong total is
-# worse than no answer: there is nothing in the sentence to show it is
-# wrong.
+# What used to be here -- a router, a query compiler with its own JSON
+# schema, and a phrasing step -- is gone. It answered "how much did I
+# spend on fast food" and nothing else: routing forced a single path,
+# so a question needing both a figure and the budget could not be
+# answered, and one shot at the filter meant "groceries" compiled to a
+# merchant name, matched nothing, and reported a confident $0.00 over
+# $92.25 of real spending.
 #
-# So: model picks the filter, SQL computes the number, model writes the
-# sentence around a number it was handed. Every figure the user reads
-# came out of the database.
-COMPILE_PROMPT = """Turn a question about someone's own spending into a query.
-
-You are NOT answering the question. You are choosing the filters that
-will be run against their transactions. Do not state or estimate any
-amount.
-
-Today is {today}.
-
-Kinds of spending they use:
-{types}
-
-Their budget envelopes:
-{cats}
-
-The question:
-  {question}
-
-Choose:
-  metric    — "spend" for how much went out, "income" for money in,
-              "net" for the difference, "count" for how many times,
-              "average" for the typical amount per transaction.
-  period    — the stretch of time asked about. "custom" only if a
-              specific range is named, and then fill start and end.
-  group_by  — "expense_type" if they asked for a breakdown by kind,
-              "category" by envelope, "merchant" by shop, "month" or
-              "week" for a trend over time, "none" for a single total.
-  expense_types — kinds to filter to, copied EXACTLY from the list
-              above. Empty when the question is about everything.
-  categories — envelopes to filter to, copied exactly. Usually empty.
-  merchant  — a shop name to match on, when they named a specific
-              place rather than a kind of spending. Otherwise empty.
-
-If the question names something that is not on either list, put it in
-`merchant` rather than inventing a kind.
-
-Return JSON only."""
-
-_PERIOD_CHOICES = [
-    "today", "yesterday", "this_week", "last_week", "this_month", "last_month",
-    "last_7_days", "last_14_days", "last_30_days", "last_90_days",
-    "last_3_months", "last_6_months", "last_12_months",
-    "this_year", "last_year", "all_time", "custom",
-]
-
-
-def _compile_schema(type_names: list[str], cat_names: list[str]) -> dict[str, Any]:
-    """Build the compile schema, omitting filters the user has none of.
-
-    An `enum: []` is not merely useless, it is INVALID -- gemma4 rejects
-    the whole request with
-
-        400  JSON schema conversion failed: enum must be a non-empty array
-
-    and a fresh account has no expense types, so every question asked
-    before the first type exists failed outright. The previous model
-    accepted the malformed schema silently, which is why this only
-    surfaced on switching.
-
-    Dropping the property is better than loosening it to a free string:
-    a filter the user cannot possibly have is one the model should not
-    be offered.
-    """
-    schema: dict[str, Any] = {
-        "type": "object",
-        "properties": {
-            "metric": {"type": "string",
-                       "enum": ["spend", "income", "net", "count", "average"]},
-            "period": {"type": "string", "enum": _PERIOD_CHOICES},
-            "start": {"type": "string",
-                      "description": "YYYY-MM-DD, only when period is custom, "
-                                     "else empty string"},
-            "end": {"type": "string",
-                    "description": "YYYY-MM-DD, only when period is custom, "
-                                   "else empty string"},
-            "group_by": {"type": "string",
-                         "enum": ["none", "expense_type", "category",
-                                  "merchant", "month", "week"]},
-            "merchant": {"type": "string",
-                         "description": "a shop name, or an empty string"},
-        },
-        "required": ["metric", "period", "start", "end", "group_by", "merchant"],
-    }
-    if type_names:
-        schema["properties"]["expense_types"] = {
-            "type": "array", "items": {"type": "string", "enum": type_names}}
-        schema["required"].append("expense_types")
-    if cat_names:
-        schema["properties"]["categories"] = {
-            "type": "array", "items": {"type": "string", "enum": cat_names}}
-        schema["required"].append("categories")
-    return schema
-
-
-PHRASE_PROMPT = """Answer the question using ONLY the figures below.
-
-The question:
-  {question}
-
-What the database returned:
-{facts}
-
-Write two or three short sentences. Lead with the number they asked
-for. If a comparison figure is shown, say which way it moved.
-
-Every amount you write must appear above. Do not add up, work out or
-estimate anything that is not already there — if a figure is not
-listed, it is not known, and saying so is correct. No preamble, no
-advice unless it follows directly from the numbers."""
-
-
-# Two kinds of question reach the Ask screen, and they need opposite
-# handling.
-#
-#   "how much did I spend on fast food"  -> a FIGURE. Must be computed
-#       in SQL; a model asked to total forty transactions invents a
-#       plausible wrong number (ADR 0009).
-#   "what categories am I missing"       -> ADVICE. There is no figure
-#       to look up; the model needs the shape of the budget instead.
-#
-# Sending a data question down the advice path gets an invented total.
-# Sending an advice question down the data path gets a filter and no
-# answer. So the first step is deciding which it is -- a small, closed
-# choice, which is the kind of thing the model is reliable at.
-ROUTE_PROMPT = """Which kind of question is this?
-
-  "figures"  — it asks HOW MUCH, how many, or when. It can be answered
-               by adding up their transactions. Examples: how much did
-               I spend on groceries, what did subscriptions cost, am I
-               spending more than last month.
-
-  "advice"   — it asks about the budget itself: whether the envelopes
-               are right, what is missing, whether an amount is
-               sensible, how something works. No total would answer it.
-
-The question:
-  {question}
-
-Return JSON only."""
-
-_ROUTE_SCHEMA = {
-    "type": "object",
-    "properties": {"kind": {"type": "string", "enum": ["figures", "advice"]}},
-    "required": ["kind"],
-}
-
-ADVICE_PROMPT = """Someone is asking about their own budget. Answer them.
-
-{context}
-
-Their goals:
-{goals}
-
-Their question:
-  {question}
-
-Answer in under 200 words, in plain language, using their real envelope
-names and figures from above. Be concrete and specific to THIS budget —
-a general observation about budgeting is worth nothing to them.
-
-Every amount you state must appear above. Do not calculate totals,
-averages or percentages that are not already there; if a figure is not
-shown, say you cannot see it rather than estimating.
-
-If they are asking what is missing, look at what their envelopes
-already cover and name the gaps you can actually justify. Do not pad
-the list — two well-argued suggestions beat six generic ones."""
-
-
-async def run_ask(
-    db: Session, user: User, provider: Any, request: dict[str, Any]
-) -> dict[str, Any]:
-    """Answer a plain-English question with figures computed in SQL."""
-    from datetime import date as _date
-
-    from app.analytics import queries as Q
-    from app.analytics import taxonomy
-    from app.analytics.period import PeriodError, resolve
-
-    question = (request.get("question") or "").strip()
-    if not question:
-        raise ValueError("ask requires a question")
-
-    today = _date.fromisoformat(request["today"]) if request.get("today") else _date.today()
-
-    # Decide which kind of question this is before doing anything else.
-    route = "figures"
-    try:
-        r = await provider.chat(ROUTE_PROMPT.format(question=question),
-                                schema=_ROUTE_SCHEMA)
-        route = str(_parse_json(r.content).get("kind") or "figures")
-    except Exception as exc:  # noqa: BLE001
-        # Default to figures: that path shows its working and cannot
-        # invent a number, so it is the safer thing to guess.
-        log.warning("question routing failed, treating as figures: %s", exc)
-
-    if route == "advice":
-        from app.ai import budget_context
-
-        res = await provider.chat(ADVICE_PROMPT.format(
-            context=budget_context.build(db, user),
-            goals=_goals(db, user) or "  (none written yet)",
-            question=question,
-        ))
-        return {
-            "question": question,
-            "answer": res.content.strip(),
-            "kind": "advice",
-            # No query ran, so there is nothing to show as "read as" --
-            # the UI keys off this to hide that line rather than
-            # showing an empty filter.
-            "query": None,
-            "result": None,
-            "unresolved_filters": [],
-            "period_not_understood": False,
-            "model": res.model,
-        }
-
-    types = taxonomy.active(db, user.id)
-    cats = [c for c in _categories(db, user)]
-    type_names = [t.name for t in types]
-    cat_names = [c.name for c in cats]
-
-    prompt = COMPILE_PROMPT.format(
-        today=today.isoformat(),
-        question=question,
-        types="\n".join(
-            f"  - {t.name}" + (f": {t.description}" if t.description else "")
-            for t in types
-        ) or "  (none yet)",
-        cats="\n".join(f"  - {c.name}" for c in cats) or "  (none yet)",
-    )
-    res = await provider.chat(prompt, schema=_compile_schema(type_names, cat_names))
-    raw = _parse_json(res.content)
-
-    # --- resolve the compiled spec against real rows -------------------
-    period_key = str(raw.get("period") or "this_month")
-    spec: Any = period_key
-    if period_key == "custom":
-        spec = {"start": raw.get("start"), "end": raw.get("end")}
-    try:
-        period = resolve(spec, today=today)
-    except (PeriodError, ValueError):
-        # A period we cannot parse is the one failure that must not be
-        # papered over: answering for the wrong month looks identical
-        # to answering for the right one.
-        period = resolve("this_month", today=today)
-        unparsed_period = True
-    else:
-        unparsed_period = False
-
-    by_type_slug = {taxonomy.slugify(t.name): t for t in types}
-    by_cat_name = {c.name.lower(): c for c in cats}
-
-    wanted_types, wanted_cats, unresolved = [], [], []
-    for n in raw.get("expense_types") or []:
-        t = by_type_slug.get(taxonomy.slugify(str(n)))
-        (wanted_types.append(t.id) if t else unresolved.append(str(n)))
-    for n in raw.get("categories") or []:
-        c = by_cat_name.get(str(n).strip().lower())
-        (wanted_cats.append(c.id) if c else unresolved.append(str(n)))
-
-    group_by = str(raw.get("group_by") or "none")
-    q = Q.SpendQuery(
-        period=period,
-        metric=str(raw.get("metric") or "spend"),  # type: ignore[arg-type]
-        group_by=None if group_by == "none" else group_by,  # type: ignore[arg-type]
-        expense_type_ids=tuple(wanted_types),
-        category_ids=tuple(wanted_cats),
-        merchant_contains=(str(raw.get("merchant") or "").strip() or None),
-        limit=12,
-    )
-    result = Q.run(db, user.id, q)
-
-    # A merchant filter is free text -- the model can write anything,
-    # and anything that matches no shop returns a confident $0.00 that
-    # looks exactly like a real one. Observed: "how much did I spend on
-    # groceries" compiled to merchant="groceries" and answered $0.00
-    # while Food & Groceries held $92.25 of spending.
-    #
-    # Unlike a category or an expense type there is no list to validate
-    # against, so the check is the result itself: zero rows from a
-    # named shop means the name found nothing.
-    if q.merchant_contains and result.count == 0:
-        unresolved.append(q.merchant_contains)
-
-    # --- let the model put the computed figures into words -------------
-    answer = _fallback_sentence(result)
-    try:
-        phrased = await provider.chat(
-            PHRASE_PROMPT.format(question=question, facts=_facts_block(result))
-        )
-        text = phrased.content.strip()
-        if text:
-            answer = text
-    except Exception as exc:  # noqa: BLE001
-        # The numbers are already correct; only the prose failed. A
-        # plain sentence beats failing the whole question.
-        log.warning("phrasing failed, using the plain sentence: %s", exc)
-
-    return {
-        "question": question,
-        "answer": answer,
-        "kind": "figures",
-        # Returned so the UI can show WHAT was actually asked of the
-        # data. A question the model read differently than the user
-        # meant is invisible otherwise -- the wrong answer looks the
-        # same as the right one.
-        "query": {
-            "metric": q.metric,
-            "period": period.as_dict(),
-            "group_by": q.group_by,
-            "expense_types": [t.name for t in types if t.id in set(wanted_types)],
-            "categories": [c.name for c in cats if c.id in set(wanted_cats)],
-            "merchant": q.merchant_contains,
-        },
-        "result": result.as_dict(),
-        "unresolved_filters": unresolved,
-        "period_not_understood": unparsed_period,
-        "model": res.model,
-    }
+# The division it enforced is unchanged and now lives in the tools:
+# the model chooses WHICH lookup to run, SQL produces every number.
 
 
 def _money(cents: int) -> str:
     return f"${cents / 100:,.2f}"
 
 
-def _facts_block(result: Any) -> str:
-    """The computed result, written out for the phrasing call.
+async def run_ask(
+    db: Session, user: User, provider: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    """Answer a question by letting the model look things up.
 
-    Deliberately prose-ish rather than JSON: the model is being asked to
-    read numbers out, and JSON invites it to restructure them.
+    An agent loop rather than a fixed pipeline -- see app/ai/ask_agent.py
+    for the reasoning. The model chooses WHICH lookups to run; every
+    figure still comes out of SQL, so ADR 0009 holds: it picks the
+    filter, the database produces the number.
     """
-    lines = [
-        f"  period: {result.period.label} "
-        f"({result.period.start} to {result.period.end})",
-        f"  {result.metric}: {_money(result.total_cents)}",
-        f"  transactions: {result.count}",
-    ]
-    if result.previous_total_cents is not None and result.previous_period:
-        d = result.delta_cents or 0
-        lines.append(
-            f"  same figure for {result.previous_period.label}: "
-            f"{_money(result.previous_total_cents)} "
-            f"({'up' if d > 0 else 'down' if d < 0 else 'unchanged'} "
-            f"{_money(abs(d))})"
-        )
-    for g in result.groups:
-        lines.append(f"  {g.label}: {_money(g.cents)} over {g.count} transactions")
-    return "\n".join(lines)
+    from datetime import date as _date
 
+    from app.ai import ask_agent
 
-def _fallback_sentence(result: Any) -> str:  # noqa: D401
-    """What to say when the phrasing call fails. Always true, never pretty."""
-    verb = {"spend": "Spent", "income": "Received", "net": "Net",
-            "count": "Transactions:", "average": "Average"}.get(result.metric, "Total")
-    if result.metric == "count":
-        return f"{verb} {result.count} in {result.period.label}."
-    return (
-        f"{verb} {_money(result.total_cents)} in {result.period.label}, "
-        f"across {result.count} transaction{'s' if result.count != 1 else ''}."
-    )
+    question = (request.get("question") or "").strip()
+    if not question:
+        raise ValueError("ask requires a question")
+    today = (_date.fromisoformat(request["today"]) if request.get("today")
+             else _date.today())
+
+    result = await ask_agent.run(db, user, provider, question, today=today)
+    return {"question": question, **result.as_dict()}
 
 
 # --------------------------------------------------------------------------- #

@@ -154,130 +154,6 @@ class TestSpendQueries:
         assert body["total_cents"] == 0
 
 
-@requires_db
-class TestAskCompiles:
-    """The question pipeline, with the model stubbed.
-
-    What is under test is the half that must never be wrong: resolving
-    a compiled spec against real rows and computing the figure. The
-    model's job -- choosing filters -- is faked here deliberately, so a
-    failure points at the arithmetic rather than at the weather on the
-    inference host.
-    """
-
-    def test_a_compiled_question_produces_a_sql_computed_number(self, client):
-        import asyncio
-
-        from app.ai import tasks
-        from app.ai.provider import ChatResult
-        from app.db.models import User
-        from sqlalchemy import select
-
-        h = _auth(client)
-        _seed(client, h)
-
-        class Stub:
-            """Routing call, then compile, then phrasing."""
-
-            def __init__(self):
-                self.calls = 0
-
-            async def chat(self, prompt, **kw):
-                self.calls += 1
-                if self.calls == 1:
-                    return ChatResult(content='{"kind":"figures"}', model="stub")
-                if self.calls == 2:
-                    return ChatResult(content=(
-                        '{"metric":"spend","period":"this_month","start":"","end":"",'
-                        '"group_by":"none","expense_types":["Fast food"],'
-                        '"categories":[],"merchant":""}'), model="stub")
-                # The phrasing call gets the real figures in its prompt.
-                assert "$35.50" in prompt
-                return ChatResult(content="You spent $35.50 on fast food.", model="stub")
-
-        with SessionLocal() as db:
-            uid = db.scalars(select(User.id).order_by(User.created_at.desc())).first()
-            user = db.get(User, uid)
-            stub = Stub()
-            out = asyncio.run(tasks.run_ask(
-                db, user, stub,
-                {"question": "how much on fast food this month?", "today": "2026-10-24"},
-            ))
-
-        assert out["result"]["total_cents"] == 3_550
-        assert out["query"]["expense_types"] == ["Fast food"]
-        assert out["query"]["period"]["start"] == "2026-10-01"
-        assert "$35.50" in out["answer"]
-
-    def test_a_filter_the_model_invents_is_reported_not_silently_dropped(self, client):
-        """A zero that comes from a bad filter must not look like a real zero."""
-        import asyncio
-
-        from app.ai import tasks
-        from app.ai.provider import ChatResult
-        from app.db.models import User
-        from sqlalchemy import select
-
-        h = _auth(client)
-        _seed(client, h)
-
-        class Stub:
-            def __init__(self):
-                self.calls = 0
-
-            async def chat(self, prompt, **kw):
-                self.calls += 1
-                if self.calls == 1:
-                    return ChatResult(content='{"kind":"figures"}', model="stub")
-                return ChatResult(content=(
-                    '{"metric":"spend","period":"this_month","start":"","end":"",'
-                    '"group_by":"none","expense_types":["Artisanal Cheese"],'
-                    '"categories":[],"merchant":""}'), model="stub")
-
-        with SessionLocal() as db:
-            uid = db.scalars(select(User.id).order_by(User.created_at.desc())).first()
-            out = asyncio.run(tasks.run_ask(
-                db, db.get(User, uid), Stub(),
-                {"question": "how much on artisanal cheese?", "today": "2026-10-24"},
-            ))
-        assert out["unresolved_filters"] == ["Artisanal Cheese"]
-
-    def test_the_numbers_survive_a_failed_phrasing_call(self, client):
-        """Prose is the optional half. The figure is not."""
-        import asyncio
-
-        from app.ai import tasks
-        from app.ai.provider import AIUnavailable, ChatResult
-        from app.db.models import User
-        from sqlalchemy import select
-
-        h = _auth(client)
-        _seed(client, h)
-
-        class Stub:
-            def __init__(self):
-                self.calls = 0
-
-            async def chat(self, prompt, **kw):
-                self.calls += 1
-                if self.calls == 1:
-                    return ChatResult(content='{"kind":"figures"}', model="stub")
-                if self.calls == 2:
-                    return ChatResult(content=(
-                        '{"metric":"spend","period":"this_month","start":"","end":"",'
-                        '"group_by":"none","expense_types":[],"categories":[],'
-                        '"merchant":""}'), model="stub")
-                raise AIUnavailable("deck is asleep")
-
-        with SessionLocal() as db:
-            uid = db.scalars(select(User.id).order_by(User.created_at.desc())).first()
-            out = asyncio.run(tasks.run_ask(
-                db, db.get(User, uid), Stub(),
-                {"question": "what did I spend?", "today": "2026-10-24"},
-            ))
-        assert out["result"]["total_cents"] == 16_250
-        assert "$162.50" in out["answer"]
-
 
 @requires_db
 class TestClassifyValidation:
@@ -329,67 +205,17 @@ class TestClassifyValidation:
         assert out["unsure"] is True
 
 
-class TestCompileSchemaIsValid:
-    """An empty enum is not just useless, it is rejected outright.
-
-    gemma4 answers a schema containing `enum: []` with
-
-        400  JSON schema conversion failed: enum must be a non-empty array
-
-    A fresh account has no expense types, so every question asked before
-    the first type existed failed. The previous model accepted the
-    malformed schema silently, so nothing caught it until the model
-    changed.
-    """
-
-    def _enums(self, node):
-        found = []
-        if isinstance(node, dict):
-            if "enum" in node:
-                found.append(node["enum"])
-            for v in node.values():
-                found += self._enums(v)
-        elif isinstance(node, list):
-            for v in node:
-                found += self._enums(v)
-        return found
-
-    def test_no_empty_enum_on_a_fresh_account(self):
-        from app.ai.tasks import _compile_schema
-        schema = _compile_schema([], [])
-        assert all(len(e) > 0 for e in self._enums(schema)), schema
-
-    def test_no_empty_enum_with_categories_but_no_types(self):
-        from app.ai.tasks import _compile_schema
-        schema = _compile_schema([], ["Food"])
-        assert all(len(e) > 0 for e in self._enums(schema))
-        assert "expense_types" not in schema["properties"]
-        assert "categories" in schema["properties"]
-
-    def test_required_never_names_a_missing_property(self):
-        from app.ai.tasks import _compile_schema
-        for types, cats in (([], []), ([], ["Food"]), (["Fast food"], []),
-                            (["Fast food"], ["Food"])):
-            schema = _compile_schema(types, cats)
-            assert set(schema["required"]) <= set(schema["properties"]), (types, cats)
-
-    def test_both_present_when_the_user_has_both(self):
-        from app.ai.tasks import _compile_schema
-        schema = _compile_schema(["Fast food"], ["Food"])
-        assert schema["properties"]["expense_types"]["items"]["enum"] == ["Fast food"]
-        assert schema["properties"]["categories"]["items"]["enum"] == ["Food"]
-
 
 @requires_db
-class TestAskRoutesAdviceSeparately:
-    """A question about the budget must not go down the SQL path.
+class TestAskAgent:
+    """The agent loop that replaced the compile pipeline.
 
-    "What categories am I missing" has no figure to look up. Routed to
-    the data path it returns a filter and no advice; the advice path
-    gets the shape of the budget instead and never reports a total.
+    The properties that must survive the change are the ones that made
+    the old design safe: every figure comes out of SQL, an empty result
+    is distinguishable from a real zero, and the loop terminates.
     """
 
-    def _ask(self, client, route_kind, question):
+    def _run(self, client, script):
         import asyncio
 
         from sqlalchemy import select
@@ -403,136 +229,107 @@ class TestAskRoutesAdviceSeparately:
 
         class Stub:
             def __init__(self):
-                self.calls = 0
-                self.prompts = []
+                self.script = list(script)
+                self.seen = []
 
             async def chat(self, prompt, **kw):
-                self.calls += 1
-                self.prompts.append(prompt)
-                if self.calls == 1:
-                    return ChatResult(content=f'{{"kind":"{route_kind}"}}', model="stub")
-                if route_kind == "advice":
-                    return ChatResult(content="Add a Health envelope.", model="stub")
-                if self.calls == 2:
-                    return ChatResult(content=(
-                        '{"metric":"spend","period":"this_month","start":"","end":"",'
-                        '"group_by":"none","expense_types":[],"categories":[],'
-                        '"merchant":""}'), model="stub")
-                return ChatResult(content="You spent some money.", model="stub")
+                self.seen.append(kw.get("messages"))
+                if not self.script:
+                    return ChatResult(content="", model="stub")
+                step = self.script.pop(0)
+                if isinstance(step, str):
+                    return ChatResult(content=step, model="stub")
+                return ChatResult(content="", model="stub", tool_calls=step)
 
         stub = Stub()
         with SessionLocal() as db:
             uid = db.scalars(select(User.id).order_by(User.created_at.desc())).first()
             out = asyncio.run(tasks.run_ask(
                 db, db.get(User, uid), stub,
-                {"question": question, "today": "2026-10-24"}))
+                {"question": "q", "today": "2026-10-24"}))
         return out, stub
 
-    def test_an_advice_question_gets_the_budget_not_a_query(self, client):
-        out, stub = self._ask(client, "advice",
-                              "what categories am I missing?")
-        assert out["kind"] == "advice"
-        assert out["query"] is None, "no query ran, so none should be shown"
-        assert out["result"] is None
-        assert "Health" in out["answer"]
-        # The advice prompt must actually contain the budget.
-        assert "HOW THIS BUDGET WORKS" in stub.prompts[1]
+    def _call(self, name, **args):
+        return [{"name": name, "arguments": args}]
 
-    def test_a_figures_question_still_computes_in_sql(self, client):
-        out, _ = self._ask(client, "figures",
-                           "how much did I spend this month?")
-        assert out["kind"] == "figures"
-        assert out["result"]["total_cents"] == 16_250
-        assert out["query"] is not None
+    def test_a_figure_comes_from_sql_not_the_model(self, client):
+        out, _ = self._run(client, [
+            self._call("spending", metric="spend", period="this_month"),
+            self._call("answer", text="You spent $162.50."),
+        ])
+        step = out["steps"][0]
+        assert step["tool"] == "spending"
+        assert step["result"]["total"] == "$162.50", "SQL produced this"
+        assert "$162.50" in out["answer"]
 
-    def test_routing_failure_falls_back_to_figures(self, client):
-        """The safer guess: that path shows its working and cannot
-        invent a number."""
-        import asyncio
+    def test_the_lookups_are_returned_so_the_answer_can_be_audited(self, client):
+        out, _ = self._run(client, [
+            self._call("spending", metric="spend", period="this_month"),
+            self._call("answer", text="ok"),
+        ])
+        assert out["steps"], "an answer you cannot check is a claim"
+        assert out["steps"][0]["arguments"]["period"] == "this_month"
 
-        from sqlalchemy import select
+    def test_an_empty_result_is_not_reported_as_zero_spending(self, client):
+        """The groceries/$0.00 failure: a filter matching nothing must
+        not look like a real zero."""
+        out, _ = self._run(client, [
+            self._call("spending", metric="spend", period="this_month",
+                       merchant="groceries"),
+            self._call("answer", text="Nothing matched that shop."),
+        ])
+        res = out["steps"][0]["result"]
+        assert res["transactions"] == 0
+        assert "not necessarily zero spending" in res["note"]
 
-        from app.ai import tasks
-        from app.ai.provider import ChatResult
-        from app.db.models import User
+    def test_it_can_fetch_the_budget_and_a_figure_in_one_question(self, client):
+        """What routing made impossible."""
+        out, _ = self._run(client, [
+            self._call("budget"),
+            self._call("spending", metric="spend", period="this_month"),
+            self._call("answer", text="Both."),
+        ])
+        tools = [s["tool"] for s in out["steps"]]
+        assert tools == ["budget", "spending"]
+        assert "HOW THIS BUDGET WORKS" in out["steps"][0]["result"]["budget"]
 
-        h = _auth(client)
-        _seed(client, h)
+    def test_an_unknown_period_is_an_error_not_a_wrong_month(self, client):
+        out, _ = self._run(client, [
+            self._call("spending", metric="spend", period="since_easter"),
+            self._call("answer", text="I could not read that date range."),
+        ])
+        assert "error" in out["steps"][0]["result"]
 
-        class Stub:
-            def __init__(self):
-                self.calls = 0
+    def test_the_loop_is_capped(self, client):
+        from app.ai.ask_agent import MAX_TOOL_CALLS
+        out, _ = self._run(client, [
+            self._call("spending", metric="spend", period="this_month")
+            for _ in range(40)
+        ])
+        assert out["tool_calls"] <= MAX_TOOL_CALLS
+        assert out["answer"], "it must still say something"
 
-            async def chat(self, prompt, **kw):
-                self.calls += 1
-                if self.calls == 1:
-                    raise RuntimeError("router exploded")
-                if self.calls == 2:
-                    return ChatResult(content=(
-                        '{"metric":"spend","period":"this_month","start":"","end":"",'
-                        '"group_by":"none","expense_types":[],"categories":[],'
-                        '"merchant":""}'), model="stub")
-                return ChatResult(content="ok", model="stub")
+    def test_prose_instead_of_the_answer_tool_is_accepted(self, client):
+        out, _ = self._run(client, ["You spent $162.50 this month."])
+        assert "$162.50" in out["answer"]
 
-        with SessionLocal() as db:
-            uid = db.scalars(select(User.id).order_by(User.created_at.desc())).first()
-            out = asyncio.run(tasks.run_ask(
-                db, db.get(User, uid), Stub(),
-                {"question": "anything", "today": "2026-10-24"}))
-        assert out["kind"] == "figures"
+    def test_a_model_that_says_nothing_still_returns_something_useful(self, client):
+        out, _ = self._run(client, [])
+        assert "could not work that out" in out["answer"]
 
+    def test_tool_enums_only_offer_envelopes_that_exist(self, client):
+        """So it cannot ask for a category that is not there — the
+        mistake behind the silent zero."""
+        from app.ai.ask_agent import tools_for
+        tools = tools_for([], ["Food & Groceries", "Health"])
+        spending = next(t for t in tools if t["function"]["name"] == "spending")
+        enum = spending["function"]["parameters"]["properties"]["categories"]["items"]["enum"]
+        assert enum == ["Food & Groceries", "Health"]
 
-@requires_db
-class TestEmptyMerchantFilterIsReported:
-    """A zero from a filter that matched nothing must not look real.
-
-    Observed live: "how much did I spend on groceries" compiled to
-    merchant="groceries", matched no shop, and answered a confident
-    $0.00 while Food & Groceries held $92.25 of spending. Categories
-    and expense types are validated against a list; a merchant is free
-    text, so the only check available is whether it found anything.
-    """
-
-    def _ask(self, client, merchant):
-        import asyncio
-
-        from sqlalchemy import select
-
-        from app.ai import tasks
-        from app.ai.provider import ChatResult
-        from app.db.models import User
-
-        h = _auth(client)
-        _seed(client, h)
-
-        class Stub:
-            def __init__(self):
-                self.calls = 0
-
-            async def chat(self, prompt, **kw):
-                self.calls += 1
-                if self.calls == 1:
-                    return ChatResult(content='{"kind":"figures"}', model="stub")
-                if self.calls == 2:
-                    return ChatResult(content=(
-                        '{"metric":"spend","period":"this_month","start":"","end":"",'
-                        '"group_by":"none","expense_types":[],"categories":[],'
-                        f'"merchant":"{merchant}"}}'), model="stub")
-                return ChatResult(content="ok", model="stub")
-
-        with SessionLocal() as db:
-            uid = db.scalars(select(User.id).order_by(User.created_at.desc())).first()
-            return asyncio.run(tasks.run_ask(
-                db, db.get(User, uid), Stub(),
-                {"question": "q", "today": "2026-10-24"}))
-
-    def test_a_merchant_that_matches_nothing_is_flagged(self, client):
-        out = self._ask(client, "groceries")
-        assert out["result"]["total_cents"] == 0
-        assert out["unresolved_filters"] == ["groceries"], \
-            "a zero from a bad filter must be distinguishable from a real zero"
-
-    def test_a_merchant_that_matches_is_not_flagged(self, client):
-        out = self._ask(client, "Chick-fil-A")
-        assert out["result"]["total_cents"] > 0
-        assert out["unresolved_filters"] == []
+    def test_no_empty_enum_when_the_user_has_no_types(self, client):
+        """gemma4 rejects enum: [] outright."""
+        from app.ai.ask_agent import tools_for
+        tools = tools_for([], [])
+        spending = next(t for t in tools if t["function"]["name"] == "spending")
+        props = spending["function"]["parameters"]["properties"]
+        assert "expense_types" not in props and "categories" not in props

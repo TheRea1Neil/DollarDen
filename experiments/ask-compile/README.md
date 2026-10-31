@@ -1,3 +1,19 @@
+# SUPERSEDED — the compile step no longer exists
+
+This measured a design that has been replaced. Questions now go
+through an agent loop (`backend/app/ai/ask_agent.py`): the model
+calls tools to look things up rather than emitting one query spec
+up front, so there is no single "compile" to grade.
+
+It was never run — the deck was unreachable when it was written,
+and by the time it was reachable the design had moved on. Kept for
+the reasoning in it, which still holds: a wrong `period` is the
+failure that hides, because an answer for the wrong month reads
+exactly like an answer for the right one. The agent now surfaces
+every lookup it made for that reason.
+
+---
+
 # Can the local model compile a question into a query?
 
 ## The question

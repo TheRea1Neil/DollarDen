@@ -2,6 +2,7 @@ pyproject.toml
 app/__init__.py
 app/main.py
 app/ai/__init__.py
+app/ai/ask_agent.py
 app/ai/budget_context.py
 app/ai/gpu.py
 app/ai/jobs.py

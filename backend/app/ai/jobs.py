@@ -12,12 +12,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
+from app.ai import gpu
 from app.ai.provider import AIUnavailable, build_provider
 from app.core.config import Settings, get_settings
 from app.db.models import AIJob, User
@@ -98,6 +99,25 @@ async def run_job(job_id: uuid.UUID) -> None:
         settings = get_settings()
         provider = provider_for(user, settings)
 
+        # Gate: run immediately when there is room, wait when there is
+        # not. The normal path is straight through -- see app/ai/gpu.py.
+        verdict = await gpu.can_run_now(settings)
+        if not verdict.ok and job.attempts < settings.ai_max_defer_attempts:
+            job.status = "deferred"
+            job.attempts += 1
+            job.defer_reason = verdict.reason
+            job.not_before = datetime.now(UTC) + timedelta(
+                minutes=settings.ai_defer_minutes)
+            db.commit()
+            log.info("job %s deferred (%s), attempt %d, retry after %s",
+                     job_id, verdict.code, job.attempts, job.not_before)
+            return
+        if not verdict.ok:
+            # Out of patience. Running and stuttering a frame beats a
+            # transaction that is never categorised.
+            log.warning("job %s has deferred %d times; running anyway (%s)",
+                        job_id, job.attempts, verdict.code)
+
         job.status = "running"
         db.commit()
 
@@ -152,15 +172,34 @@ async def worker_loop(poll_seconds: float = 3.0) -> None:
 
 
 def _claim_next() -> uuid.UUID | None:
+    """Next job due now: anything queued, or deferred past its wait.
+
+    Deferred work is drained by the same loop rather than a separate
+    scheduler -- the worker already polls, so a job whose `not_before`
+    has passed is simply eligible again.
+    """
+    now = datetime.now(UTC)
     with SessionLocal() as db:
         row = db.scalars(
-            select(AIJob).where(AIJob.status == "queued").order_by(AIJob.created_at).limit(1)
+            select(AIJob)
+            .where(
+                or_(
+                    AIJob.status == "queued",
+                    and_(AIJob.status == "deferred",
+                         AIJob.not_before.isnot(None),
+                         AIJob.not_before <= now),
+                )
+            )
+            # Oldest first, so a job that has already waited is not
+            # overtaken by one that just arrived.
+            .order_by(AIJob.created_at)
+            .limit(1)
         ).first()
         if row is None:
             return None
         claimed = db.execute(
             update(AIJob)
-            .where(AIJob.id == row.id, AIJob.status == "queued")
+            .where(AIJob.id == row.id, AIJob.status.in_(("queued", "deferred")))
             .values(status="waking")
             .returning(AIJob.id)
         ).first()

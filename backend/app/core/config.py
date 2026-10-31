@@ -50,6 +50,28 @@ class Settings(BaseSettings):
     ai_model_vision: str = "gemma4:12b"
     ai_model_text: str = "gemma4:12b"
     ai_confidence_threshold: float = 0.85
+    # --- GPU headroom gate (deploy/deck/gpu-probe.py) -------------- #
+    # The inference host is also a gaming PC. Jobs wait rather than
+    # fight a game for VRAM. See app/ai/gpu.py.
+    gpu_probe_url: str = ""
+    gpu_probe_token: str = ""
+    # gemma4:12b measured at 9,815 MB resident on a 16,304 MB card.
+    # 10,500 leaves a little headroom without being so strict that an
+    # idle desktop looks busy.
+    ai_min_vram_mb: int = 10_500
+    ai_max_gpu_busy_percent: int = 60
+    # Nothing runs overnight: the machine is in a bedroom-adjacent room
+    # and waking it means fans. PINNED to the PC's own zone -- the Pi
+    # runs Europe/London and the PC sits in Denver.
+    ai_quiet_timezone: str = "America/Denver"
+    ai_quiet_start_hour: int = 1
+    ai_quiet_end_hour: int = 8
+    # How long to wait before re-trying a deferred job.
+    ai_defer_minutes: int = 60
+    # After this many deferrals the job runs regardless. A stuttered
+    # frame costs less than a transaction that is never categorised.
+    ai_max_defer_attempts: int = 24
+
     wol_api_url: str = ""
     wol_api_token: str = ""
     ai_wake_timeout_seconds: int = 90

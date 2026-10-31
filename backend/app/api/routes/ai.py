@@ -148,11 +148,16 @@ class JobIn(BaseModel):
 class JobOut(BaseModel):
     id: str
     kind: str
-    status: str          # queued | waking | running | done | failed
+    status: str  # queued | waking | running | deferred | done | failed
     result: dict | None
     error: str | None
     created_at: str
     completed_at: str | None
+    # Set while a job is waiting for the GPU or for morning,
+    # so the app can say WHY rather than showing a stalled spinner.
+    defer_reason: str | None = None
+    retry_at: str | None = None
+    attempts: int = 0
 
     @property
     def finished(self) -> bool:
@@ -162,6 +167,9 @@ class JobOut(BaseModel):
 def _job_out(j: AIJob) -> JobOut:
     return JobOut(
         id=str(j.id), kind=j.kind, status=j.status, result=j.result, error=j.error,
+        defer_reason=j.defer_reason,
+        retry_at=j.not_before.isoformat() if j.not_before else None,
+        attempts=j.attempts,
         created_at=j.created_at.isoformat(),
         completed_at=j.completed_at.isoformat() if j.completed_at else None,
     )
@@ -219,13 +227,34 @@ async def ai_status(
     Deliberately does NOT wake a sleeping host: this is called to render a
     settings screen, and waking a PC to draw a status dot would be rude.
     """
+    from app.ai import gpu
+
     provider = provider_for(user, s)
     name = type(provider).__name__
     available = await provider.available()
+
+    # Probe health is surfaced so a probe that an OS update removed is
+    # visible in the app, not only in the logs. The gate FAILS OPEN when
+    # it cannot be reached, so a missing probe costs the gaming
+    # protection and nothing else -- but the user should still be told.
+    state = await gpu.probe(s)
+    quiet = gpu.in_quiet_hours(s)
+    probe_configured = bool(s.gpu_probe_url)
     return {
         "provider": user.ai_provider or s.ai_provider,
         "implementation": name,
         "available_now": available,
+        "quiet_hours": quiet,
+        "quiet_window": (f"{s.ai_quiet_start_hour:02d}:00-"
+                         f"{s.ai_quiet_end_hour:02d}:00 {s.ai_quiet_timezone}"),
+        "gpu": {
+            **state.as_dict(),
+            "configured": probe_configured,
+            "needs_vram_mb": s.ai_min_vram_mb,
+            # Only a real problem when a probe IS configured and the
+            # host is otherwise up: unreachable-while-asleep is normal.
+            "degraded": probe_configured and available and not state.reachable,
+        },
         "note": (
             "The AI host sleeps when idle. 'available_now: false' usually "
             "means asleep, not broken — the first job wakes it, taking about "

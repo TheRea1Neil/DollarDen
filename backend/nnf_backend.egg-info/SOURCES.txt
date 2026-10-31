@@ -2,6 +2,7 @@ pyproject.toml
 app/__init__.py
 app/main.py
 app/ai/__init__.py
+app/ai/gpu.py
 app/ai/jobs.py
 app/ai/provider.py
 app/ai/receipt_loop.py
@@ -60,6 +61,7 @@ tests/test_analytics_taxonomy.py
 tests/test_auth_and_isolation.py
 tests/test_budget_api.py
 tests/test_budget_flow.py
+tests/test_gpu_gate.py
 tests/test_item_memory.py
 tests/test_ledger.py
 tests/test_plaid_sync.py

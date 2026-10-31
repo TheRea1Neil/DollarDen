@@ -432,6 +432,9 @@ class ItemMemory(Base):
 
 class AIJob(Base):
     __tablename__ = "ai_jobs"
+    __table_args__ = (
+        Index("ix_ai_jobs_status_not_before", "status", "not_before"),
+    )
 
     id: Mapped[uuid.UUID] = _pk()
     user_id: Mapped[uuid.UUID] = _user_fk()
@@ -441,6 +444,12 @@ class AIJob(Base):
     request: Mapped[dict] = mapped_column(JSONB, nullable=False)
     result: Mapped[dict | None] = mapped_column(JSONB)
     error: Mapped[str | None] = mapped_column(Text)
+    # Set while status is "deferred": the GPU was busy, or it is the
+    # middle of the night. The worker re-claims the job once this
+    # passes. See app/ai/gpu.py and migration 0009.
+    not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    defer_reason: Mapped[str | None] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = _now()
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

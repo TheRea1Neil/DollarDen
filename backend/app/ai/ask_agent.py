@@ -54,6 +54,25 @@ def _money(cents: int | None) -> str:
     return "—" if cents is None else f"${cents / 100:,.2f}"
 
 
+def strip_markdown(text: str) -> str:
+    """Remove markup the app would render literally.
+
+    The screen shows the answer as plain text, so `**bold**` arrives on
+    screen with the asterisks still attached. Asking the model not to
+    use markdown mostly works; this catches the rest, because a
+    prompt instruction is a request and this is a guarantee.
+    """
+    import re as _re
+
+    out = _re.sub(r"\*\*(.+?)\*\*", r"\1", text)          # **bold**
+    out = _re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])",
+                  r"\1", out)                               # *italic*
+    out = _re.sub(r"^\s{0,3}#{1,6}\s+", "", out, flags=_re.M)  # # heading
+    out = _re.sub(r"^\s{0,3}[*+]\s+", "- ", out, flags=_re.M)  # * bullet
+    out = _re.sub(r"`([^`]+)`", r"\1", out)                   # `code`
+    return out.strip()
+
+
 def tools_for(type_names: list[str], cat_names: list[str]) -> list[dict[str, Any]]:
     """Tool definitions, with the user's real names as enums.
 
@@ -156,6 +175,11 @@ have come from a tool result. If something is not available, say so
 rather than estimating.
 
 Be brief: under 200 words, plain language, specific to this budget.
+
+Write PLAIN TEXT. No markdown — no **bold**, no bullet characters, no
+headings. The app shows your answer as written, so asterisks appear on
+screen as asterisks. Use ordinary sentences and name things directly.
+
 At most {max_calls} tool calls.
 
 The question:
@@ -336,5 +360,5 @@ async def run(
     if not final:
         final = ("I could not work that out from your data. Try asking it a "
                  "different way, or more specifically.")
-    return AskResult(answer=final, steps=steps, tool_calls=calls,
+    return AskResult(answer=strip_markdown(final), steps=steps, tool_calls=calls,
                      model=model_name, hit_limit=hit_limit)

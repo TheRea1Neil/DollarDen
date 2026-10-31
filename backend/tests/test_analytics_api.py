@@ -333,3 +333,38 @@ class TestAskAgent:
         spending = next(t for t in tools if t["function"]["name"] == "spending")
         props = spending["function"]["parameters"]["properties"]
         assert "expense_types" not in props and "categories" not in props
+
+
+class TestAnswerIsPlainText:
+    """The screen renders the answer verbatim.
+
+    Markdown arrives with its punctuation attached: `**Utilities**`
+    appears on the phone as asterisks. The prompt asks for plain text,
+    which mostly works; this is the part that guarantees it.
+    """
+
+    def test_bold_is_unwrapped(self):
+        from app.ai.ask_agent import strip_markdown
+        assert strip_markdown("you need **Utilities** next") == \
+            "you need Utilities next"
+
+    def test_headings_go(self):
+        from app.ai.ask_agent import strip_markdown
+        assert strip_markdown("## Summary\nYou spent $5.") == "Summary\nYou spent $5."
+
+    def test_bullets_become_plain_dashes(self):
+        from app.ai.ask_agent import strip_markdown
+        assert strip_markdown("* one\n* two") == "- one\n- two"
+
+    def test_code_ticks_go(self):
+        from app.ai.ask_agent import strip_markdown
+        assert strip_markdown("the `Gas` envelope") == "the Gas envelope"
+
+    def test_a_lone_asterisk_in_prose_survives(self):
+        """Stripping must not mangle ordinary text."""
+        from app.ai.ask_agent import strip_markdown
+        assert strip_markdown("2 * 3 is 6") == "2 * 3 is 6"
+
+    def test_money_is_untouched(self):
+        from app.ai.ask_agent import strip_markdown
+        assert "$1,234.56" in strip_markdown("that came to **$1,234.56** total")

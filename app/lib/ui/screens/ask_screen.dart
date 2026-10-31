@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/money.dart';
 import '../../data/api_client.dart';
 import '../../data/providers.dart';
 import '../../domain/insights.dart';
@@ -183,7 +182,6 @@ class _AnswerCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final r = answer.result;
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       child: Padding(
@@ -192,106 +190,84 @@ class _AnswerCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(answer.question,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  fontStyle: FontStyle.italic,
-                )),
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(fontStyle: FontStyle.italic)),
             const SizedBox(height: 10),
-            if (answer.isAdvice)
-              Text(answer.answer, style: theme.textTheme.bodyMedium)
-            else if (answer.metric != 'count')
-              Text(Money.format(r.totalCents),
-                  style: theme.textTheme.headlineMedium)
-            else
-              Text('${r.count}', style: theme.textTheme.headlineMedium),
-            if (!answer.isAdvice) ...[
-              const SizedBox(height: 8),
-              Text(answer.answer, style: theme.textTheme.bodyMedium),
-            ],
+            Text(answer.answer, style: theme.textTheme.bodyMedium),
 
-            // What was actually asked of the data. Only meaningful for
-            // a figure -- an advice answer ran no query, and showing an
-            // empty filter would imply one.
-            if (!answer.isAdvice) ...[
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.filter_alt_outlined,
-                      size: 14, color: theme.colorScheme.onSurfaceVariant),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      'Read as: ${answer.filterSummary}  ·  '
-                      '${r.count} transaction${r.count == 1 ? '' : 's'}',
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            ],
-            if (!answer.isAdvice && answer.periodNotUnderstood)
-              _Note(
-                icon: Icons.schedule,
-                text: 'The dates in that question were not clear, so this '
-                    'covers ${answer.period.label}. Try naming a month.',
-              ),
-            if (!answer.isAdvice && answer.unresolvedFilters.isNotEmpty)
+            for (final s in answer.emptyLookups)
               _Note(
                 icon: Icons.help_outline,
-                // Without this, a zero caused by a filter that matched
-                // nothing looks exactly like a genuine zero.
-                text: 'Nothing matched '
-                    '${answer.unresolvedFilters.join(', ')}. That is why the '
-                    'figure is what it is — try an envelope name, or a shop '
-                    'exactly as it appears on your statement.',
+                // A zero from a filter that matched nothing reads
+                // exactly like a real zero, so it is called out.
+                text: 'Nothing matched ${s.label}. If that is not what '
+                    'you meant, try an envelope name or the shop exactly '
+                    'as it appears on your statement.',
+              ),
+            if (answer.hitLimit)
+              const _Note(
+                icon: Icons.timer_outlined,
+                text: 'It ran out of lookups before finishing, so this '
+                    'answer may be incomplete.',
               ),
 
-            if (!answer.isAdvice &&
-                r.previousTotalCents != null &&
-                answer.metric != 'count') ...[
-              const SizedBox(height: 8),
-              Text(
-                'Previous period (${r.previousPeriod?.label ?? 'before'}): '
-                '${Money.format(r.previousTotalCents!)}'
-                '${_direction(r.deltaCents)}',
-                style: theme.textTheme.bodySmall,
-              ),
-            ],
-
-            if (!answer.isAdvice && r.groups.isNotEmpty) ...[
-              const Divider(height: 24),
-              for (final g in r.groups)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 3),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(g.label,
-                            maxLines: 1, overflow: TextOverflow.ellipsis),
-                      ),
-                      Text(Money.format(g.cents)),
-                    ],
-                  ),
-                ),
+            if (answer.steps.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              _Lookups(steps: answer.steps),
             ],
           ],
         ),
       ),
     );
   }
+}
 
-  static String _direction(int? delta) {
-    if (delta == null || delta == 0) return '';
-    return delta > 0
-        ? ' — ${Money.format(delta)} more now'
-        : ' — ${Money.format(-delta)} less now';
+/// What the assistant actually looked up.
+///
+/// Collapsed by default — most of the time the answer is the point —
+/// but always available, because a figure you cannot check is a claim.
+/// It is also where a misread question becomes visible: the arguments
+/// show what was asked of the data, not what you meant.
+class _Lookups extends StatelessWidget {
+  final List<AskStep> steps;
+  const _Lookups({required this.steps});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Theme(
+      data: theme.copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        childrenPadding: const EdgeInsets.only(bottom: 4),
+        dense: true,
+        visualDensity: VisualDensity.compact,
+        leading: Icon(Icons.search,
+            size: 16, color: theme.colorScheme.onSurfaceVariant),
+        title: Text(
+          'What it looked up (${steps.length})',
+          style: theme.textTheme.bodySmall,
+        ),
+        children: [
+          for (final s in steps)
+            Padding(
+              padding: const EdgeInsets.only(left: 4, bottom: 6),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(s.label,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w600)),
+                  if (s.outcome != null)
+                    Text(s.outcome!,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant)),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
   }
 }
 

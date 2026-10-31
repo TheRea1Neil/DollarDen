@@ -302,77 +302,107 @@ class SpendRow {
       );
 }
 
+/// One lookup the assistant made on the way to an answer.
+///
+/// Surfaced so a figure can be checked rather than taken on trust: an
+/// answer you cannot audit is a claim, not information. It is also how
+/// a question read the wrong way becomes visible — the tool arguments
+/// show what was actually asked of the data.
+class AskStep {
+  final String tool;
+  final Map<String, dynamic> arguments;
+  final Map<String, dynamic> result;
+
+  const AskStep({
+    required this.tool,
+    required this.arguments,
+    required this.result,
+  });
+
+  factory AskStep.fromJson(Map<String, dynamic> j) => AskStep(
+        tool: j['tool'] as String? ?? '',
+        arguments: ((j['arguments'] as Map?) ?? const {}).cast<String, dynamic>(),
+        result: ((j['result'] as Map?) ?? const {}).cast<String, dynamic>(),
+      );
+
+  /// "spending · Food & Groceries · this month"
+  String get label {
+    final bits = <String>[];
+    for (final key in ['categories', 'expense_types']) {
+      final v = arguments[key];
+      if (v is List && v.isNotEmpty) bits.add(v.join(', '));
+    }
+    final m = arguments['merchant'];
+    if (m is String && m.isNotEmpty) bits.add('"$m"');
+    final p = arguments['period'];
+    if (p is String && p.isNotEmpty) bits.add(p.replaceAll('_', ' '));
+    return bits.isEmpty ? tool : '$tool · ${bits.join(' · ')}';
+  }
+
+  /// The headline figure a lookup returned, when it has one.
+  String? get outcome {
+    final total = result['total'];
+    if (total is String) {
+      final n = result['transactions'];
+      return n is int ? '$total over $n transaction${n == 1 ? '' : 's'}' : total;
+    }
+    if (result.containsKey('budget')) return 'your envelopes and balances';
+    if (result.containsKey('transactions')) {
+      final t = result['transactions'];
+      if (t is List) return '${t.length} charges';
+    }
+    if (result.containsKey('charges')) {
+      final c = result['charges'];
+      if (c is List) return '${c.length} repeating charges';
+    }
+    final err = result['error'];
+    if (err is String) return 'could not run: $err';
+    return null;
+  }
+
+  bool get foundNothing => result['transactions'] == 0;
+}
+
 /// An answer to a plain-English question.
 ///
-/// [query] is what the server actually asked the data, and the screen
-/// shows it. Without that, a question the model read differently from
-/// the way it was meant produces an answer that looks perfectly
-/// confident and is about something else.
+/// The assistant looks things up with tools and then answers; [steps]
+/// is what it looked up. Every figure in [answer] came out of SQL —
+/// the model chooses the filter, the database produces the number.
 class SpendingAnswer {
   final String question;
   final String answer;
+  final List<AskStep> steps;
+  final int toolCalls;
+  final String model;
 
-  /// "figures" — a total computed in SQL, with a query to show.
-  /// "advice" — a question about the budget itself; no query ran, so
-  /// there is no "read as" line to display.
-  final String kind;
-  final String metric;
-  final AnalyticsPeriod period;
-  final List<String> expenseTypes;
-  final List<String> categories;
-  final String? merchant;
-  final SpendResult result;
-  final List<String> unresolvedFilters;
-  final bool periodNotUnderstood;
+  /// It ran out of lookups before answering. Rare, and worth saying so
+  /// rather than presenting a half-formed answer as complete.
+  final bool hitLimit;
 
   const SpendingAnswer({
     required this.question,
     required this.answer,
-    this.kind = 'figures',
-    required this.metric,
-    required this.period,
-    required this.expenseTypes,
-    required this.categories,
-    this.merchant,
-    required this.result,
-    required this.unresolvedFilters,
-    required this.periodNotUnderstood,
+    this.steps = const [],
+    this.toolCalls = 0,
+    this.model = '',
+    this.hitLimit = false,
   });
 
-  factory SpendingAnswer.fromJson(Map<String, dynamic> j) {
-    final q = ((j['query'] as Map?) ?? const {}).cast<String, dynamic>();
-    return SpendingAnswer(
-      question: j['question'] as String? ?? '',
-      answer: j['answer'] as String? ?? '',
-      kind: j['kind'] as String? ?? 'figures',
-      metric: q['metric'] as String? ?? 'spend',
-      period: AnalyticsPeriod.fromJson(
-          ((q['period'] as Map?) ?? const {}).cast<String, dynamic>()),
-      expenseTypes:
-          ((q['expense_types'] as List?) ?? const []).map((e) => '$e').toList(),
-      categories:
-          ((q['categories'] as List?) ?? const []).map((e) => '$e').toList(),
-      merchant: q['merchant'] as String?,
-      result: SpendResult.fromJson(
-          ((j['result'] as Map?) ?? const {}).cast<String, dynamic>()),
-      unresolvedFilters:
-          ((j['unresolved_filters'] as List?) ?? const []).map((e) => '$e').toList(),
-      periodNotUnderstood: j['period_not_understood'] as bool? ?? false,
-    );
-  }
+  factory SpendingAnswer.fromJson(Map<String, dynamic> j) => SpendingAnswer(
+        question: j['question'] as String? ?? '',
+        answer: j['answer'] as String? ?? '',
+        steps: ((j['steps'] as List?) ?? const [])
+            .map((e) => AskStep.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        toolCalls: j['tool_calls'] as int? ?? 0,
+        model: j['model'] as String? ?? '',
+        hitLimit: j['hit_limit'] as bool? ?? false,
+      );
 
-  bool get isAdvice => kind == 'advice';
-
-  /// What the query was narrowed to, for the "asked as" line.
-  String get filterSummary {
-    final parts = <String>[
-      ...expenseTypes,
-      ...categories,
-      if (merchant != null && merchant!.isNotEmpty) '"$merchant"',
-    ];
-    final what = parts.isEmpty ? 'everything' : parts.join(', ');
-    return '$what · ${period.label}';
-  }
+  /// A lookup that matched nothing is worth flagging: a zero from a bad
+  /// filter reads exactly like a real zero.
+  List<AskStep> get emptyLookups =>
+      steps.where((s) => s.foundNothing).toList(growable: false);
 }
 
 /// What the assistant thinks a charge was, before anyone accepts it.

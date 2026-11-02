@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up the nnf database and verify it by restoring it
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/neil/nnf/deploy/backup.sh
+# The dump holds financial history; keep it readable only by its owner.
+UMask=0077

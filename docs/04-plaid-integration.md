@@ -273,7 +273,9 @@ Do not start until every box is ticked.
 - [ ] `/transactions/sync` loop handles `added`/`modified`/`removed` idempotently
 - [ ] Update-mode re-auth tested via `/sandbox/item/reset_login`
 - [ ] Tokens encrypted at rest; `TOKEN_ENCRYPTION_KEY` backed up off-box
-- [ ] `pg_dump` backup runs nightly **and a restore has been performed**
+- [x] `pg_dump` backup runs nightly **and a restore has been performed** —
+      `deploy/backup.sh` + `nnf-backup.timer`; it restores into a scratch
+      database and compares row counts on every run (docs/09)
 - [ ] Token export script written and its output stored safely
 - [ ] Production secret obtained and set; `PLAID_ENV=production`, `ALLOW_PRODUCTION=true`
 - [ ] A separate database (or at minimum schema) from sandbox data

@@ -87,13 +87,43 @@ Caddy; not published publicly).
 Note 5432 is now free since the CasaOS Postgres was stopped, but 5433 is used
 anyway so re-enabling that service later cannot collide.
 
-## Backup plan for this project
+## Backups for this project
 
-- Nightly `pg_dump` of the `nnf` database to `/home/neil/backups/nnf/`.
-- Weekly copy off-box.
-- `TOKEN_ENCRYPTION_KEY` backed up **separately**, in a password manager —
-  the dump is useless without it.
-- **Test a restore before linking a production bank** (docs/04).
+Built and running as of 2026-11-02. `deploy/backup.sh`, driven by the
+`nnf-backup.timer` systemd unit at 02:30 Europe/London.
+
+```bash
+sudo systemctl start nnf-backup.service     # run one now
+systemctl list-timers nnf-backup            # when it next fires
+sudo journalctl -u nnf-backup -n 20         # what it did
+ls -lh ~/nnf/deploy/backups/                # the dumps, 14 days kept
+```
+
+**It verifies by restoring, every night.** The dump is restored into a
+throwaway `nnf_verify_$$` database and the row counts of `users`,
+`plaid_items`, `accounts`, `transactions` and `categories` are compared
+against the live ones; the `access_token` ciphertext is additionally
+compared by md5. Any mismatch fails the unit. A dump that is never read
+back is not a backup, and the usual failure is a well-formed empty file
+written nightly for a year.
+
+This is heavier than a plain `pg_dump` on purpose. The Plaid Trial plan
+caps the account at 10 Items for its lifetime and `/item/remove` does
+not return a slot (docs/04), so the `access_token` in this database is
+genuinely irreplaceable — losing it burns one of ten permanently.
+
+To restore for real: `deploy/restore.sh [dump]`. It stops the API,
+**renames** the current database rather than dropping it, restores, and
+restarts. The rename is the undo if the wrong dump was picked.
+
+### Still to do
+
+- **Off-box copy.** Everything above lives on the Pi's own disk, so it
+  survives a bad migration or a lost Docker volume but not a dead drive.
+- `TOKEN_ENCRYPTION_KEY` backed up **separately**, in a password manager
+  — the dumps hold the tokens as ciphertext and are worthless without
+  it. `restore.sh` refuses to run if the key is missing from `.env`,
+  rather than handing back a database of undecryptable connections.
 
 ---
 

@@ -1,0 +1,15 @@
+[Unit]
+Description=Nightly nnf database backup
+
+[Timer]
+# 02:30 Europe/London. The AI quiet window is 01:00-08:00 Denver time,
+# so this never competes with a model job, and nothing else on the Pi
+# runs then.
+OnCalendar=*-*-* 02:30:00
+# The Pi is not always up; a missed night should run on next boot
+# rather than silently skip.
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

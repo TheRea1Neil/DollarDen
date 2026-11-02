@@ -39,6 +39,8 @@ pgdata/
 backups/*.sql
 backups/*.dump
 !backups/.gitkeep
+# The live dump directory on the Pi.
+deploy/backups/
 
 # ---- os / editor ----
 .DS_Store

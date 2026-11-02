@@ -6,8 +6,10 @@ import '../../core/theme.dart';
 import '../../data/providers.dart';
 import '../../domain/models.dart';
 import '../widgets/category_tile.dart';
+import '../widgets/setup_guide.dart';
 import 'add_category_screen.dart';
 import 'category_editor_screen.dart';
+import 'connections_screen.dart';
 import 'history_screen.dart';
 import 'insights_screen.dart';
 import 'move_money_screen.dart';
@@ -132,6 +134,30 @@ class HomeScreen extends ConsumerWidget {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
             children: [
+              // Before anything else on an unfinished budget. The old
+              // first impression was a $0.00 total and a Paycheck
+              // button that could not work, which told a new user
+              // nothing about what to do.
+              Builder(builder: (context) {
+                final setup = SetupState.from(s);
+                if (setup.stage == SetupStage.done) {
+                  return const SizedBox.shrink();
+                }
+                return SetupGuide(
+                  state: setup,
+                  onConnectBank: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                          builder: (_) => const ConnectionsScreen())),
+                  onChooseAccounts: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                          builder: (_) => const ConnectionsScreen())),
+                  onNewCategory: () => _newCategory(context),
+                  onAllocate: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                          builder: (_) => const MoveMoneyScreen(
+                              startOnRebalance: true))),
+                );
+              }),
               _PaycheckPrompt(),
               _TotalCard(summary: s),
               if (s.ledgerDrift.isNotEmpty) ...[

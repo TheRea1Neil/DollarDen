@@ -26,6 +26,10 @@ class Category {
   final bool belowAlert;
   final bool overspent;
 
+  /// The system's sink for money with no purpose yet. Not something
+  /// the user made, so it does not count as having built a budget.
+  final bool isUnallocated;
+
   const Category({
     required this.id,
     required this.name,
@@ -35,6 +39,7 @@ class Category {
     required this.archived,
     required this.belowAlert,
     required this.overspent,
+    this.isUnallocated = false,
     this.description,
     this.spendCriteria,
     this.targetCents,
@@ -54,6 +59,7 @@ class Category {
         archived: j['archived'] as bool? ?? false,
         belowAlert: j['below_alert'] as bool? ?? false,
         overspent: j['overspent'] as bool? ?? false,
+        isUnallocated: j['is_unallocated'] as bool? ?? false,
       );
 
   /// How full this category is against its target, clamped to 0..1.

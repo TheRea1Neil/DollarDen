@@ -22,7 +22,11 @@ import '../../domain/models.dart';
 /// ledger can still say where the money went — a balance written
 /// directly would leave the other envelope silently wrong.
 class MoveMoneyScreen extends ConsumerStatefulWidget {
-  const MoveMoneyScreen({super.key});
+  /// Open on Rebalance rather than Move. Setting a budget up for the
+  /// first time is a rebalance, not a transfer.
+  final bool startOnRebalance;
+
+  const MoveMoneyScreen({super.key, this.startOnRebalance = false});
 
   @override
   ConsumerState<MoveMoneyScreen> createState() => _MoveMoneyScreenState();
@@ -30,7 +34,8 @@ class MoveMoneyScreen extends ConsumerStatefulWidget {
 
 class _MoveMoneyScreenState extends ConsumerState<MoveMoneyScreen>
     with SingleTickerProviderStateMixin {
-  late final TabController _tabs = TabController(length: 2, vsync: this);
+  late final TabController _tabs = TabController(
+      length: 2, vsync: this, initialIndex: widget.startOnRebalance ? 1 : 0);
 
   @override
   void dispose() {

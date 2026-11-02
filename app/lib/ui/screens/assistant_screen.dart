@@ -26,6 +26,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   final _extra = TextEditingController();
 
   bool _loadingGoals = true;
+  bool _saving = false;
   bool _busy = false;
   String _progress = '';
   Proposal? _proposal;
@@ -51,6 +52,29 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       // Not fatal: the user can still type goals in.
     } finally {
       if (mounted) setState(() => _loadingGoals = false);
+    }
+  }
+
+  /// Goals used to persist only as a side effect of generating a whole
+  /// budget. They are read by five AI tasks and this is the only screen
+  /// that can edit them, so saving them has to stand on its own.
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      await ref.read(apiProvider).setGoals(_goals.text.trim());
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Goals saved')),
+      );
+    } on ApiException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message),
+              backgroundColor: Theme.of(context).colorScheme.error),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
   }
 
@@ -123,7 +147,25 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Assistant')),
+      appBar: AppBar(
+        title: const Text('Goals'),
+        actions: [
+          if (_saving)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 20),
+              child: SizedBox(
+                height: 18, width: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          else
+            IconButton(
+              tooltip: 'Save goals',
+              icon: const Icon(Icons.check),
+              onPressed: _loadingGoals || _busy ? null : _save,
+            ),
+        ],
+      ),
       body: _loadingGoals
           ? const Center(child: CircularProgressIndicator())
           : ListView(

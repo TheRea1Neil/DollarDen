@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/theme.dart';
 import 'data/providers.dart';
 import 'ui/screens/home_screen.dart';
-import 'ui/screens/assistant_screen.dart';
+import 'ui/screens/insights_screen.dart';
 import 'ui/screens/connections_screen.dart';
 import 'ui/screens/login_screen.dart';
 import 'ui/screens/review_screen.dart';
@@ -65,7 +65,7 @@ class _ShellState extends ConsumerState<_Shell> {
         children: const [
           HomeScreen(),
           ReviewScreen(),
-          AssistantScreen(),
+          InsightsScreen(),
           ConnectionsScreen(),
         ],
       ),
@@ -88,9 +88,9 @@ class _ShellState extends ConsumerState<_Shell> {
             label: 'Review',
           ),
           const NavigationDestination(
-            icon: Icon(Icons.auto_awesome_outlined),
-            selectedIcon: Icon(Icons.auto_awesome),
-            label: 'Assistant',
+            icon: Icon(Icons.insights_outlined),
+            selectedIcon: Icon(Icons.insights),
+            label: 'Insights',
           ),
           const NavigationDestination(
             icon: Icon(Icons.account_balance_outlined),

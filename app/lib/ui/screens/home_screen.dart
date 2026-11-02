@@ -11,7 +11,7 @@ import 'add_category_screen.dart';
 import 'category_editor_screen.dart';
 import 'connections_screen.dart';
 import 'history_screen.dart';
-import 'insights_screen.dart';
+import 'assistant_screen.dart';
 import 'move_money_screen.dart';
 import 'paycheck_screen.dart';
 
@@ -81,11 +81,15 @@ class HomeScreen extends ConsumerWidget {
               MaterialPageRoute<void>(builder: (_) => const MoveMoneyScreen()),
             ),
           ),
+          // Insights has its own tab now. This slot keeps the goals
+          // editor reachable: nothing else in the app can edit them, and
+          // five AI tasks read them -- including the two that design
+          // categories, which is why it sits next to "New category".
           IconButton(
-            tooltip: 'Insights',
-            icon: const Icon(Icons.insights_outlined),
+            tooltip: 'Goals',
+            icon: const Icon(Icons.auto_awesome_outlined),
             onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const InsightsScreen()),
+              MaterialPageRoute<void>(builder: (_) => const AssistantScreen()),
             ),
           ),
           IconButton(

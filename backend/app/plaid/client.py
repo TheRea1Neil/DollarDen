@@ -66,6 +66,7 @@ class PlaidClient:
         *,
         access_token: str | None = None,
         webhook: str | None = None,
+        platform: str | None = None,
     ) -> dict[str, Any]:
         """Mint a link_token.
 
@@ -73,6 +74,18 @@ class PlaidClient:
         re-authenticates an existing Item in place rather than creating a new
         one, so no connection credit is consumed. This is the path for
         ITEM_LOGIN_REQUIRED. See docs/04.
+
+        `platform` decides how OAuth gets the user back from the bank, and
+        the two mechanisms are MUTUALLY EXCLUSIVE. Plaid's docs, of the
+        Android SDK: "you must generate a Link token by calling
+        /link/token/create and passing in an `android_package_name` ... Do
+        not pass a `redirect_uri` into the /link/token/create call." iOS is
+        the opposite -- a registered universal link, no package name.
+
+        Sending the wrong one does not raise. The user picks their accounts,
+        gets dropped back at the bank's login, and no Item is ever created
+        (observed against ins_127989, docs/04). So this is worth getting
+        right rather than sending both and hoping.
         """
         body: dict[str, Any] = {
             "client_name": "no-nonsense-finance",
@@ -89,10 +102,45 @@ class PlaidClient:
         hook = webhook or self.s.plaid_webhook_url
         if hook:
             body["webhook"] = hook
-        if self.s.plaid_redirect_uri:
-            body["redirect_uri"] = self.s.plaid_redirect_uri
 
+        self._apply_oauth_return_path(body, platform)
         return await self._post("/link/token/create", body)
+
+    def _apply_oauth_return_path(self, body: dict[str, Any], platform: str | None) -> None:
+        """Attach exactly one of android_package_name / redirect_uri.
+
+        In production a missing value is fatal rather than omitted. Every
+        large US bank is OAuth, so shipping without it means the link
+        silently dead-ends at the bank's login page -- which reads as "the
+        app is broken", costs an afternoon, and is indistinguishable from a
+        Plaid outage. Failing here names the missing setting instead.
+
+        In sandbox it is only a warning: the non-OAuth test institutions
+        (First Platypus and friends) link fine without either.
+        """
+        production = self.s.plaid_env == "production"
+
+        if platform == "android":
+            pkg = self.s.plaid_android_package_name
+            if pkg:
+                body["android_package_name"] = pkg
+                return
+            missing = "PLAID_ANDROID_PACKAGE_NAME"
+        else:
+            uri = self.s.plaid_redirect_uri
+            if uri:
+                body["redirect_uri"] = uri
+                return
+            missing = "PLAID_REDIRECT_URI"
+
+        where = platform or "an unspecified platform"
+        if production:
+            raise RuntimeError(
+                f"{missing} is not set, but a production link token was requested "
+                f"for {where}. OAuth institutions (Bank of America among them) "
+                f"would dead-end at the bank's login without it. See docs/04."
+            )
+        log.warning("%s unset; OAuth institutions will not work for %s", missing, where)
 
     async def exchange_public_token(self, public_token: str) -> dict[str, Any]:
         """public_token -> access_token. The access_token is long-lived."""

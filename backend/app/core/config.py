@@ -4,7 +4,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     plaid_products: str = "transactions"
     plaid_country_codes: str = "US"
     plaid_redirect_uri: str = ""
+    # Android OAuth uses the app's applicationId instead of a redirect URI,
+    # and the two are mutually exclusive. See PlaidClient.create_link_token.
+    plaid_android_package_name: str = ""
     plaid_webhook_url: str = ""
 
     # ---- database ----
@@ -91,17 +94,24 @@ class Settings(BaseSettings):
             "production": "https://production.plaid.com",
         }[self.plaid_env]
 
-    @field_validator("plaid_env")
-    @classmethod
-    def _guard_production(cls, v: str, info) -> str:  # type: ignore[no-untyped-def]
+    @model_validator(mode="after")
+    def _guard_production(self) -> "Settings":
         # Production is opt-in and loud. A stray PLAID_ENV in the wrong .env
         # must not quietly start spending connection credits.
-        if v == "production" and not info.data.get("allow_production", False):
+        #
+        # This was a field_validator on plaid_env reading
+        # info.data["allow_production"]. Pydantic v2 validates in
+        # declaration order and info.data holds only fields validated SO
+        # FAR -- allow_production is declared after plaid_env, so the flag
+        # was always absent and production was unreachable even when
+        # correctly configured. A model_validator sees every field and does
+        # not care about declaration order.
+        if self.plaid_env == "production" and not self.allow_production:
             raise ValueError(
                 "PLAID_ENV=production requires ALLOW_PRODUCTION=true. "
                 "See docs/04-plaid-integration.md before enabling."
             )
-        return v
+        return self
 
 
 @lru_cache

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
@@ -40,6 +40,7 @@ class LinkTokenOut(BaseModel):
 @router.post("/link-token", response_model=LinkTokenOut)
 async def create_link_token(
     item_id: str | None = None,
+    platform: Literal["android", "ios"] | None = None,
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
     client: PlaidClient = Depends(_client),
@@ -49,6 +50,10 @@ async def create_link_token(
     With `item_id`, returns an UPDATE MODE token that re-authenticates that
     existing Item in place. That path does NOT consume a connection credit,
     and is the correct response to ITEM_LOGIN_REQUIRED. See docs/04.
+
+    `platform` must be sent by the app: Android OAuth needs
+    `android_package_name` and iOS needs `redirect_uri`, and passing the
+    wrong one fails silently at the bank's login page rather than erroring.
     """
     access_token = None
     if item_id:
@@ -62,9 +67,15 @@ async def create_link_token(
         access_token = decrypt_token(item.access_token_encrypted)
 
     try:
-        resp = await client.create_link_token(str(user.id), access_token=access_token)
+        resp = await client.create_link_token(
+            str(user.id), access_token=access_token, platform=platform
+        )
     except PlaidError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Plaid: {exc.error_code}") from exc
+    except RuntimeError as exc:
+        # Misconfiguration, not a Plaid failure. 500 with the setting named
+        # beats a 502 that sends the reader looking at Plaid's status page.
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
 
     return LinkTokenOut(
         link_token=resp["link_token"],

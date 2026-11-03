@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:async';
 
 import 'package:dio/dio.dart';
@@ -363,10 +364,22 @@ class ApiClient {
   /// Passing [itemId] requests UPDATE MODE, which re-authenticates that
   /// existing connection in place. That path does not consume a connection
   /// credit and is the correct response to `login_required` (docs/04).
+  /// Android OAuth needs `android_package_name` on the link token and iOS
+  /// needs `redirect_uri`; they are mutually exclusive, and sending the
+  /// wrong one dead-ends at the bank's login instead of erroring. Only the
+  /// app knows which it is, so it has to say.
   Future<String> linkToken({String? itemId}) async {
+    final platform = Platform.isAndroid
+        ? 'android'
+        : Platform.isIOS
+            ? 'ios'
+            : null;
     final r = await _withRetry((o) => _dio.post(
           '/plaid/link-token',
-          queryParameters: {if (itemId != null) 'item_id': itemId},
+          queryParameters: {
+            if (itemId != null) 'item_id': itemId,
+            if (platform != null) 'platform': platform,
+          },
           options: o,
         ));
     if (r.statusCode != 200) _fail(r);

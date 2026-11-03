@@ -64,6 +64,7 @@ tests/test_auth_and_isolation.py
 tests/test_budget_api.py
 tests/test_budget_context.py
 tests/test_budget_flow.py
+tests/test_design_category_rule.py
 tests/test_gpu_gate.py
 tests/test_item_memory.py
 tests/test_ledger.py
@@ -77,5 +78,6 @@ tests/test_receipt_text.py
 tests/test_reconcile.py
 tests/test_refile.py
 tests/test_split_engine.py
+tests/test_split_missing_params.py
 tests/test_token_backup.py
 tests/test_treatment.py

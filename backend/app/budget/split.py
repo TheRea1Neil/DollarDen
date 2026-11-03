@@ -11,7 +11,8 @@ Invariants (asserted, and covered by property-based tests):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Any
 from enum import StrEnum
 
 
@@ -121,9 +122,43 @@ def _desired_amount(
 ) -> int:
     p = rule.params
 
+    def need(key: str) -> Any:
+        """A required param, or a malformed-plan error naming it.
+
+        Bare p[key] raised KeyError, which is not SplitPlanError, so it
+        escaped every caller that guards against a bad plan: saving one
+        became a 500 instead of a 422, and the same rule reaching a real
+        paycheck would have crashed the split rather than reporting
+        itself. A model will omit any property a schema does not mark
+        required (docs/10), so missing params are expected input, not an
+        impossible state.
+        """
+        if key not in p or p[key] in (None, ""):
+            raise SplitPlanError(
+                f"{rule.rule_type.value} rule for category {rule.category_id} "
+                f"is missing {key}"
+            )
+        return p[key]
+
+    def whole(key: str) -> int:
+        value = need(key)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise SplitPlanError(
+                f"{rule.rule_type.value} rule for category {rule.category_id} "
+                f"has a non-numeric {key}: {value!r}"
+            ) from None
+
     match rule.rule_type:
         case RuleType.PERCENT:
-            rate = Decimal(str(p["rate"]))
+            try:
+                rate = Decimal(str(need("rate")))
+            except InvalidOperation:
+                raise SplitPlanError(
+                    f"percent rule for category {rule.category_id} has a "
+                    f"non-numeric rate: {p.get('rate')!r}"
+                ) from None
             if not (0 <= rate <= 1):
                 raise SplitPlanError(f"percent rate out of range: {rate}")
             base_kind = PercentBase(p.get("of", PercentBase.GROSS))
@@ -131,23 +166,36 @@ def _desired_amount(
             return _pct(base, rate)
 
         case RuleType.FIXED:
-            return int(p["amount_cents"])
+            return whole("amount_cents")
 
         case RuleType.REFILL_TO:
-            target = int(p["target_cents"])
+            target = whole("target_cents")
             current = balances.get(rule.category_id, 0)
-            need = max(0, target - current)
+            shortfall = max(0, target - current)
             cap = p.get("max_contribution_cents")
-            return min(need, int(cap)) if cap is not None else need
+            return min(shortfall, int(cap)) if cap is not None else shortfall
 
         case RuleType.CONDITIONAL:
-            if not _predicate_holds(p["when"], rule.category_id, balances):
+            if not _predicate_holds(need("when"), rule.category_id, balances):
                 return 0
+            then = need("then")
+            if not isinstance(then, dict) or not then.get("rule_type"):
+                raise SplitPlanError(
+                    f"conditional rule for category {rule.category_id} has no "
+                    f"usable 'then' branch"
+                )
+            try:
+                inner_type = RuleType(then["rule_type"])
+            except ValueError:
+                raise SplitPlanError(
+                    f"conditional rule for category {rule.category_id} has an "
+                    f"unknown then.rule_type: {then['rule_type']!r}"
+                ) from None
             inner = SplitRule(
                 category_id=rule.category_id,
                 order_index=rule.order_index,
-                rule_type=RuleType(p["then"]["rule_type"]),
-                params=p["then"].get("params", {}),
+                rule_type=inner_type,
+                params=then.get("params", {}),
             )
             if inner.rule_type is RuleType.CONDITIONAL:
                 raise SplitPlanError("conditional rules may not nest")

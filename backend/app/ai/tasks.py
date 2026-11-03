@@ -768,11 +768,37 @@ def _validate_single(
             notices.append(f"suggested rule type '{rule_type}' was dropped")
             rule = {}
         else:
-            missing = _missing_params(rule_type, rule.get("params") or {})
+            params = dict(rule.get("params") or {})
+            missing = _missing_params(rule_type, params)
+
+            # Deterministic repair before giving up on the rule. The
+            # schema offers target_cents in two places -- on the category
+            # and inside the rule -- and the model routinely fills only
+            # the first. Copying it across is unambiguous: a refill_to
+            # rule for a category with a target has exactly one sensible
+            # target.
+            if missing and rule_type == "refill_to" and "target_cents" in missing:
+                borrowed = _as_int(raw.get("target_cents"))
+                if borrowed:
+                    params["target_cents"] = borrowed
+                    rule = {**rule, "params": params}
+                    missing = _missing_params(rule_type, params)
+                    notices.append(
+                        "the suggested rule had no target, so the category's "
+                        f"own target of ${borrowed / 100:,.2f} was used"
+                    )
+
             if missing:
+                # Returning a rule known to be unusable is worse than
+                # returning none. It reached the app, looked fine, and
+                # only failed when the user tried to apply it -- as a 500
+                # from the split engine. The category is still worth
+                # creating; it just will not fund itself yet.
                 notices.append(
-                    f"the suggested rule is missing {missing}; fill it in or skip it"
+                    f"the suggested funding rule was dropped: it is missing "
+                    f"{missing}. Add a funding rule from the category screen."
                 )
+                rule = {}
 
     return {
         "name": name,

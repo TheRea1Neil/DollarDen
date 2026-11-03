@@ -44,6 +44,29 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.14.4
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/logo/
+
+# Regenerate the launcher icons after changing anything in assets/logo:
+#     dart run flutter_launcher_icons
+# The generated files under android/.../mipmap-* and ios/.../AppIcon are
+# committed, so a clean checkout builds without running this first.
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/logo/icon.png
+  # Android 8+ masks the icon to whatever shape the launcher wants, and
+  # only the central ~72% of the foreground layer survives it. The
+  # artwork in icon_foreground.png is sized for that; the background is
+  # the logo's own white so the mask reads as a clean white tile.
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: assets/logo/icon_foreground.png
+  # Android 13 themed icons: the launcher recolours a monochrome layer
+  # to match the wallpaper.
+  android_monochrome: assets/logo/icon_foreground.png
+  # iOS rejects an app icon with an alpha channel at submission time.
+  remove_alpha_ios: true

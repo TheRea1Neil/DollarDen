@@ -69,14 +69,43 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Text('no-nonsense',
-                        style: theme.textTheme.headlineMedium
-                            ?.copyWith(fontWeight: FontWeight.w300)),
-                    Text('finance',
-                        style: theme.textTheme.headlineMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
-                          color: theme.colorScheme.primary,
-                        )),
+                    Row(
+                      children: [
+                        // The logo is dark line art on transparency, so
+                        // it needs a light tile behind it to stay legible
+                        // in dark mode.
+                        Container(
+                          width: 72,
+                          height: 72,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          padding: const EdgeInsets.all(6),
+                          child: Image.asset(
+                            'assets/logo/logo.png',
+                            semanticLabel: 'no-nonsense finance',
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('no-nonsense',
+                                  style: theme.textTheme.headlineSmall
+                                      ?.copyWith(fontWeight: FontWeight.w300)),
+                              Text('finance',
+                                  style: theme.textTheme.headlineSmall?.copyWith(
+                                    fontWeight: FontWeight.w700,
+                                    color: theme.colorScheme.primary,
+                                  )),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                     const SizedBox(height: 32),
                     TextFormField(
                       controller: _email,

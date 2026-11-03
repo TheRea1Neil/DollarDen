@@ -15,7 +15,9 @@ ssh "$HOST" 'sudo docker exec nnf-postgres pg_dump -U nnf -d nnf \
 
 {
   sed -n '1,/^$/p' "$OUT" 2>/dev/null | head -16   # keep the existing header
-  sed '/^--$/d; /^-- Dumped/d; /^-- PostgreSQL database dump/d; /^SET /d; /^SELECT pg_catalog.set_config/d' "$TMP" | cat -s
+  sed '/^--$/d; /^-- Dumped/d; /^-- PostgreSQL database dump/d; /^SET /d; /^SELECT pg_catalog.set_config/d; /^\\restrict/d; /^\\unrestrict/d' "$TMP" \
+    | cat -s \
+    | python3 "$(dirname "$0")/_annotate_schema.py"
 } > "$OUT.new"
 mv "$OUT.new" "$OUT"
 echo "wrote $OUT ($(grep -c '^CREATE TABLE' "$OUT") tables)"

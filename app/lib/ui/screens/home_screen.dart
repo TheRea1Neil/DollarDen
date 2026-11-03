@@ -253,37 +253,26 @@ class _CategoryListState extends ConsumerState<_CategoryList> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // Reorder actions live on their own row, not squeezed into the
+        // title row next to a Spacer. In that arrangement the title
+        // measured at almost zero width, "Cancel" painted on top of
+        // "Categories" and the save button did not render at all --
+        // leaving no way to save a reorder. Giving the buttons a row of
+        // their own removes the contention entirely, and full-width
+        // targets are easier to hit than a 60px label in a corner.
         Row(
           children: [
-            Text('Categories',
-                style: theme.textTheme.titleSmall
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-            const Spacer(),
-            if (!_reordering)
+            Expanded(
+              child: Text('Categories',
+                  style: theme.textTheme.titleSmall
+                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            ),
+            if (!_reordering) ...[
               IconButton(
                 tooltip: 'Archived',
                 icon: const Icon(Icons.archive_outlined, size: 20),
                 onPressed: () => _showArchived(context, ref),
               ),
-            if (_reordering) ...[
-              TextButton(
-                onPressed: _saving
-                    ? null
-                    : () => setState(() {
-                          _reordering = false;
-                          _draft = null;
-                        }),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed: _saving ? null : _save,
-                child: _saving
-                    ? const SizedBox(
-                        width: 16, height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Text('Done'),
-              ),
-            ] else
               TextButton.icon(
                 onPressed: widget.categories.length < 2
                     ? null
@@ -291,11 +280,43 @@ class _CategoryListState extends ConsumerState<_CategoryList> {
                 icon: const Icon(Icons.swap_vert, size: 18),
                 label: const Text('Reorder'),
               ),
+            ],
           ],
         ),
         if (_reordering) ...[
           const SizedBox(height: 4),
           _ReorderNotice(),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _saving
+                      ? null
+                      : () => setState(() {
+                            _reordering = false;
+                            _draft = null;
+                          }),
+                  child: const Text('Cancel'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _saving ? null : _save,
+                  icon: _saving
+                      ? const SizedBox(
+                          width: 16, height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.check, size: 18),
+                  // "Done" read as "stop reordering" rather than "keep
+                  // this order", which is exactly the ambiguity you do
+                  // not want on the only control that persists the drag.
+                  label: Text(_saving ? 'Saving…' : 'Save order'),
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: 8),
         ] else
           const SizedBox(height: 4),

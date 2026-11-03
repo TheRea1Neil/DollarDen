@@ -319,9 +319,34 @@ class _RebalanceTabState extends ConsumerState<_RebalanceTab> {
     }
   }
 
+  /// Put whatever is still unallocated into one category.
+  ///
+  /// Dividing a budget by hand means repeatedly subtracting to find what
+  /// is left, and a cent of arithmetic error is enough for the server to
+  /// reject the whole submission. The app already knows the number, so
+  /// it should be able to type it in for you.
+  void _assignRemainder(Category c, int leftCents) {
+    final field = _field(c);
+    final now = Money.parse(field.text) ?? 0;
+    // Clamp at zero. When the budget is OVER, this button takes the
+    // excess back off a category, and the excess can exceed what that
+    // category holds -- which would write a negative amount that _go
+    // then skips silently, so the tap would appear to do nothing.
+    final next = (now + leftCents).clamp(0, 1 << 52);
+    setState(() {
+      field.text = (next / 100).toStringAsFixed(2);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final summary = ref.watch(summaryProvider).valueOrNull;
+    // Same arithmetic the setup guide shows and the server enforces:
+    // money in the bank, less what is owed on cards.
+    final availableCents =
+        summary == null ? null : summary.cashCents - summary.cardDebtCents;
+
     return ref.watch(categoriesProvider).when(
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (e, _) => Center(child: Text('$e')),
@@ -331,9 +356,17 @@ class _RebalanceTabState extends ConsumerState<_RebalanceTab> {
             for (final c in cats) {
               planned += Money.parse(_field(c).text) ?? 0;
             }
+            final left = availableCents == null ? null : availableCents - planned;
+
             return ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                if (left != null) _LeftToAllocate(
+                  leftCents: left,
+                  availableCents: availableCents!,
+                  plannedCents: planned,
+                ),
+                const SizedBox(height: 12),
                 Text(
                   'Say what each envelope should hold. Anything you do not '
                   'change stays as it is.',
@@ -363,6 +396,23 @@ class _RebalanceTabState extends ConsumerState<_RebalanceTab> {
                               border: OutlineInputBorder(),
                             ),
                           ),
+                        ),
+                        // Only offered when there is something to give.
+                        // A button that silently does nothing is worse
+                        // than no button.
+                        IconButton(
+                          tooltip: left == null || left == 0
+                              ? 'Nothing left to assign'
+                              : left > 0
+                                  ? 'Put the remaining '
+                                      '${Money.format(left)} here'
+                                  : 'Take ${Money.format(-left)} off here '
+                                      'to balance',
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(Icons.south_east, size: 18),
+                          onPressed: left == null || left == 0
+                              ? null
+                              : () => _assignRemainder(c, left),
                         ),
                       ],
                     ),
@@ -396,6 +446,83 @@ class _RebalanceTabState extends ConsumerState<_RebalanceTab> {
             );
           },
         );
+  }
+}
+
+/// What is still unassigned, stated plainly and kept at the top.
+///
+/// Rebalancing used to show only the running total, which meant doing
+/// the subtraction in your head against a number on another screen --
+/// and the server rejects the submission if the total is over, so the
+/// arithmetic had to be exact to find that out.
+class _LeftToAllocate extends StatelessWidget {
+  final int leftCents;
+  final int availableCents;
+  final int plannedCents;
+
+  const _LeftToAllocate({
+    required this.leftCents,
+    required this.availableCents,
+    required this.plannedCents,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final over = leftCents < 0;
+    final done = leftCents == 0;
+    final colour = over
+        ? theme.colorScheme.error
+        : done
+            ? theme.colorScheme.primary
+            : theme.colorScheme.onSurface;
+
+    return Card(
+      color: over
+          ? theme.colorScheme.errorContainer.withValues(alpha: 0.35)
+          : null,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              over
+                  ? 'Over by'
+                  : done
+                      ? 'Fully allocated'
+                      : 'Left to allocate',
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              Money.format(over ? -leftCents : leftCents),
+              style: theme.textTheme.headlineMedium
+                  ?.copyWith(fontWeight: FontWeight.w700, color: colour),
+            ),
+            const SizedBox(height: 8),
+            // Show the sum, so a surprising figure can be checked rather
+            // than just disbelieved.
+            Text(
+              '${Money.format(availableCents)} available '
+              '− ${Money.format(plannedCents)} assigned',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+            if (over) ...[
+              const SizedBox(height: 6),
+              Text(
+                'The server will refuse this until it is back to zero or '
+                'below.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.error),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 }
 

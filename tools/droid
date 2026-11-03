@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Drive a USB-connected Android device. The Android twin of tools/sim.
+#
+#   droid shot [name]     screenshot to tools/shots/<name>.png
+#   droid tree            every labelled element, with a tap point
+#   droid find <text>     elements whose label contains <text>
+#   droid tap <text>      tap the centre of the first match
+#   droid tapxy <x> <y>   tap a point
+#   droid type <text>     type into whatever has focus
+#   droid clear [n]       backspace n times (default 60)
+#   droid field <label> <text>   tap a field, clear it, type
+#   droid key <name>      back | enter | home | tab
+#   droid scroll up|down
+#   droid waitfor <text> [secs]  block until an element appears
+#   droid launch | relaunch | stop | install <apk>
+#   droid logcat [pattern]       app logs only
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SHOTS="$HERE/shots"
+PKG="${NNF_ANDROID_PKG:-org.nonsensefinance.nnf}"
+
+# The Android SDK is a homebrew cask here, not the Android Studio default,
+# so platform-tools is not on PATH for a non-interactive shell.
+for p in /opt/homebrew/share/android-commandlinetools/platform-tools \
+         "$HOME/Library/Android/sdk/platform-tools"; do
+  [[ -x "$p/adb" ]] && export PATH="$PATH:$p" && break
+done
+command -v adb >/dev/null || { echo "adb not found" >&2; exit 1; }
+
+dump() {
+  # uiautomator writes to the device then we pull it back. Printing to
+  # stdout directly is unreliable across builds -- some prepend a status
+  # line, some truncate -- so round-trip through a file.
+  adb shell uiautomator dump /sdcard/.nnf-ui.xml >/dev/null 2>&1 || true
+  adb shell cat /sdcard/.nnf-ui.xml 2>/dev/null
+}
+
+cmd="${1:-tree}"; shift || true
+case "$cmd" in
+  tree) dump | python3 "$HERE/_droid_tree.py" ;;
+  find) dump | python3 "$HERE/_droid_tree.py" "$1" ;;
+  tap)
+    all="$(dump | python3 "$HERE/_droid_tree.py" "$1")"
+    # Prefer a clickable match. Flutter wraps text in non-clickable Views
+    # that often match the same words as the button you actually want --
+    # "Choose which accounts count" shadowing the Accounts tab, say.
+    line="$(grep ' tap |' <<<"$all" | head -1)"
+    [[ -n "$line" ]] || line="$(head -1 <<<"$all")"
+    [[ -n "$line" ]] || { echo "no element matching: $1" >&2; exit 1; }
+    x="$(awk '{print $1}' <<<"$line")"; y="$(awk '{print $2}' <<<"$line")"
+    adb shell input tap "$x" "$y"
+    echo "tapped ($x,$y) — ${line#*| }"
+    ;;
+  tapxy) adb shell input tap "$1" "$2"; echo "tapped ($1,$2)" ;;
+  type)
+    # input text has no escaping story: spaces must be %s and the usual
+    # shell metacharacters have to be backslashed or they vanish.
+    t="$*"; t="${t// /%s}"
+    adb shell input text "$(printf '%q' "$t")"
+    ;;
+  clear)
+    n="${1:-60}"
+    for _ in $(seq 1 "$n"); do adb shell input keyevent 67; done
+    ;;
+  field)
+    "$0" tap "$1"; sleep 0.6; "$0" clear 60; sleep 0.3; shift; "$0" type "$@"
+    ;;
+  key)
+    case "$1" in
+      back) adb shell input keyevent 4 ;;
+      enter) adb shell input keyevent 66 ;;
+      home) adb shell input keyevent 3 ;;
+      tab) adb shell input keyevent 61 ;;
+      *) adb shell input keyevent "$1" ;;
+    esac
+    ;;
+  scroll)
+    case "$1" in
+      down) adb shell input swipe 540 1600 540 700 300 ;;
+      up) adb shell input swipe 540 700 540 1600 300 ;;
+    esac
+    ;;
+  waitfor)
+    target="$1"; secs="${2:-30}"
+    for _ in $(seq 1 "$secs"); do
+      if dump | python3 "$HERE/_droid_tree.py" "$target" | grep -q .; then
+        echo "found: $target"; exit 0
+      fi
+      sleep 1
+    done
+    echo "timed out waiting for: $target" >&2; exit 1
+    ;;
+  shot)
+    mkdir -p "$SHOTS"
+    out="$SHOTS/${1:-droid}.png"
+    adb exec-out screencap -p > "$out"
+    echo "$out"
+    ;;
+  launch) adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1; echo launched ;;
+  stop) adb shell am force-stop "$PKG"; echo stopped ;;
+  relaunch) "$0" stop >/dev/null; sleep 1; "$0" launch ;;
+  install) adb install -r "$1" ;;
+  logcat)
+    pid="$(adb shell pidof "$PKG" | tr -d '\r')"
+    [[ -n "$pid" ]] || { echo "app not running" >&2; exit 1; }
+    if [[ $# -gt 0 ]]; then adb logcat --pid="$pid" -d | grep -i "$1"
+    else adb logcat --pid="$pid" -d | tail -60; fi
+    ;;
+  *) sed -n '2,20p' "$0"; exit 1 ;;
+esac

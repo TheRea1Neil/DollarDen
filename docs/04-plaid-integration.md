@@ -70,12 +70,18 @@ development against `ins_127989`.
 
 To support OAuth in production:
 
-- [ ] register a redirect URI in the Plaid dashboard
+- [x] register the Android package name `org.nonsensefinance.nnf`
+      (Build → API → Allowed Android package names). A redirect URI is
+      still needed for iOS only
 - [ ] iOS Universal Link / Android App Link — an
       `/.well-known/apple-app-site-association` served from
       `budget.example.org` (the HTTPS host already exists)
-- [ ] pass `redirect_uri` on `/link/token/create`
-- [ ] handle the resumed Link session on return
+- [x] pass `redirect_uri` (iOS) / `android_package_name` (Android) on
+      `/link/token/create` — mutually exclusive, chosen by platform
+- [x] handle the resumed Link session on return — verified end to end on
+      a Pixel 9 Pro against sandbox Bank of America, 2026-11-03: OAuth
+      handed off to the bank, returned via `plaid-link-oauth://handoff`,
+      and the Item was created
 
 **In sandbox, every institution is a simulation.** `ins_127989` is a fake
 Bank of America that only accepts `user_good` / `pass_good`; real
@@ -277,7 +283,9 @@ Do not start until every box is ticked.
       `deploy/backup.sh` + `nnf-backup.timer`; it restores into a scratch
       database and compares row counts on every run (docs/09)
 - [ ] Token export script written and its output stored safely
-- [ ] Production secret obtained and set; `PLAID_ENV=production`, `ALLOW_PRODUCTION=true`
+- [ ] Production secret obtained and set; `PLAID_ENV=production`,
+      `ALLOW_PRODUCTION=true` — use `deploy/go-production.sh`, which proves
+      the secret against Plaid before writing it (docs/09)
 - [ ] A separate database (or at minimum schema) from sandbox data
 - [ ] Decided which institution to link first — and accepted it costs 1 of 10
 

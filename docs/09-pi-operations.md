@@ -116,6 +116,36 @@ To restore for real: `deploy/restore.sh [dump]`. It stops the API,
 **renames** the current database rather than dropping it, restores, and
 restarts. The rename is the undo if the wrong dump was picked.
 
+## Going to production (Plaid)
+
+```bash
+~/nnf/deploy/go-production.sh          # prompts for the secret, hidden
+~/nnf/deploy/go-production.sh --force  # replace the secret once already live
+```
+
+The production secret is typed into a hidden prompt and written straight
+to `.env`. It never reaches a shell history, a log, or `argv` -- which
+matters because argv is world-readable through `ps`, so `sed -i
+"s/.../$SECRET/"` would leak it to every user on the box for as long as
+the command runs.
+
+Order is deliberate: a verified backup, then the secret is **proved
+against Plaid before anything is written**, so a typo costs nothing and
+leaves the Pi on sandbox. It also mints a production Android link token
+as a final check -- link tokens are free, only exchanging a
+`public_token` creates an Item and spends a credit -- so the OAuth
+configuration is confirmed before Link is ever opened.
+
+Rollback is a timestamped `.env.bak-*` and a container restart; the
+script prints the exact command.
+
+It deliberately does **not** delete the old sandbox Items. Their tokens
+are dead once the host changes, but `accounts`, `transactions` and
+`allocations` all CASCADE from `plaid_items`, so deleting one silently
+removes allocation ledger rows and moves category balances. That is a
+separate decision, taken after a backup, not a side effect of a config
+switch.
+
 ### Still to do
 
 - **Off-box copy.** Everything above lives on the Pi's own disk, so it

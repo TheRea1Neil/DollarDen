@@ -43,7 +43,30 @@ log "encryption key   present"
 
 CURRENT_ENV="$(get PLAID_ENV)"
 log "current env      $CURRENT_ENV"
+RUNNING_NOW="$(dkr exec "$API" python -c \
+  'from app.core.config import get_settings; print(get_settings().plaid_env)' 2>/dev/null || echo '?')"
+log "api reports      plaid_env=$RUNNING_NOW"
+
 if [[ "$CURRENT_ENV" == "production" && "${1:-}" != "--force" ]]; then
+  if [[ "$RUNNING_NOW" != "production" ]]; then
+    # .env is already correct but the container never picked it up --
+    # a half-applied cutover. Finish it without asking for the secret
+    # again, since the secret on disk is already the right one.
+    echo
+    echo ".env is on production but the API is running $RUNNING_NOW."
+    echo "Recreating the container to pick it up; no secret needed."
+    ( cd "$HERE" && dkr compose --env-file ../.env up -d --force-recreate "$API" >/dev/null 2>&1 ) \
+      || die "could not recreate $API"
+    for _ in $(seq 1 30); do
+      sleep 2
+      [[ "$(dkr inspect -f '{{.State.Health.Status}}' "$API" 2>/dev/null)" == "healthy" ]] && break
+    done
+    AFTER="$(dkr exec "$API" python -c \
+      'from app.core.config import get_settings; print(get_settings().plaid_env)' 2>/dev/null || echo '?')"
+    [[ "$AFTER" == "production" ]] || die "still reporting plaid_env=$AFTER"
+    echo; echo "Done. API now reports plaid_env=production."
+    exit 0
+  fi
   echo; echo "Already on production. Re-run with --force to replace the secret."; exit 0
 fi
 
@@ -164,8 +187,18 @@ log "PLAID_ENV        production"
 log "ALLOW_PRODUCTION true"
 
 # --- restart and verify ------------------------------------------------ #
-rule; echo "Restarting the API"
-dkr restart "$API" >/dev/null || die "could not restart $API"
+rule; echo "Recreating the API container"
+# NOT `docker restart`. Compose reads env_file at container CREATION and
+# bakes the values in; a restart reuses the old environment, so .env
+# would say production while the running API was still on sandbox. That
+# exact mismatch is what the verification below caught the first time
+# this script was run for real.
+if dkr compose version >/dev/null 2>&1; then
+  ( cd "$HERE" && dkr compose --env-file ../.env up -d --force-recreate "$API" >/dev/null 2>&1 ) \
+    || die "docker compose could not recreate $API"
+else
+  die "docker compose not available; recreate $API by hand so it picks up the new .env"
+fi
 for i in $(seq 1 30); do
   sleep 2
   state="$(dkr inspect -f '{{.State.Health.Status}}' "$API" 2>/dev/null || echo unknown)"

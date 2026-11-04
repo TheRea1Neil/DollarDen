@@ -78,7 +78,19 @@ async def refresh_accounts(db: Session, client: Any, item: PlaidItem,
     Lives here rather than in the route layer because sync depends on it: a
     transaction whose account is unknown cannot be stored.
     """
-    resp = await client.get_accounts(access_token)
+    # Live balances, not Plaid's cache. This number becomes "how much
+    # money you have to allocate", and the cached one was $560 out on a
+    # real account -- which is the difference between a budget that
+    # reconciles and one that quietly does not.
+    #
+    # Falls back to the cached endpoint rather than failing: knowing the
+    # accounts with a stale balance beats knowing nothing, and this path
+    # also runs mid-sync purely to discover a new account.
+    try:
+        resp = await client.get_balances(access_token)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("live balance fetch failed, falling back to cached: %s", exc)
+        resp = await client.get_accounts(access_token)
     now = datetime.now(UTC)
     n = 0
     for a in resp.get("accounts", []):
@@ -225,12 +237,21 @@ def _move_allocations(db: Session, old: Transaction, new: Transaction) -> None:
 
 
 async def sync_item(db: Session, client: Any, item: PlaidItem,
-                    access_token: str, max_pages: int = 50) -> SyncStats:
-    """Drain /transactions/sync for one Item.
+                    access_token: str, max_pages: int = 50,
+                    refresh_balances: bool = True) -> SyncStats:
+    """Drain /transactions/sync for one Item, and refresh its balances.
 
     The cursor is advanced in memory and committed exactly once, together with
     the data it describes. Committing the cursor before the rows would lose
     transactions permanently on a crash -- Plaid will not resend them.
+
+    Balances are refreshed here because transactions alone are not what the
+    user is looking at. The budget's headline figure is how much money
+    there actually is -- cash minus card debt -- and that comes from
+    `accounts`, which only `refresh_accounts` writes. Without this, both
+    the webhook and the manual Sync button updated the transaction list
+    while the balances stayed frozen at whatever they were when the bank
+    was first linked.
     """
     stats = SyncStats()
     cursor = item.sync_cursor
@@ -323,6 +344,17 @@ async def sync_item(db: Session, client: Any, item: PlaidItem,
     item.last_synced_at = datetime.now(UTC)
     item.status = "healthy"
     db.commit()          # rows, allocations and cursor land together
+
+    # After the cursor is safely committed, never before: a failure here
+    # must not cost transactions. Stale balances are recoverable, lost
+    # transactions are not, because Plaid will not resend them.
+    if refresh_balances and not refreshed:
+        try:
+            await refresh_accounts(db, client, item, access_token)
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("balance refresh failed after sync: %s", exc)
+            stats.errors.append(f"balance refresh: {exc}")
 
     log.info("sync %s: %s", item.plaid_item_id, stats)
     return stats

@@ -148,7 +148,24 @@ class PlaidClient:
 
     # ---------------- Data ----------------
     async def get_accounts(self, access_token: str) -> dict[str, Any]:
+        """Accounts with Plaid's CACHED balances.
+
+        Cheap, and fine for discovering which accounts exist -- but the
+        balance can be badly stale. Measured against a real Bank of
+        America item: cached said $9,267.70 while the bank actually held
+        $8,707.67, a $560 gap. Use get_balances when the number is going
+        to be shown as money available to spend.
+        """
         return await self._post("/accounts/get", {"access_token": access_token})
+
+    async def get_balances(self, access_token: str) -> dict[str, Any]:
+        """Accounts with LIVE balances, fetched from the institution.
+
+        Same response shape as /accounts/get, so it is a drop-in
+        replacement, but it actually reaches the bank rather than
+        returning whatever Plaid last cached.
+        """
+        return await self._post("/accounts/balance/get", {"access_token": access_token})
 
     async def get_item(self, access_token: str) -> dict[str, Any]:
         return await self._post("/item/get", {"access_token": access_token})

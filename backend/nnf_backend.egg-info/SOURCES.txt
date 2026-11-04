@@ -80,5 +80,6 @@ tests/test_reconcile.py
 tests/test_refile.py
 tests/test_split_engine.py
 tests/test_split_missing_params.py
+tests/test_sync_refreshes_balances.py
 tests/test_token_backup.py
 tests/test_treatment.py

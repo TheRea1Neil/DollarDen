@@ -346,6 +346,7 @@ class _RebalanceTabState extends ConsumerState<_RebalanceTab> {
     // money in the bank, less what is owed on cards.
     final availableCents =
         summary == null ? null : summary.cashCents - summary.cardDebtCents;
+    final pendingCents = summary?.pendingCents ?? 0;
 
     return ref.watch(categoriesProvider).when(
           loading: () => const Center(child: CircularProgressIndicator()),
@@ -365,6 +366,7 @@ class _RebalanceTabState extends ConsumerState<_RebalanceTab> {
                   leftCents: left,
                   availableCents: availableCents!,
                   plannedCents: planned,
+                  pendingCents: pendingCents,
                 ),
                 const SizedBox(height: 12),
                 Text(
@@ -459,12 +461,19 @@ class _LeftToAllocate extends StatelessWidget {
   final int leftCents;
   final int availableCents;
   final int plannedCents;
+  final int pendingCents;
 
   const _LeftToAllocate({
     required this.leftCents,
     required this.availableCents,
     required this.plannedCents,
+    this.pendingCents = 0,
   });
+
+  /// A pending card charge lowers its envelope before it raises the card
+  /// balance, so the budget reads short by that amount until it posts.
+  bool get _gapIsPending =>
+      leftCents != 0 && pendingCents > 0 && leftCents.abs() <= pendingCents;
 
   @override
   Widget build(BuildContext context) {
@@ -510,7 +519,16 @@ class _LeftToAllocate extends StatelessWidget {
               style: theme.textTheme.bodySmall
                   ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
             ),
-            if (over) ...[
+            if (_gapIsPending) ...[
+              const SizedBox(height: 6),
+              Text(
+                'This is ${Money.format(pendingCents)} of charges your bank '
+                'has not settled yet — already filed here, not yet in the '
+                'balance. It squares up on its own when they post.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+            ] else if (over) ...[
               const SizedBox(height: 6),
               Text(
                 'The server will refuse this until it is back to zero or '

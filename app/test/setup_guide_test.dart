@@ -42,6 +42,7 @@ BudgetSummary _summary({
     );
 
 void main() {
+  _pendingTests();
   test('a brand new budget is told to connect a bank', () {
     expect(SetupState.from(_summary()).stage, SetupStage.connectBank);
   });
@@ -120,5 +121,47 @@ void main() {
     expect(s.availableCents, -30000);
     expect(s.stage, SetupStage.done,
         reason: 'there is no money to allocate; prompting would be absurd');
+  });
+}
+
+void _pendingTests() {
+  group('a pending charge is not an unallocated dollar', () {
+    // From the real account: $30 insurance on a credit card, filed
+    // correctly so the envelope dropped $30, but the card balance had
+    // not risen yet because the charge was pending. The guide told the
+    // user to divide up $30 they had already assigned.
+    SetupState state({required int pending}) => SetupState(
+          stage: SetupStage.done,
+          availableCents: 861450,
+          allocatedCents: 858450,
+          cashCents: 870767,
+          cardDebtCents: 9317,
+          realCategoryCount: 7,
+          pendingCents: pending,
+        );
+
+    test('the gap is recognised as pending', () {
+      final s = state(pending: 3000);
+      expect(s.unallocatedCents, 3000);
+      expect(s.gapIsPending, isTrue);
+    });
+
+    test('without pending it is a genuine gap', () {
+      expect(state(pending: 0).gapIsPending, isFalse);
+    });
+
+    test('a gap larger than pending is still the user to close', () {
+      final s = SetupState(
+        stage: SetupStage.done,
+        availableCents: 100000,
+        allocatedCents: 50000,
+        cashCents: 100000,
+        cardDebtCents: 0,
+        realCategoryCount: 3,
+        pendingCents: 1000,
+      );
+      expect(s.gapIsPending, isFalse,
+          reason: 'money with no home must not be explained away');
+    });
   });
 }

@@ -18,6 +18,7 @@ from app.budget.ledger import Entry, post
 from app.budget.split import RuleType
 from app.budget.split import SplitRule as EngineRule
 from app.budget.split import apply_split
+from app.budget.treatment import Treatment
 from app.db.models import Allocation, Category, Paycheck, SplitPlan, SplitRule, Transaction
 
 log = logging.getLogger("nnf.budget.paycheck")
@@ -168,6 +169,13 @@ def candidates(db: Session, user_id: uuid.UUID, lookback_days: int = 60) -> list
                 Transaction.date >= since,
                 Transaction.removed_at.is_(None),
                 Transaction.pending.is_(False),
+                # Only deposits that still count toward the budget. Once a
+                # deposit has been marked ignored -- dismissed as imported
+                # history, say -- or identified as a transfer between the
+                # user's own accounts, proposing it as a paycheck is just
+                # asking the same question again after they answered it.
+                # "PAYMENT FROM CHK 4835" is a transfer, not income.
+                Transaction.treatment == Treatment.SPEND.value,
             )
             .order_by(Transaction.date.desc())
         ).all()

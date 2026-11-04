@@ -28,7 +28,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.budget.ledger import Entry, post
-from app.db.models import Account, Category
+from app.db.models import Account, Allocation, Category, Transaction
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,14 @@ class Reconciliation:
     cash_cents: int
     card_debt_cents: int
     allocated_cents: int
+    # Allocated against charges the bank has not settled yet. A pending
+    # card purchase draws its category down immediately, but the card
+    # balance does not rise until it posts, so the invariant above is
+    # temporarily out by exactly this much -- through no fault of the
+    # user, and it corrects itself. Reporting that as "you still need to
+    # allocate $30" sends someone hunting for a transaction they have
+    # already filed.
+    pending_cents: int = 0
 
     @property
     def available_cents(self) -> int:
@@ -51,6 +59,15 @@ class Reconciliation:
     def balanced(self) -> bool:
         return self.unallocated_cents == 0
 
+    @property
+    def explained_by_pending(self) -> bool:
+        """Whether the gap is just charges waiting to settle."""
+        return (
+            not self.balanced
+            and self.pending_cents > 0
+            and abs(self.unallocated_cents) <= self.pending_cents
+        )
+
     def as_dict(self) -> dict[str, object]:
         return {
             "cash_cents": self.cash_cents,
@@ -59,10 +76,20 @@ class Reconciliation:
             "allocated_cents": self.allocated_cents,
             "unallocated_cents": self.unallocated_cents,
             "balanced": self.balanced,
+            "pending_cents": self.pending_cents,
+            "explained_by_pending": self.explained_by_pending,
             "explanation": (
                 "Allocated should equal cash minus card debt. Card purchases "
                 "draw their category down before the cash leaves, so the two "
                 "sides differ by the card balance until it is paid."
+                + (
+                    f" Right now {self.pending_cents / 100:,.2f} of that is "
+                    "charges your bank has not settled yet -- already filed "
+                    "here, not yet in the balance. It will square up on its "
+                    "own when they post; nothing to do."
+                    if self.explained_by_pending
+                    else ""
+                )
             ),
         }
 
@@ -87,7 +114,24 @@ def compute(db: Session, user_id: uuid.UUID) -> Reconciliation:
             Category.user_id == user_id, Category.archived_at.is_(None)
         )
     )
-    return Reconciliation(int(cash or 0), int(debt or 0), int(allocated or 0))
+    # Spending already filed against charges the bank has not settled.
+    # Summed as a magnitude: these allocations are negative (the envelope
+    # lost money) and we want "how much is in flight".
+    pending = db.scalar(
+        select(func.coalesce(func.sum(-Allocation.amount_cents), 0))
+        .select_from(Allocation)
+        .join(Transaction, Transaction.id == Allocation.transaction_id)
+        .where(
+            Allocation.user_id == user_id,
+            Allocation.amount_cents < 0,
+            Transaction.pending.is_(True),
+            Transaction.removed_at.is_(None),
+        )
+    )
+
+    return Reconciliation(
+        int(cash or 0), int(debt or 0), int(allocated or 0), int(pending or 0)
+    )
 
 
 def unallocated_category(db: Session, user_id: uuid.UUID) -> Category | None:

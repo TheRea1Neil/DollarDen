@@ -39,6 +39,9 @@ class SetupState {
   final int cardDebtCents;
   final int realCategoryCount;
 
+  /// Already filed, not yet settled at the bank.
+  final int pendingCents;
+
   const SetupState({
     required this.stage,
     required this.availableCents,
@@ -46,9 +49,22 @@ class SetupState {
     required this.cashCents,
     required this.cardDebtCents,
     required this.realCategoryCount,
+    this.pendingCents = 0,
   });
 
   int get unallocatedCents => availableCents - allocatedCents;
+
+  /// Whether the apparent shortfall is just charges in flight.
+  ///
+  /// Without this the guide tells someone to divide up $30 they have
+  /// already assigned, because a pending card charge lowered the
+  /// envelope before it raised the card balance. Sending them to hunt
+  /// for a transaction they have already filed is worse than saying
+  /// nothing.
+  bool get gapIsPending =>
+      unallocatedCents != 0 &&
+      pendingCents > 0 &&
+      unallocatedCents.abs() <= pendingCents;
 
   /// Reading the budget's state rather than storing a setup flag:
   /// a flag goes stale the moment someone archives their last
@@ -67,7 +83,8 @@ class SetupState {
       stage = SetupStage.chooseAccounts;
     } else if (real == 0) {
       stage = SetupStage.makeCategories;
-    } else if (available - s.totalAllocatedCents > 0) {
+    } else if (available - s.totalAllocatedCents > 0 &&
+        (available - s.totalAllocatedCents) > s.pendingCents) {
       stage = SetupStage.allocate;
     } else {
       stage = SetupStage.done;
@@ -80,6 +97,7 @@ class SetupState {
       cashCents: s.cashCents,
       cardDebtCents: s.cardDebtCents,
       realCategoryCount: real,
+      pendingCents: s.pendingCents,
     );
   }
 }

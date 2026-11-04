@@ -144,6 +144,12 @@ class BudgetSummary {
   final int cashCents;
   final int excludedCount;
 
+  /// Spending already filed against charges the bank has not settled.
+  /// A pending card purchase draws its envelope down straight away, but
+  /// the card balance does not rise until it posts, so the budget looks
+  /// under-allocated by exactly this much through no fault of the user.
+  final int pendingCents;
+
   const BudgetSummary({
     required this.categories,
     required this.totalAllocatedCents,
@@ -157,6 +163,7 @@ class BudgetSummary {
     required this.cashAccounts,
     required this.cashCents,
     required this.excludedCount,
+    this.pendingCents = 0,
   });
 
   factory BudgetSummary.fromJson(Map<String, dynamic> j) => BudgetSummary(
@@ -183,6 +190,9 @@ class BudgetSummary {
             .toList(),
         cashCents: j['cash_cents'] as int? ?? 0,
         excludedCount: j['excluded_count'] as int? ?? 0,
+        pendingCents: ((j['reconciliation'] as Map?)
+                ?.cast<String, dynamic>()['pending_cents'] as int?) ??
+            0,
       );
 }
 

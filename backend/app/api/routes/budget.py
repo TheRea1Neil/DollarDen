@@ -782,6 +782,83 @@ def list_review(
     ]
 
 
+class DismissBeforeIn(BaseModel):
+    """Clear a backlog of history the user never intended to budget."""
+
+    before: date
+    dry_run: bool = True
+
+
+class DismissBeforeOut(BaseModel):
+    dismissed: int
+    outflow_cents: int
+    oldest: str | None
+    newest: str | None
+    dry_run: bool
+
+
+@router.post("/review/dismiss-before", response_model=DismissBeforeOut)
+def dismiss_before(
+    body: DismissBeforeIn,
+    user: User = Depends(current_user), db: Session = Depends(get_db),
+) -> DismissBeforeOut:
+    """Mark everything still unreviewed before a date as ignored.
+
+    Connecting a bank imports whatever history the institution offers --
+    around three months, which arrived here as 167 charges to categorise
+    that the user never meant to budget. Filing them one at a time is
+    not a reasonable ask, and the alternative people reach for is
+    deleting rows, which loses the record.
+
+    So they are marked `ignored` instead: the transaction stays in
+    history, its review item closes, and because it never allocated
+    anything no category balance moves. Reversible one at a time from
+    the history screen by setting the treatment back to `spend`.
+
+    Defaults to a dry run. The count is worth seeing before it happens,
+    and a mistyped year would otherwise silently clear everything.
+    """
+    rows = db.execute(
+        select(ReviewItem, Transaction)
+        .join(Transaction, Transaction.id == ReviewItem.transaction_id)
+        .where(
+            ReviewItem.user_id == user.id,
+            ReviewItem.resolved_at.is_(None),
+            Transaction.date < body.before,
+        )
+        .order_by(Transaction.date)
+    ).all()
+
+    if not rows:
+        return DismissBeforeOut(dismissed=0, outflow_cents=0, oldest=None,
+                                newest=None, dry_run=body.dry_run)
+
+    outflow = sum(t.outflow_cents or 0 for _, t in rows)
+    oldest = rows[0][1].date.isoformat()
+    newest = rows[-1][1].date.isoformat()
+
+    if not body.dry_run:
+        from app.budget.ledger import allocations_for_transaction, reverse
+
+        now = datetime.now(UTC)
+        for rv, txn in rows:
+            # Unreviewed items should not have allocations, but a
+            # partially-filed charge would -- reverse rather than leave a
+            # balance reflecting a charge that no longer counts.
+            if Treatment(txn.treatment).affects_budget:
+                existing = allocations_for_transaction(db, txn)
+                if existing:
+                    reverse(db, user.id, existing, "dismissed as old history")
+            txn.treatment = Treatment.IGNORED.value
+            rv.resolved_at = now
+            rv.resolution = {"excluded_as": Treatment.IGNORED.value,
+                             "bulk": "dismiss-before", "before": body.before.isoformat()}
+        db.commit()
+
+    return DismissBeforeOut(dismissed=len(rows), outflow_cents=outflow,
+                            oldest=oldest, newest=newest, dry_run=body.dry_run)
+
+
 class SplitIn(BaseModel):
     category_id: str
     amount_cents: int

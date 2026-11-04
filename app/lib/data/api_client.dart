@@ -277,6 +277,32 @@ class ApiClient {
     return Category.fromJson((r.data as Map).cast<String, dynamic>());
   }
 
+  /// Clear imported history nobody intended to budget.
+  ///
+  /// Connecting a bank imports whatever the institution offers -- months
+  /// of charges land in the queue at once. [dryRun] asks what WOULD be
+  /// dismissed without touching anything, so the count can be shown
+  /// before the user commits to it.
+  Future<DismissPreview> dismissBefore(DateTime before,
+      {bool dryRun = true}) async {
+    final r = await _withRetry((o) => _dio.post(
+          '/budget/review/dismiss-before',
+          data: {
+            'before': before.toIso8601String().split('T').first,
+            'dry_run': dryRun,
+          },
+          options: o,
+        ));
+    if (r.statusCode != 200) _fail(r);
+    final m = (r.data as Map).cast<String, dynamic>();
+    return DismissPreview(
+      dismissed: m['dismissed'] as int? ?? 0,
+      outflowCents: m['outflow_cents'] as int? ?? 0,
+      oldest: m['oldest'] as String?,
+      newest: m['newest'] as String?,
+    );
+  }
+
   Future<List<ReviewItem>> review() async {
     final r = await _withRetry((o) => _dio.get('/budget/review', options: o));
     if (r.statusCode != 200) _fail(r);

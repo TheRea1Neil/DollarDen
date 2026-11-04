@@ -1339,3 +1339,19 @@ class ParsedReceipt {
   /// otherwise what the receipt claims.
   int get targetCents => expectedCents ?? totalCents;
 }
+
+
+/// What a bulk dismissal would clear, or did clear.
+class DismissPreview {
+  final int dismissed;
+  final int outflowCents;
+  final String? oldest;
+  final String? newest;
+
+  const DismissPreview({
+    required this.dismissed,
+    required this.outflowCents,
+    this.oldest,
+    this.newest,
+  });
+}

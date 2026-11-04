@@ -15,6 +15,96 @@ import 'scan_receipt_screen.dart';
 /// This is the highest-traffic screen in the app, so resolving a single
 /// transaction is one tap on a category. Splitting is available but takes a
 /// second step, because it is the rarer case.
+/// Clear imported history in one go.
+///
+/// Connecting a bank imports whatever the institution offers -- around
+/// three months, which arrived as 167 charges to file. Nobody is going
+/// to categorise a backlog they never meant to budget, and the obvious
+/// workaround is deleting rows, which loses the record. These are
+/// marked ignored instead: they stay in history, and because they never
+/// allocated anything no balance moves.
+Future<void> _dismissOld(BuildContext context, WidgetRef ref) async {
+  final now = DateTime.now();
+  final picked = await showDatePicker(
+    context: context,
+    initialDate: DateTime(now.year, now.month, 1),
+    firstDate: DateTime(now.year - 3),
+    lastDate: now,
+    helpText: 'Dismiss everything BEFORE',
+  );
+  if (picked == null || !context.mounted) return;
+
+  final api = ref.read(apiProvider);
+  late final DismissPreview preview;
+  try {
+    preview = await api.dismissBefore(picked);
+  } on ApiException catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(e.message)));
+    }
+    return;
+  }
+  if (!context.mounted) return;
+
+  if (preview.dismissed == 0) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Nothing to dismiss before that date')),
+    );
+    return;
+  }
+
+  // Always show the count before doing it. A mistyped year would
+  // otherwise quietly clear the whole queue.
+  final ok = await showDialog<bool>(
+        context: context,
+        builder: (dc) => AlertDialog(
+          title: Text('Dismiss ${preview.dismissed} charges?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Everything before '
+                  '${picked.toIso8601String().split('T').first} that you have '
+                  'not already filed — ${preview.oldest} to ${preview.newest}, '
+                  '${Money.format(preview.outflowCents)} of spending.'),
+              const SizedBox(height: 12),
+              const Text(
+                'They stay in your history and your balances do not move. '
+                'You can put any of them back from History by changing how '
+                'it is treated.',
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(dc).pop(false),
+                child: const Text('Cancel')),
+            FilledButton(
+                onPressed: () => Navigator.of(dc).pop(true),
+                child: const Text('Dismiss them')),
+          ],
+        ),
+      ) ??
+      false;
+  if (!ok || !context.mounted) return;
+
+  try {
+    final done = await api.dismissBefore(picked, dryRun: false);
+    ref.invalidate(reviewProvider);
+    ref.invalidate(summaryProvider);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Dismissed ${done.dismissed} charges')),
+    );
+  } on ApiException catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+}
+
 class ReviewScreen extends ConsumerWidget {
   const ReviewScreen({super.key});
 
@@ -23,7 +113,16 @@ class ReviewScreen extends ConsumerWidget {
     final items = ref.watch(reviewProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Review')),
+      appBar: AppBar(
+        title: const Text('Review'),
+        actions: [
+          IconButton(
+            tooltip: 'Dismiss old history',
+            icon: const Icon(Icons.history_toggle_off),
+            onPressed: () => _dismissOld(context, ref),
+          ),
+        ],
+      ),
       body: items.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(child: Text('$e')),

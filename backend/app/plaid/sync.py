@@ -59,6 +59,7 @@ class SyncStats:
     modified: int = 0
     removed: int = 0
     pending_resolved: int = 0
+    ai_queued: int = 0
     skipped_unknown_account: int = 0
     categorised: dict[str, int] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
@@ -66,7 +67,7 @@ class SyncStats:
     def __str__(self) -> str:
         base = (
             f"added={self.added} modified={self.modified} removed={self.removed} "
-            f"pending_resolved={self.pending_resolved}"
+            f"pending_resolved={self.pending_resolved} ai_queued={self.ai_queued}"
         )
         return f"{base} categorised={self.categorised}" if self.categorised else base
 
@@ -250,6 +251,48 @@ def _move_allocations(db: Session, old: Transaction, new: Transaction) -> None:
         log.info("pending->posted delta %s cents on %s", delta, new.plaid_transaction_id)
 
 
+def _queue_ai_categorisation(db: Session, user_id: uuid.UUID,
+                             txns: list[Transaction]) -> int:
+    """Ask the model about anything the deterministic pass could not file.
+
+    One job per charge rather than one for the batch: each is a separate
+    decision, the queue already defers around the GPU and the quiet
+    window per job, and a single failure then costs one charge instead
+    of the whole sync.
+
+    Nothing is queued when the user has no AI configured. ADR 0003: the
+    app works fully with the model switched off, and queueing jobs that
+    can only fail would turn that into a pile of errors.
+    """
+    from app.ai.jobs import enqueue
+    from app.core.config import get_settings
+    from app.db.models import ReviewItem, User
+
+    settings = get_settings()
+    user = db.get(User, user_id)
+    configured = (user and user.ai_base_url) or settings.ai_provider in {"deck", "custom"}
+    if not configured:
+        return 0
+
+    ids = [t.id for t in txns if t.id is not None]
+    if not ids:
+        return 0
+
+    open_reviews = db.scalars(
+        select(ReviewItem).where(
+            ReviewItem.user_id == user_id,
+            ReviewItem.transaction_id.in_(ids),
+            ReviewItem.resolved_at.is_(None),
+        )
+    ).all()
+
+    for rv in open_reviews:
+        enqueue(db, user_id, "auto_categorise",
+                {"transaction_id": str(rv.transaction_id)})
+    db.flush()
+    return len(open_reviews)
+
+
 async def sync_item(db: Session, client: Any, item: PlaidItem,
                     access_token: str, max_pages: int = 50,
                     refresh_balances: bool = True) -> SyncStats:
@@ -353,6 +396,13 @@ async def sync_item(db: Session, client: Any, item: PlaidItem,
             # it. Anything missed shows up unallocated and can be re-run.
             log.warning("categorisation failed during sync: %s", exc)
             stats.errors.append(f"categorisation: {exc}")
+
+        try:
+            stats.ai_queued = _queue_ai_categorisation(db, item.user_id, new_txns)
+        except Exception as exc:  # noqa: BLE001
+            # Queuing is a convenience. Anything not queued simply waits
+            # in review, which is where it already is.
+            log.warning("could not queue AI categorisation: %s", exc)
 
     item.sync_cursor = cursor
     item.last_synced_at = datetime.now(UTC)

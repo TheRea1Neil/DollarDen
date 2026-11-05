@@ -45,6 +45,11 @@ VALID_SOURCES = {
     # one is tied to a paycheck and is reversed by unapplying it.
     "paycheck_manual",
     "auto_categorise",
+    # Chosen by the model rather than by a matcher. Kept separate so
+    # history can show which decisions were the AI's -- those are the
+    # ones worth reviewing first, and lumping them in with the
+    # deterministic matchers would hide that.
+    "ai_categorise",
     "manual",
     "receipt_split",
     "correction",

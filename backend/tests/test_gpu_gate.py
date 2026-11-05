@@ -78,19 +78,35 @@ class TestQuietHours:
 
 
 class TestGate:
-    async def _verdict(self, state, **over):
+    async def _verdict(self, state, *, loaded=False, **over):
         import app.ai.gpu as mod
 
         async def fake_probe(settings, timeout=5.0):
             return state
 
-        real, mod.probe = mod.probe, fake_probe
+        async def fake_loaded(settings, timeout=5.0):
+            return loaded
+
+        # Both are stubbed. model_already_loaded short-circuits the gate
+        # to ok, and it reaches the real deck over the network -- so
+        # leaving it unstubbed made every one of these tests pass or
+        # fail depending on whether the gaming PC happened to be awake
+        # with gemma4 resident. It was asleep when they were written.
+        real_probe, mod.probe = mod.probe, fake_probe
+        real_loaded, mod.model_already_loaded = mod.model_already_loaded, fake_loaded
         try:
             # Midday Denver, so quiet hours never interfere.
             noon = datetime(2026, 10, 31, 12, 0, tzinfo=DENVER)
             return await mod.can_run_now(_settings(**over), now=noon)
         finally:
-            mod.probe = real
+            mod.probe = real_probe
+            mod.model_already_loaded = real_loaded
+
+    async def test_an_already_loaded_model_is_not_its_own_obstacle(self):
+        """The gate must not defer because of the VRAM it already owns."""
+        v = await self._verdict(
+            gpu.GpuState(True, busy_percent=5, vram_free_mb=7_221), loaded=True)
+        assert v.ok is True
 
     async def test_an_idle_card_runs_immediately(self):
         v = await self._verdict(gpu.GpuState(True, busy_percent=2, vram_free_mb=15_900))

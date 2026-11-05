@@ -1322,6 +1322,111 @@ def _mentions(merchant: str, cats: list[Category]) -> list[dict[str, str]]:
     return hits
 
 
+async def run_auto_categorise(
+    db: Session, user: User, provider: Any, request: dict[str, Any]
+) -> dict[str, Any]:
+    """Suggest where one charge belongs, and file it if the model is sure.
+
+    Queued automatically as transactions arrive, so the common case
+    needs no attention at all. Three outcomes, deliberately:
+
+      applied   the model was confident -> the charge is filed and the
+                review item closed, recorded with source `ai_categorise`
+                so history can show whose decision it was
+      suggested the model picked something but was not confident -> the
+                review item keeps the suggestion and the human decides
+      unsure    the model declined -> plain review, as before
+
+    Only `high` confidence files anything. The model declines honestly
+    when a merchant string says nothing (measured in
+    experiments/categorise-arms), and a wrong auto-file is worse than a
+    queued one: it moves real money in an envelope and the user has no
+    reason to go looking for it. ADR 0003 still holds -- with AI off
+    this job is never queued and the queue behaves exactly as before.
+    """
+    from datetime import UTC, datetime
+
+    from app.budget.ledger import Entry, post
+    from app.budget.treatment import Treatment
+    from app.db.models import ReviewItem, Transaction
+
+    txn_id = request.get("transaction_id")
+    if not txn_id:
+        raise ValueError("auto_categorise needs a transaction_id")
+
+    txn = db.get(Transaction, uuid.UUID(str(txn_id)))
+    if txn is None or txn.user_id != user.id:
+        raise ValueError("unknown transaction")
+
+    review = db.scalars(
+        select(ReviewItem).where(
+            ReviewItem.transaction_id == txn.id,
+            ReviewItem.resolved_at.is_(None),
+        )
+    ).first()
+
+    # Everything here can change between queueing and running -- the job
+    # may have waited an hour for the GPU, and the user may have filed
+    # it by hand in the meantime. Re-check rather than overwrite.
+    if review is None:
+        return {"outcome": "already_handled", "applied": False}
+    if txn.removed_at is not None or not Treatment(txn.treatment).affects_budget:
+        return {"outcome": "not_budgeted", "applied": False}
+
+    amount = txn.outflow_cents - txn.inflow_cents
+    if amount == 0:
+        return {"outcome": "zero_amount", "applied": False}
+
+    merchant = (txn.merchant_name or txn.name or "").strip()
+    if not merchant:
+        return {"outcome": "no_merchant", "applied": False}
+
+    suggestion = await run_suggest_category(
+        db, user, provider,
+        {"merchant": merchant, "amount_cents": abs(amount)},
+    )
+
+    confident = (
+        not suggestion.get("unsure")
+        and suggestion.get("category_id")
+        and str(suggestion.get("confidence", "")).lower() == "high"
+    )
+
+    if not confident:
+        # Keep the thinking even when it is not acted on: the review
+        # screen can pre-fill it, which is most of the value anyway.
+        review.suggestions = {**(review.suggestions or {}), "ai": suggestion}
+        db.commit()
+        return {
+            "outcome": "unsure" if suggestion.get("unsure") else "suggested",
+            "applied": False,
+            "suggestion": suggestion,
+        }
+
+    cat_id = uuid.UUID(str(suggestion["category_id"]))
+    post(
+        db, user.id,
+        [Entry(cat_id, -amount, "ai_categorise", 1.0,
+               f"AI: {suggestion.get('why') or 'matched this category'}")],
+        transaction_id=txn.id,
+    )
+    review.resolved_at = datetime.now(UTC)
+    review.resolution = {
+        "method": "ai",
+        "splits": [[str(cat_id), -amount]],
+        "why": suggestion.get("why"),
+        "confidence": suggestion.get("confidence"),
+    }
+    db.commit()
+    return {
+        "outcome": "applied",
+        "applied": True,
+        "category_id": str(cat_id),
+        "category_name": suggestion.get("category_name"),
+        "why": suggestion.get("why"),
+    }
+
+
 def _validate_suggestion(
     raw: dict[str, Any], cats: list[Category], merchant: str = ""
 ) -> dict[str, Any]:

@@ -39,6 +39,8 @@ KINDS = {
     "refine_category",
     "describe_category",
     "suggest_category",
+    # Suggest AND apply, queued automatically as transactions arrive.
+    "auto_categorise",
     "receipt_parse",
     "receipt_scan",
     "categorise_items",

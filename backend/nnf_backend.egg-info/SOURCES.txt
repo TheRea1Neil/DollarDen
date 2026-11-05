@@ -61,6 +61,7 @@ tests/test_analytics_queries.py
 tests/test_analytics_recurring.py
 tests/test_analytics_taxonomy.py
 tests/test_auth_and_isolation.py
+tests/test_auto_categorise.py
 tests/test_budget_api.py
 tests/test_budget_context.py
 tests/test_budget_flow.py

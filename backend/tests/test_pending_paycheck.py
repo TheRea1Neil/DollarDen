@@ -100,6 +100,31 @@ class TestPendingPaycheck:
             assert not db.scalars(
                 select(ReviewItem).where(ReviewItem.transaction_id == t.id)).all()
 
+    def test_splitting_a_deposit_closes_its_review_item(self, client) -> None:
+        """A deposit already divided across every envelope must not also
+        sit in the queue asking which single category it belongs to."""
+        h, uid = _auth(client)
+        with SessionLocal() as db:
+            t = _deposit(db, uid, cents=1656_91, pending=False)
+            # Below the income threshold a deposit CAN reach the queue,
+            # and legacy rows exist from before income was diverted.
+            db.add(ReviewItem(user_id=uid, transaction_id=t.id,
+                              reason="unmatched"))
+            db.commit()
+            txn_id, t_id = str(t.id), t.id
+
+        r = client.post("/api/budget/paychecks",
+                        json={"transaction_id": txn_id, "apply": False}, headers=h)
+        assert r.status_code in (200, 201), r.text
+
+        with SessionLocal() as db:
+            rv = db.scalars(
+                select(ReviewItem).where(ReviewItem.transaction_id == t_id)).one()
+            assert rv.resolved_at is not None
+            assert rv.resolution["method"] == "paycheck"
+
+        assert client.get("/api/budget/review", headers=h).json() == []
+
     def test_a_small_refund_still_goes_to_review(self) -> None:
         """Only amounts big enough to be income are diverted."""
         with SessionLocal() as db:

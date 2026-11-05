@@ -572,6 +572,24 @@ def record_paycheck(
     db.add(pc)
     db.flush()
 
+    # A deposit recorded as a paycheck is no longer waiting on a filing
+    # decision. Income is kept out of the spending queue at sync time
+    # now, but that only helps transactions that arrive afterwards --
+    # and a deposit too small to look like income can still land there
+    # and later be split by hand. Closing it here means the queue can
+    # never ask about money that has already been divided up.
+    if txn is not None:
+        stale = db.scalars(
+            select(ReviewItem).where(
+                ReviewItem.user_id == user.id,
+                ReviewItem.transaction_id == txn.id,
+                ReviewItem.resolved_at.is_(None),
+            )
+        ).all()
+        for rv in stale:
+            rv.resolved_at = datetime.now(UTC)
+            rv.resolution = {"method": "paycheck", "paycheck_id": str(pc.id)}
+
     out = PaycheckOut(id=str(pc.id), gross_cents=gross,
                       received_on=pc.received_on.isoformat(), applied=False)
 

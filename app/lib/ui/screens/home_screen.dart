@@ -132,7 +132,17 @@ class HomeScreen extends ConsumerWidget {
         ),
         data: (s) => RefreshIndicator(
           onRefresh: () async {
+            // Ask the bank first, then re-read. Invalidating alone only
+            // re-fetched the server's own copy, so a pull could never
+            // surface a balance the server had not already been told
+            // about -- which is exactly what goes wrong when a webhook
+            // is missed. A failure here is not fatal: fall through and
+            // show the cached figures rather than an error.
+            try {
+              await ref.read(apiProvider).refreshBanks();
+            } catch (_) {}
             ref.invalidate(summaryProvider);
+            ref.invalidate(reviewProvider);
             await ref.read(summaryProvider.future);
           },
           child: ListView(

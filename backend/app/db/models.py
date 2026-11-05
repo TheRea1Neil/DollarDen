@@ -99,6 +99,8 @@ class PlaidItem(Base):
     # Encrypted at rest with TOKEN_ENCRYPTION_KEY, separate from the DB password.
     access_token_encrypted: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     sync_cursor: Mapped[str | None] = mapped_column(Text)
+    last_webhook_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_webhook_code: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="healthy")
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     consent_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

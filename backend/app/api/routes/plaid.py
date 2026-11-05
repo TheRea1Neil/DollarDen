@@ -1,13 +1,14 @@
 """Plaid endpoints: linking, syncing, and the webhook receiver."""
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user
@@ -173,6 +174,73 @@ def list_items(user: User = Depends(current_user), db: Session = Depends(get_db)
     return out
 
 
+class RefreshOut(BaseModel):
+    synced: int
+    skipped: int
+    added: int
+    balances_as_of: str | None
+    errors: list[str] = []
+
+
+@router.post("/refresh", response_model=RefreshOut)
+async def refresh_everything(
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+    client: PlaidClient = Depends(_client),
+    s: Settings = Depends(get_settings),
+) -> RefreshOut:
+    """Pull transactions AND balances for every connected bank, now.
+
+    Pull-to-refresh used to re-read this server's database, which meant
+    it could only ever show what the last webhook happened to deliver.
+    When a webhook is missed -- rejected, dropped, or never sent -- the
+    app goes quietly stale with no way for the user to correct it. A
+    manual refresh must be able to reach the bank.
+
+    Throttled per Item: a user can pull repeatedly, and
+    /accounts/balance/get reaches the institution every time. Inside
+    the window the cached figures are returned rather than an error,
+    because the honest answer to "refresh twice in five seconds" is
+    "nothing has changed".
+    """
+    items = db.scalars(select(PlaidItem).where(PlaidItem.user_id == user.id)).all()
+    now = datetime.now(UTC)
+    synced = skipped = added = 0
+    errors: list[str] = []
+
+    for item in items:
+        fresh_enough = (
+            item.last_synced_at is not None
+            and (now - item.last_synced_at).total_seconds() < s.plaid_refresh_min_seconds
+        )
+        if fresh_enough:
+            skipped += 1
+            continue
+        try:
+            access_token = decrypt_token(item.access_token_encrypted)
+            stats = await sync_item(db, client, item, access_token)
+            synced += 1
+            added += stats.added
+            errors.extend(stats.errors)
+        except PlaidError as exc:
+            if exc.needs_reauth:
+                item.status = "login_required"
+                db.commit()
+            errors.append(f"{item.institution_name or 'bank'}: {exc.error_code}")
+        except Exception as exc:  # noqa: BLE001
+            log.exception("refresh failed for %s", item.plaid_item_id)
+            errors.append(f"{item.institution_name or 'bank'}: {type(exc).__name__}")
+
+    as_of = db.scalar(
+        select(func.max(Account.balance_as_of)).where(Account.user_id == user.id)
+    )
+    return RefreshOut(
+        synced=synced, skipped=skipped, added=added,
+        balances_as_of=as_of.isoformat() if as_of else None,
+        errors=errors,
+    )
+
+
 @router.post("/items/{item_id}/sync")
 async def sync_now(
     item_id: str,
@@ -235,7 +303,25 @@ async def webhook(
     try:
         await verify(body, request.headers.get("plaid-verification"), client)
     except WebhookVerificationError as exc:
+        # Record the rejection against the Item before refusing. A
+        # webhook that silently stops being accepted looks identical to
+        # one that was never sent, and container logs do not survive a
+        # redeploy -- which is exactly when you go looking.
         log.warning("rejected unverified webhook: %s", exc)
+        try:
+            peek = json.loads(body or b"{}")
+            stamp_id = peek.get("item_id")
+        except Exception:  # noqa: BLE001
+            stamp_id = None
+        if stamp_id:
+            with SessionLocal() as db:
+                it = db.scalars(
+                    select(PlaidItem).where(PlaidItem.plaid_item_id == stamp_id)
+                ).first()
+                if it is not None:
+                    it.last_webhook_at = datetime.now(UTC)
+                    it.last_webhook_code = f"rejected:{str(exc)[:48]}"
+                    db.commit()
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid webhook signature") from exc
 
     payload = await request.json()
@@ -256,6 +342,10 @@ async def webhook(
         if item is None:
             log.warning("webhook for unknown item %s", plaid_item_id)
             return {"status": "unknown_item"}
+
+        item.last_webhook_at = datetime.now(UTC)
+        item.last_webhook_code = str(wh_code or wh_type or "?")[:64]
+        db.commit()
 
         if wh_code in REAUTH_CODES:
             item.status = "login_required" if wh_code == "ITEM_LOGIN_REQUIRED" else "pending_expiration"

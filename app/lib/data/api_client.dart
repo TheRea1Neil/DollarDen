@@ -394,6 +394,17 @@ class ApiClient {
   /// needs `redirect_uri`; they are mutually exclusive, and sending the
   /// wrong one dead-ends at the bank's login instead of erroring. Only the
   /// app knows which it is, so it has to say.
+  /// Pull transactions and balances from every connected bank, now.
+  ///
+  /// Pull-to-refresh used to only re-read the server's database, so it
+  /// showed whatever the last webhook delivered and nothing newer. A
+  /// missed webhook left the app silently stale with no way out.
+  /// Throttled server-side, so pulling repeatedly is harmless.
+  Future<void> refreshBanks() async {
+    final r = await _withRetry((o) => _dio.post('/plaid/refresh', options: o));
+    if (r.statusCode != 200) _fail(r);
+  }
+
   Future<String> linkToken({String? itemId}) async {
     final platform = Platform.isAndroid
         ? 'android'

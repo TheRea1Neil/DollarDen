@@ -81,6 +81,7 @@ tests/test_receipt_loop.py
 tests/test_receipt_text.py
 tests/test_reconcile.py
 tests/test_refile.py
+tests/test_refresh_endpoint.py
 tests/test_split_engine.py
 tests/test_split_missing_params.py
 tests/test_sync_refreshes_balances.py

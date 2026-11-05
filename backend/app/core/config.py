@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     # and the two are mutually exclusive. See PlaidClient.create_link_token.
     plaid_android_package_name: str = ""
     plaid_webhook_url: str = ""
+    # Shortest gap between pull-to-refresh actually reaching the bank.
+    # /accounts/balance/get hits the institution, and a user can pull as
+    # fast as they like.
+    plaid_refresh_min_seconds: int = 20
 
     # ---- database ----
     postgres_host: str = "nnf-postgres"

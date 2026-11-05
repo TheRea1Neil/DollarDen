@@ -95,8 +95,12 @@ and the things that would be expensive to rediscover. Written
   yet.** The classifier works and is wired into the labelling queue
   only; a charge should get a category and a kind in one pass.
 
-- **No push notifications.** The paycheck prompt is in-app only. Real
-  push needs an APNs key from Neil's Apple developer account.
+- **No push notifications.** The paycheck prompt is in-app only.
+  Deferred deliberately, with the reasoning and the plan written up in
+  `docs/15-notifications.md` — the short version is that local
+  notifications cannot work here (the trigger is server-side, not the
+  clock) and the threshold alerts need FCM rather than a 15-minute
+  WorkManager poll.
 - **No receipt itemisation.** Phase 5d, untouched.
 - **No OAuth for Bank of America.** Needs a redirect URI and Universal
   Links. Sandbox institutions link fine.

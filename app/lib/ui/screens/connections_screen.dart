@@ -98,7 +98,13 @@ class _ConnectionsScreenState extends ConsumerState<ConnectionsScreen> {
         error: (e, _) => Center(child: Text('$e')),
         data: (list) => RefreshIndicator(
           onRefresh: () async {
+            // This screen is where balances live, so a pull here has to
+            // mean "ask the bank", not "re-read what we were last told".
+            try {
+              await ref.read(apiProvider).refreshBanks();
+            } catch (_) {}
             ref.invalidate(plaidItemsProvider);
+            ref.invalidate(summaryProvider);
             await ref.read(plaidItemsProvider.future);
           },
           child: ListView(

@@ -204,6 +204,7 @@ def _upsert(db: Session, item: PlaidItem, accounts: dict[str, Account],
         ).first()
         if prior is not None and prior.id != txn.id:
             _move_allocations(db, prior, txn)
+            _move_paycheck(db, prior, txn)
             prior.pending_replaced_by = txn.plaid_transaction_id
             prior.removed_at = datetime.now(UTC)
             stats.pending_resolved += 1
@@ -291,6 +292,55 @@ def _queue_ai_categorisation(db: Session, user_id: uuid.UUID,
                 {"transaction_id": str(rv.transaction_id)})
     db.flush()
     return len(open_reviews)
+
+
+def _move_paycheck(db: Session, old: Transaction, new: Transaction) -> None:
+    """Carry a split paycheck onto its posted twin.
+
+    Splitting a deposit while it is pending is allowed, which is only
+    safe because of this. A paycheck's allocations hang off the
+    PAYCHECK, not the transaction, so _move_allocations does not touch
+    them -- and without re-pointing the paycheck itself, the posted
+    copy would look like an unrecorded deposit and could be split a
+    second time. That is the one double-count that corrupts every
+    envelope at once rather than one.
+
+    A payroll amount rarely changes between pending and posted, but it
+    can. The difference goes to the Unallocated sink rather than being
+    spread back over the user's split: guessing which envelope should
+    absorb it would silently rewrite a decision they made, and
+    Unallocated is the one place money is SUPPOSED to sit while it has
+    no purpose. It is visible there, and it is theirs to place.
+    """
+    from app.budget.ledger import Entry, post
+    from app.budget.reconcile import ensure_unallocated
+    from app.db.models import Paycheck
+
+    pc = db.scalars(
+        select(Paycheck).where(Paycheck.transaction_id == old.id)
+    ).first()
+    if pc is None:
+        return
+
+    pc.transaction_id = new.id
+
+    old_gross = old.inflow_cents - old.outflow_cents
+    new_gross = new.inflow_cents - new.outflow_cents
+    delta = new_gross - old_gross
+    if delta == 0:
+        log.info("paycheck %s followed its posted transaction", pc.id)
+        return
+
+    pc.gross_cents = new_gross
+    sink = ensure_unallocated(db, pc.user_id)
+    post(
+        db, pc.user_id,
+        [Entry(sink.id, delta, "correction", None,
+               f"paycheck posted {delta / 100:+,.2f} against the pending amount")],
+        paycheck_id=pc.id,
+    )
+    log.info("paycheck %s posted %s cents different; delta to Unallocated",
+             pc.id, delta)
 
 
 async def sync_item(db: Session, client: Any, item: PlaidItem,

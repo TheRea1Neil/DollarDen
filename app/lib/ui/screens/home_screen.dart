@@ -540,6 +540,23 @@ class _PaycheckPrompt extends ConsumerWidget {
                           style: theme.textTheme.bodySmall?.copyWith(
                               color: theme.colorScheme.onPrimaryContainer),
                         ),
+                        // Splitting a pending deposit is allowed, and the
+                        // paycheck follows its posted copy. Say that the
+                        // figure is provisional anyway: the split is
+                        // correct either way, but the user should know
+                        // the bank has not finished with it.
+                        if (first['pending'] == true) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            'Still processing at the bank — you can split it '
+                            'now, and it will adjust if the amount changes.',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onPrimaryContainer
+                                  .withValues(alpha: 0.75),
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),

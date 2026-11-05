@@ -67,7 +67,8 @@ class TestPendingPaycheck:
         assert out[0]["pending"] is True
         assert out[0]["inflow_cents"] == 1676_53
 
-    def test_splitting_a_processing_deposit_is_refused(self, client) -> None:
+    def test_a_processing_deposit_can_be_split(self, client) -> None:
+        """Allowed, because _move_paycheck carries it to the posted copy."""
         h, uid = _auth(client)
         with SessionLocal() as db:
             t = _deposit(db, uid, cents=1676_53, pending=True)
@@ -76,8 +77,7 @@ class TestPendingPaycheck:
 
         r = client.post("/api/budget/paychecks",
                         json={"transaction_id": txn_id, "apply": False}, headers=h)
-        assert r.status_code == 422
-        assert "still processing" in r.json()["detail"]
+        assert r.status_code in (200, 201), r.text
 
     def test_a_posted_deposit_is_splittable(self, client) -> None:
         h, uid = _auth(client)

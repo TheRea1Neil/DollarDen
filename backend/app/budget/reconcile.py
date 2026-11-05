@@ -94,21 +94,35 @@ class Reconciliation:
         }
 
 
+def spendable_cents(account: Account) -> int:
+    """What one account contributes, by type.
+
+    Depository uses AVAILABLE where the bank gives it, because that is
+    the near-real-time figure: measured on a live Bank of America
+    account, current was 8,707.67 while available was 10,364.58 -- the
+    difference being a payroll deposit the bank had accepted but not
+    yet posted. Waiting for `current` means the budget ignores money
+    that has effectively arrived.
+
+    Credit uses CURRENT, always. `available` on a card is the unused
+    portion of the limit -- 6,875.83 on that same account against a
+    124.17 balance -- so treating it as debt would overstate what is
+    owed by the whole credit line.
+    """
+    if (account.type or "") == "credit":
+        return account.current_cents or 0
+    available = account.available_cents
+    return available if available is not None else (account.current_cents or 0)
+
+
 def compute(db: Session, user_id: uuid.UUID) -> Reconciliation:
-    cash = db.scalar(
-        select(func.coalesce(func.sum(Account.current_cents), 0)).where(
-            Account.user_id == user_id,
-            Account.type == "depository",
-            Account.is_tracked.is_(True),
+    tracked = db.scalars(
+        select(Account).where(
+            Account.user_id == user_id, Account.is_tracked.is_(True)
         )
-    )
-    debt = db.scalar(
-        select(func.coalesce(func.sum(Account.current_cents), 0)).where(
-            Account.user_id == user_id,
-            Account.type == "credit",
-            Account.is_tracked.is_(True),
-        )
-    )
+    ).all()
+    cash = sum(spendable_cents(a) for a in tracked if (a.type or "") == "depository")
+    debt = sum(spendable_cents(a) for a in tracked if (a.type or "") == "credit")
     allocated = db.scalar(
         select(func.coalesce(func.sum(Category.balance_cents), 0)).where(
             Category.user_id == user_id, Category.archived_at.is_(None)

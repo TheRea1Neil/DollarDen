@@ -26,6 +26,7 @@ from app.budget.reconcile import (
 )
 from app.budget.reconcile import (
     ensure_unallocated,
+    spendable_cents,
     sweep_to_unallocated,
     unallocated_category,
 )
@@ -549,20 +550,11 @@ def record_paycheck(
             raise HTTPException(
                 status.HTTP_409_CONFLICT, "That deposit is already recorded as a paycheck"
             )
-        if txn.pending:
-            # A paycheck split moves money into every envelope at once,
-            # and the pending->posted machinery only re-points
-            # allocations tied to a TRANSACTION -- a paycheck's are tied
-            # to the paycheck. So splitting a pending deposit risks the
-            # posted copy being split a second time, which is the one
-            # double-count that would corrupt the whole budget rather
-            # than one envelope.
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                "That deposit is still processing at the bank. It can be split "
-                "once it clears, usually within a day — the amount can still "
-                "change until then.",
-            )
+        # Pending deposits ARE splittable. sync._move_paycheck carries
+        # the paycheck onto the posted copy when it arrives, so the
+        # posted one is never offered as a second, unrecorded deposit,
+        # and any change in amount lands in Unallocated. Without that
+        # this would be the double-count that spoils every envelope.
 
     gross = body.gross_cents or (txn.inflow_cents if txn else None)
     if not gross:
@@ -1238,7 +1230,11 @@ def _account_out(a: Account) -> AccountOut:
     return AccountOut(
         id=str(a.id), name=a.name or "Account", official_name=a.official_name,
         mask=a.mask, type=a.type, subtype=a.subtype,
-        balance_cents=a.current_cents or 0, available_cents=a.available_cents,
+        # The same basis the reconciliation uses, so the rows add up to
+        # the headline. Available for depository (it already includes a
+        # deposit the bank has accepted), current for credit (available
+        # on a card is the unused limit, not the debt).
+        balance_cents=spendable_cents(a), available_cents=a.available_cents,
         is_tracked=a.is_tracked,
         as_of=a.balance_as_of.isoformat() if a.balance_as_of else None,
     )
@@ -1775,7 +1771,9 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
         # Actual money in the bank. Deliberately separate from the category
         # total, which is COMMITTED money and will not match: card purchases
         # draw categories down before the cash leaves the account.
-        "cash_cents": sum(a.balance_cents for a in cash),
+        # From the reconciliation, not re-summed here: two places
+        # computing "how much money is there" is how they drift.
+        "cash_cents": rec.cash_cents,
         "excluded_count": excluded_count,
         "categories": [_cat_out(c).model_dump() for c in cats],
         "total_allocated_cents": sum(c.balance_cents for c in cats),

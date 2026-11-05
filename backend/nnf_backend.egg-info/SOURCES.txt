@@ -65,6 +65,7 @@ tests/test_auto_categorise.py
 tests/test_budget_api.py
 tests/test_budget_context.py
 tests/test_budget_flow.py
+tests/test_card_payment_pairing.py
 tests/test_design_category_rule.py
 tests/test_dismiss_backlog.py
 tests/test_gpu_gate.py

@@ -19,12 +19,118 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.budget import rules
-from app.budget.ledger import Entry, post, transaction_is_fully_allocated
+from datetime import UTC, datetime
+
+from app.budget.ledger import (
+    Entry,
+    allocations_for_transaction,
+    post,
+    reverse,
+    transaction_is_fully_allocated,
+)
 from app.budget.paycheck import MIN_PAYCHECK_CENTS
 from app.budget.treatment import Treatment
 from app.db.models import ReviewItem, Transaction
 
 log = logging.getLogger("nnf.budget.categorize")
+
+
+# A card payment is two transactions for one event: money leaving
+# checking and the same money arriving on the card. Plaid labels the
+# card side reliably; the checking side often arrives as nothing more
+# than "PAYMENT TO ACCT #9620 ON 11/05 VIA WEB".
+#
+# treatment.classify refuses to treat LOAN_PAYMENTS on a depository
+# outflow as a card payment, and it is right to: mortgage, car and
+# student loan payments share that category and ARE real expenses.
+# Guessing from the description means either missing card payments or
+# swallowing someone's mortgage.
+#
+# The pair is the reliable signal. An equal amount, close in time, on
+# one of the user's own cards, already identified as a payment by
+# Plaid -- that is not a coincidence, and it needs no string matching.
+_PAIR_WINDOW_DAYS = 5
+
+
+def _card_payment_twin(
+    db: Session, user_id: uuid.UUID, txn: Transaction
+) -> Transaction | None:
+    """The other leg of a card payment, if this transaction is one leg."""
+    from datetime import timedelta
+
+    from app.db.models import Account
+
+    acct = db.get(Account, txn.account_id)
+    if acct is None:
+        return None
+    on_credit = (acct.type or "").lower() == "credit"
+    lo = txn.date - timedelta(days=_PAIR_WINDOW_DAYS)
+    hi = txn.date + timedelta(days=_PAIR_WINDOW_DAYS)
+
+    if not on_credit and txn.outflow_cents > 0:
+        # Money left checking: look for it arriving on a card.
+        want, column = txn.outflow_cents, Transaction.inflow_cents
+        side = Account.type == "credit"
+    elif on_credit and txn.inflow_cents > 0:
+        # Money arrived on a card: look for it leaving checking.
+        want, column = txn.inflow_cents, Transaction.outflow_cents
+        side = Account.type != "credit"
+    else:
+        return None
+
+    rows = db.scalars(
+        select(Transaction)
+        .join(Account, Account.id == Transaction.account_id)
+        .where(
+            Transaction.user_id == user_id,
+            Transaction.id != txn.id,
+            Transaction.removed_at.is_(None),
+            Transaction.date >= lo,
+            Transaction.date <= hi,
+            column == want,
+            side,
+        )
+    ).all()
+
+    for other in rows:
+        # Only pair with something Plaid or the user already agrees is a
+        # card payment. Without this an ordinary refund that happens to
+        # match a transfer amount would silently leave the budget.
+        if other.treatment == Treatment.CARD_PAYMENT.value:
+            return other
+        if (other.pfc_primary or "").upper() == "LOAN_PAYMENTS":
+            return other
+    return None
+
+
+def _settle_card_payment(db: Session, user_id: uuid.UUID, txn: Transaction) -> bool:
+    """Mark both legs of a card payment, in whichever order they arrive.
+
+    The two sides can appear in either order, and days apart, so the
+    leg arriving second has to go back and correct the first.
+    """
+    twin = _card_payment_twin(db, user_id, txn)
+    if twin is None:
+        return False
+
+    txn.treatment = Treatment.CARD_PAYMENT.value
+
+    if twin.treatment != Treatment.CARD_PAYMENT.value:
+        twin.treatment = Treatment.CARD_PAYMENT.value
+        existing = allocations_for_transaction(db, twin)
+        if existing:
+            reverse(db, user_id, existing, "settles a credit card, not spending")
+        open_review = db.scalars(
+            select(ReviewItem).where(
+                ReviewItem.transaction_id == twin.id,
+                ReviewItem.resolved_at.is_(None),
+            )
+        ).first()
+        if open_review is not None:
+            open_review.resolved_at = datetime.now(UTC)
+            open_review.resolution = {"excluded_as": Treatment.CARD_PAYMENT.value}
+    db.flush()
+    return True
 
 
 def signed_amount(txn: Transaction) -> int:
@@ -73,6 +179,15 @@ def categorise(db: Session, user_id: uuid.UUID, txn: Transaction) -> str:
     """
     if txn.removed_at is not None:
         return "skipped"
+
+    # Pairing runs FIRST, before the early return below. The card leg
+    # of a payment usually arrives already marked card_payment, and
+    # returning on that would skip the correction its twin needs --
+    # which is the whole "second leg arrives later" case. Harmless on
+    # anything that is not half of a payment: it finds no twin and
+    # does nothing.
+    if _settle_card_payment(db, user_id, txn):
+        return "not_budgeted"
 
     # Credit card payments and internal transfers move money without
     # spending it. The purchases they settle were already allocated, so

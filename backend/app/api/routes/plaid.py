@@ -1,6 +1,7 @@
 """Plaid endpoints: linking, syncing, and the webhook receiver."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -178,6 +179,7 @@ class RefreshOut(BaseModel):
     synced: int
     skipped: int
     added: int
+    nudged: int
     balances_as_of: str | None
     errors: list[str] = []
 
@@ -205,7 +207,7 @@ async def refresh_everything(
     """
     items = db.scalars(select(PlaidItem).where(PlaidItem.user_id == user.id)).all()
     now = datetime.now(UTC)
-    synced = skipped = added = 0
+    synced = skipped = added = nudged = 0
     errors: list[str] = []
 
     for item in items:
@@ -218,6 +220,31 @@ async def refresh_everything(
             continue
         try:
             access_token = decrypt_token(item.access_token_encrypted)
+
+            # Ask Plaid to re-read the bank before asking what it holds.
+            # Without this a pull can only ever surface what Plaid
+            # already had, and Plaid polls a bank just a few times a
+            # day -- so a charge from ten minutes ago is not there, and
+            # no amount of syncing will find it.
+            last_nudge = item.last_force_refresh_at
+            if (
+                last_nudge is None
+                or (now - last_nudge).total_seconds() >= s.plaid_force_refresh_min_seconds
+            ):
+                try:
+                    await client.refresh_transactions(access_token)
+                    item.last_force_refresh_at = now
+                    nudged += 1
+                    # Plaid fetches asynchronously and announces the
+                    # result by webhook. Pause briefly so a fast bank
+                    # lands in THIS sync rather than only the next one;
+                    # anything slower still arrives by webhook.
+                    await asyncio.sleep(s.plaid_force_refresh_wait_seconds)
+                except PlaidError as exc:
+                    # Rate limited or unsupported: not fatal, the plain
+                    # sync below still runs.
+                    log.info("transactions/refresh declined: %s", exc.error_code)
+
             stats = await sync_item(db, client, item, access_token)
             synced += 1
             added += stats.added
@@ -235,7 +262,7 @@ async def refresh_everything(
         select(func.max(Account.balance_as_of)).where(Account.user_id == user.id)
     )
     return RefreshOut(
-        synced=synced, skipped=skipped, added=added,
+        synced=synced, skipped=skipped, added=added, nudged=nudged,
         balances_as_of=as_of.isoformat() if as_of else None,
         errors=errors,
     )

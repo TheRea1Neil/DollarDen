@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.budget import rules
 from app.budget.ledger import Entry, post, transaction_is_fully_allocated
+from app.budget.paycheck import MIN_PAYCHECK_CENTS
 from app.budget.treatment import Treatment
 from app.db.models import ReviewItem, Transaction
 
@@ -106,8 +107,13 @@ def categorise(db: Session, user_id: uuid.UUID, txn: Transaction) -> str:
         )
         return "prior_decision"
 
-    # No AI here yet (phase 5). Until then, uncertainty goes to the human,
-    # which is exactly what NullProvider does anyway (ADR 0003).
+    # A deposit large enough to be income belongs to the paycheck flow,
+    # which splits it across envelopes by rule. Putting it in the
+    # spending queue invites filing a paycheck into a single category,
+    # and it crowds out the charges that queue is actually for.
+    if txn.inflow_cents >= MIN_PAYCHECK_CENTS and txn.outflow_cents == 0:
+        return "income"
+
     queue_for_review(db, user_id, txn, "unknown_merchant")
     return "review"
 

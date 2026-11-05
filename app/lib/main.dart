@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -49,8 +51,42 @@ class _Shell extends ConsumerStatefulWidget {
   ConsumerState<_Shell> createState() => _ShellState();
 }
 
-class _ShellState extends ConsumerState<_Shell> {
+class _ShellState extends ConsumerState<_Shell> with WidgetsBindingObserver {
   int _tab = 0;
+  Timer? _poll;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // Webhooks land on the SERVER. The phone has no idea anything
+    // happened, so a charge could be synced and auto-categorised while
+    // the app sat there showing yesterday's numbers until someone
+    // pulled down. This is the cheap half of fixing that: re-read the
+    // server periodically while the app is actually on screen. It hits
+    // no bank and no model -- just this server's own summary.
+    _poll = Timer.periodic(const Duration(seconds: 45), (_) => _refetch());
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Coming back to the app is the moment the numbers are most likely
+    // to be stale, and the moment someone is most likely to look.
+    if (state == AppLifecycleState.resumed) _refetch();
+  }
+
+  void _refetch() {
+    if (!mounted) return;
+    ref.invalidate(summaryProvider);
+    ref.invalidate(reviewProvider);
+  }
 
   @override
   Widget build(BuildContext context) {

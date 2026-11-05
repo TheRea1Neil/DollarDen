@@ -71,6 +71,7 @@ tests/test_gpu_gate.py
 tests/test_item_memory.py
 tests/test_ledger.py
 tests/test_move_money.py
+tests/test_pending_paycheck.py
 tests/test_pending_promotion.py
 tests/test_pending_reconciliation.py
 tests/test_plaid_link_token.py

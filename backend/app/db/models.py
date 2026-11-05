@@ -101,6 +101,7 @@ class PlaidItem(Base):
     sync_cursor: Mapped[str | None] = mapped_column(Text)
     last_webhook_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_webhook_code: Mapped[str | None] = mapped_column(String(64))
+    last_force_refresh_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="healthy")
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     consent_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

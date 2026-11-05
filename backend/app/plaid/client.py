@@ -158,6 +158,22 @@ class PlaidClient:
         """
         return await self._post("/accounts/get", {"access_token": access_token})
 
+    async def refresh_transactions(self, access_token: str) -> dict[str, Any]:
+        """Ask Plaid to go re-read the institution, now.
+
+        /transactions/sync returns what Plaid already holds. Plaid only
+        polls a bank a few times a day on its own, so a charge made ten
+        minutes ago is usually not there yet -- syncing harder cannot
+        help, because the data is at the bank and not at Plaid. This is
+        the call that closes that gap.
+
+        It is asynchronous: Plaid fetches and then fires a webhook, so
+        the new rows may arrive moments after this returns rather than
+        in the next sync. Rate limited, and it reaches the bank, so it
+        is throttled far more tightly than an ordinary sync.
+        """
+        return await self._post("/transactions/refresh", {"access_token": access_token})
+
     async def get_balances(self, access_token: str) -> dict[str, Any]:
         """Accounts with LIVE balances, fetched from the institution.
 

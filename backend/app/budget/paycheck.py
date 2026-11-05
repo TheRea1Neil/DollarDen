@@ -168,7 +168,12 @@ def candidates(db: Session, user_id: uuid.UUID, lookback_days: int = 60) -> list
                 Transaction.inflow_cents >= MIN_PAYCHECK_CENTS,
                 Transaction.date >= since,
                 Transaction.removed_at.is_(None),
-                Transaction.pending.is_(False),
+                # Pending deposits ARE offered. A payroll credit sits
+                # pending for a day or more, and hiding it meant the
+                # one event the budget is built around was invisible
+                # exactly when the user went looking for it. Splitting
+                # one is still refused -- see record_paycheck -- but
+                # "it is on its way" is worth saying.
                 # Only deposits that still count toward the budget. Once a
                 # deposit has been marked ignored -- dismissed as imported
                 # history, say -- or identified as a transfer between the

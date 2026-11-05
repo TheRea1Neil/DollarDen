@@ -474,6 +474,7 @@ class CandidateOut(BaseModel):
     merchant_name: str | None
     inflow_cents: int
     already_recorded: bool
+    pending: bool = False
 
 
 @router.get("/paychecks/candidates", response_model=list[CandidateOut])
@@ -494,7 +495,7 @@ def paycheck_candidates(
         CandidateOut(
             transaction_id=str(t.id), date=t.date.isoformat(), name=t.name,
             merchant_name=t.merchant_name, inflow_cents=t.inflow_cents,
-            already_recorded=t.id in recorded,
+            already_recorded=t.id in recorded, pending=bool(t.pending),
         )
         for t in candidates(db, user.id)
     ]
@@ -547,6 +548,20 @@ def record_paycheck(
         if dup is not None:
             raise HTTPException(
                 status.HTTP_409_CONFLICT, "That deposit is already recorded as a paycheck"
+            )
+        if txn.pending:
+            # A paycheck split moves money into every envelope at once,
+            # and the pending->posted machinery only re-points
+            # allocations tied to a TRANSACTION -- a paycheck's are tied
+            # to the paycheck. So splitting a pending deposit risks the
+            # posted copy being split a second time, which is the one
+            # double-count that would corrupt the whole budget rather
+            # than one envelope.
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "That deposit is still processing at the bank. It can be split "
+                "once it clears, usually within a day — the amount can still "
+                "change until then.",
             )
 
     gross = body.gross_cents or (txn.inflow_cents if txn else None)

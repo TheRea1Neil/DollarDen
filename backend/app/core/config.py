@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     # /accounts/balance/get hits the institution, and a user can pull as
     # fast as they like.
     plaid_refresh_min_seconds: int = 20
+    # How often a pull may ask PLAID to go re-read the bank, as opposed
+    # to asking Plaid what it already holds. That call reaches the
+    # institution and is rate limited, so it gets a much longer leash
+    # than the ordinary sync.
+    plaid_force_refresh_min_seconds: int = 180
+    # How long a pull waits for Plaid's fetch to land before syncing.
+    # Long enough for a quick bank, short enough not to feel stuck.
+    plaid_force_refresh_wait_seconds: float = 2.5
 
     # ---- database ----
     postgres_host: str = "nnf-postgres"

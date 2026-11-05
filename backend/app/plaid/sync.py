@@ -184,6 +184,20 @@ def _upsert(db: Session, item: PlaidItem, accounts: dict[str, Account],
     # Plaid tells us which pending transaction this posted one replaces.
     ref = raw.get("pending_transaction_id")
     if ref and not txn.pending:
+        # Flush before touching txn.id. Transaction.id is a PYTHON-side
+        # uuid4 default that SQLAlchemy only applies at flush, so on a
+        # newly added row it is still None here. _move_allocations
+        # re-points the pending charge's allocations onto this row BY
+        # ID, and with None it set every one of them to NULL instead.
+        #
+        # That detached them from any transaction, and an allocation
+        # with neither a transaction nor a paycheck reads as a transfer
+        # between envelopes -- so the spending vanished from analytics
+        # AND the posted charge returned as an unreviewed item, inviting
+        # the user to file the same money a second time. It has to come
+        # after the column assignments above, which fill NOT NULL
+        # fields like date.
+        db.flush()
         prior = db.scalars(
             select(Transaction).where(Transaction.plaid_transaction_id == ref)
         ).first()

@@ -74,4 +74,40 @@ class AppTheme {
     if (belowAlert) return warning;
     return healthy;
   }
+
+  /// Stops for the fullness ramp, from empty to full.
+  ///
+  /// Chosen so lightness falls as the envelope empties -- a light green
+  /// when there is plenty, a deep red when there is nothing. That makes
+  /// the bar readable as "getting worse" even where the hue difference
+  /// is hard to see, which matters for red-green colour blindness and
+  /// in bright sunlight.
+  static const _fullnessStops = <(double, Color)>[
+    (0.00, Color(0xFFB71C1C)), // deep red  — empty
+    (0.15, Color(0xFFE64A19)), // deep orange
+    (0.30, Color(0xFFF57C00)), // orange
+    (0.50, Color(0xFFFBC02D)), // yellow
+    (0.70, Color(0xFF9CCC65)), // yellow-green
+    (1.00, Color(0xFF66BB6A)), // light green — full
+  ];
+
+  /// A continuous colour for how full an envelope is, 0 empty to 1 full.
+  ///
+  /// Interpolated between neighbouring stops rather than switched at
+  /// thresholds, so spending gradually shifts the bar instead of
+  /// snapping from green to red at one invisible boundary. Several
+  /// close stops beat two distant ones: a straight red-to-green lerp
+  /// passes through a muddy brown around the middle.
+  static Color fullnessColor(double ratio) {
+    final r = ratio.isNaN ? 0.0 : ratio.clamp(0.0, 1.0);
+    for (var i = 0; i < _fullnessStops.length - 1; i++) {
+      final (lo, loColour) = _fullnessStops[i];
+      final (hi, hiColour) = _fullnessStops[i + 1];
+      if (r <= hi) {
+        final t = hi == lo ? 0.0 : (r - lo) / (hi - lo);
+        return Color.lerp(loColour, hiColour, t)!;
+      }
+    }
+    return _fullnessStops.last.$2;
+  }
 }

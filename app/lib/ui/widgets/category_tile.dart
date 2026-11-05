@@ -88,7 +88,12 @@ class CategoryTile extends StatelessWidget {
                   minHeight: 6,
                   backgroundColor:
                       theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
-                  valueColor: AlwaysStoppedAnimation(status),
+                  // Continuous, not the three-step status colour: the
+                  // bar is the one place a gradual change reads better
+                  // than a threshold, because it is already showing a
+                  // continuous quantity.
+                  valueColor:
+                      AlwaysStoppedAnimation(AppTheme.fullnessColor(ratio)),
                 ),
               ),
             ],

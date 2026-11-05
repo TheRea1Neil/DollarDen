@@ -40,6 +40,19 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
   bool _busy = false;
   String? _error;
 
+  /// What the fields held on open. Editing an existing category saves
+  /// on the way out, so there has to be something to compare against --
+  /// otherwise simply opening a category and backing out would write.
+  late final Map<String, String> _initial;
+
+  /// Set immediately before a pop this screen performs itself.
+  ///
+  /// Without it the interceptor re-fires on its own Navigator.pop and
+  /// loops forever, and archiving would run a save for the category it
+  /// has just archived. A plain field, not state: canPop is read during
+  /// the pop, before any rebuild would land.
+  bool _leaving = false;
+
   // Everything beyond the plain fields: funding, matchers, recent
   // activity. Loaded separately because a brand-new category has none
   // of it yet.
@@ -70,6 +83,7 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
             ? ''
             : (c!.alertAtCents! / 100).toStringAsFixed(2));
     _kind = c?.kind ?? 'spending';
+    _initial = _snapshot();
     // Activity first: opening a category is almost always "what happened
     // here lately", not "let me change the rules".
     if (!_isNew) {
@@ -113,6 +127,53 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
     super.dispose();
   }
 
+  Map<String, String> _snapshot() => {
+        'name': _name.text.trim(),
+        'kind': _kind,
+        'description': _description.text.trim(),
+        'spend_criteria': _spendCriteria.text.trim(),
+        'target': _target.text.trim(),
+        'alert': _alert.text.trim(),
+      };
+
+  bool get _dirty {
+    final now = _snapshot();
+    if (_initial.keys.any((k) => _initial[k] != now[k])) return true;
+    return _fundingTouched && _pendingFundingComplete;
+  }
+
+  /// Save on the way out of an existing category.
+  ///
+  /// Returns whether it is safe to leave. The Save button at the bottom
+  /// of a long form is easy to scroll past, and a change that silently
+  /// did not apply is worse than no change at all -- you believe the
+  /// budget says something it does not.
+  ///
+  /// Deliberately NOT done for a new category: backing out of a
+  /// half-typed form must not create one.
+  Future<bool> _saveOnLeave() async {
+    if (_isNew || !_dirty) return true;
+
+    if (!(_form.currentState?.validate() ?? false)) {
+      // Cannot save and must not discard silently, so stay put and say
+      // why. This is the one case where leaving is blocked.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Fix the highlighted field, or it cannot be saved'),
+        ));
+      }
+      return false;
+    }
+
+    final saved = await _save(pop: false);
+    if (saved && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Saved ${_name.text.trim()}')),
+      );
+    }
+    return saved;
+  }
+
   int? _cents(TextEditingController c) {
     final t = c.text.trim();
     if (t.isEmpty) return null;
@@ -120,8 +181,8 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
     return v == null ? null : (v * 100).round();
   }
 
-  Future<void> _save() async {
-    if (!_form.currentState!.validate()) return;
+  Future<bool> _save({bool pop = true}) async {
+    if (!_form.currentState!.validate()) return false;
     setState(() {
       _busy = true;
       _error = null;
@@ -165,8 +226,13 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
       }
       ref.invalidate(summaryProvider);
       ref.invalidate(categoriesProvider);
-      if (!mounted) return;
-      Navigator.of(context).pop(true);
+      if (!mounted) return true;
+      if (pop) {
+        Navigator.of(context).pop(true);
+      } else {
+        setState(() => _busy = false);
+      }
+      return true;
     } on ApiException catch (e) {
       if (mounted) {
         setState(() {
@@ -182,6 +248,7 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
         });
       }
     }
+    return false;
   }
 
   Future<void> _refine() async {
@@ -319,6 +386,7 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
       ref.invalidate(summaryProvider);
       ref.invalidate(categoriesProvider);
       if (!mounted) return;
+      _leaving = true;
       Navigator.of(context).pop(true);
     } on ApiException catch (e) {
       if (!mounted) return;
@@ -333,7 +401,21 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
   Widget build(BuildContext context) {
     final c = widget.existing;
 
-    return Scaffold(
+    return PopScope(
+      // Editing saves on the way out, so the pop has to be intercepted
+      // rather than allowed and then written after the fact -- the
+      // screen is gone by then, and a failed save would have nowhere
+      // to report itself.
+      canPop: _isNew || _leaving,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop || _busy) return;
+        final ok = await _saveOnLeave();
+        if (ok && mounted && context.mounted) {
+          _leaving = true;
+          Navigator.of(context).pop(true);
+        }
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: Text(_isNew ? 'New category' : c!.name),
         actions: [
@@ -363,7 +445,7 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
               controller: _tabs,
               children: [_activityTab(context), _settingsTab(context)],
             ),
-    );
+    ));
   }
 
   /// What has actually moved in and out. The first thing shown, because
@@ -611,15 +693,23 @@ class _CategoryEditorScreenState extends ConsumerState<CategoryEditorScreen>
             ],
 
             const SizedBox(height: 24),
-            FilledButton(
-              onPressed: _busy ? null : _save,
-              child: _busy
-                  ? const SizedBox(
-                      height: 18,
-                      width: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2))
-                  : Text(_isNew ? 'Create' : 'Save'),
-            ),
+            if (_isNew)
+              FilledButton(
+                onPressed: _busy ? null : _save,
+                child: _busy
+                    ? const SizedBox(
+                        height: 18,
+                        width: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Text('Create'),
+              )
+            else
+              Text(
+                'Changes save when you go back.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
           ],
         ));
   }

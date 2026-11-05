@@ -70,10 +70,15 @@ DESIGN_SCHEMA = {
                     "kind": {"type": "string",
                              "enum": ["spending", "savings_bucket", "obligation"]},
                     "description": {"type": "string"},
+                    "spend_criteria": {
+                        "type": "string",
+                        "description": "what gets charged here, and what "
+                                       "belongs elsewhere instead",
+                    },
                     "target_cents": {"type": "integer"},
                     "alert_at_cents": {"type": "integer"},
                 },
-                "required": ["name", "kind", "description"],
+                "required": ["name", "kind", "description", "spend_criteria"],
             },
         },
         "split_rules": {
@@ -209,6 +214,7 @@ A large refill_to target placed above rent will take the entire paycheck
 and leave rent unfunded. That is the single most common mistake here.
 
 More rules:
+- Give every category a spend_criteria. {criteria_guidance}
 - Give every spending category a sensible target_cents.
 - Use refill_to targets the user actually stated. Do not copy one goal's
   target onto a different category.
@@ -244,7 +250,8 @@ async def run_design_categories(
     request_block = f"Additional instructions:\n{extra}" if extra else ""
 
     prompt = DESIGN_PROMPT.format(
-        existing_block=existing_block, goals=goals, request_block=request_block
+        existing_block=existing_block, goals=goals, request_block=request_block,
+        criteria_guidance=CRITERIA_GUIDANCE,
     )
 
     res = await provider.chat(prompt, schema=DESIGN_SCHEMA)
@@ -297,6 +304,7 @@ def _validate_design(
             "name": name,
             "kind": kind,
             "description": str(c.get("description", "")).strip(),
+            "spend_criteria": str(c.get("spend_criteria", "")).strip() or None,
             "target_cents": _as_int(c.get("target_cents")),
             "alert_at_cents": _as_int(c.get("alert_at_cents")),
             "already_exists": name in {e.name for e in existing},
@@ -683,8 +691,29 @@ SINGLE_SCHEMA = {
             },
         },
     },
-    "required": ["name", "kind", "description"],
+    # spend_criteria is required: a model omits any property a schema
+    # does not demand (docs/10), and without it the new category
+    # cannot attract a single charge.
+    "required": ["name", "kind", "description", "spend_criteria"],
 }
+
+# What `spend_criteria` must contain, stated once and reused by every
+# prompt that creates a category. It was only ever explained to
+# describe_category, so the two paths that actually CREATE categories
+# produced none -- and this is the field the categoriser reads, so
+# every category made by the AI arrived unable to attract a charge.
+CRITERIA_GUIDANCE = """`spend_criteria` is what gets CHARGED to the category, as opposed to
+what it is FOR. It is the field that decides where a purchase lands,
+so state the EDGE: what belongs here and what belongs somewhere else
+instead. Name real merchants or payees where you can, and a threshold
+if one applies. For example:
+  "Groceries from a shop; eating out together is Date Fund."
+  "Fuel at a pump only; Uber and Lyft are Date Fund."
+  "Discretionary buys over $40 that are not food."
+Do NOT restate the funding rule there -- "whatever is left over goes
+here" says nothing about what gets charged, and putting it there makes
+filing WORSE."""
+
 
 SINGLE_PROMPT = """Design ONE budget category from a description.
 
@@ -709,6 +738,7 @@ Return:
 - a short clear name
 - the right kind
 - a one-sentence description of what it is for
+- spend_criteria: {criteria_guidance}
 - target_cents if it makes sense to refill it to a set amount
 - suggested_rule: how each paycheck should fund it (NOT a remainder rule —
   this is one category, not a whole plan)
@@ -736,6 +766,7 @@ async def run_design_category(
         existing="\n".join(_describe_category(c) for c in existing) or "  (none yet)",
         goals=_goals(db, user) or "(none stated)",
         request=wanted,
+        criteria_guidance=CRITERIA_GUIDANCE,
     )
 
     res = await provider.chat(prompt, schema=SINGLE_SCHEMA)

@@ -381,6 +381,11 @@ class ProposedCategory {
   String name;
   String kind;
   String description;
+
+  /// What gets CHARGED here, as opposed to what the category is for.
+  /// This is the field the auto-categoriser reads, so a category
+  /// created without it cannot attract a charge.
+  String? spendCriteria;
   int? targetCents;
   final bool alreadyExists;
 
@@ -389,6 +394,7 @@ class ProposedCategory {
     required this.kind,
     required this.description,
     required this.alreadyExists,
+    this.spendCriteria,
     this.targetCents,
   });
 
@@ -396,6 +402,7 @@ class ProposedCategory {
         name: j['name'] as String,
         kind: j['kind'] as String? ?? 'spending',
         description: j['description'] as String? ?? '',
+        spendCriteria: j['spend_criteria'] as String?,
         targetCents: j['target_cents'] as int?,
         alreadyExists: j['already_exists'] as bool? ?? false,
       );
@@ -404,6 +411,11 @@ class ProposedCategory {
         'name': name,
         'kind': kind,
         if (description.isNotEmpty) 'description': description,
+        // Dropped here previously, so a category created by the AI
+        // arrived with no spending criteria however good the model's
+        // answer was -- and that is the field the categoriser reads.
+        if (spendCriteria != null && spendCriteria!.trim().isNotEmpty)
+          'spend_criteria': spendCriteria,
         if (targetCents != null) 'target_cents': targetCents,
       };
 }

@@ -88,6 +88,28 @@ Bank of America that only accepts `user_good` / `pass_good`; real
 credentials cannot work there by design. For sandbox testing use one of the
 282 non-OAuth institutions — `First Platypus Bank` is the canonical one.
 
+## Sandbox webhooks 401 after the production cutover
+
+Expected, and not a fault. Plaid keeps sending webhooks for Items
+created in sandbox, but verification keys are environment-specific:
+
+> *key_ids are specific to Plaid environments, and verification
+> requests must be made to the same environment that the webhook was
+> sent from*
+
+With `PLAID_ENV=production` the server can only resolve production
+keys, so a sandbox-originated webhook can never verify and is rejected
+with 401. Observed 2026-11-05: production webhooks for the real Bank
+of America Item returned 200, while webhooks for a leftover sandbox
+Item from Android OAuth testing returned 401 from a different Plaid
+IP.
+
+`plaid_items.last_webhook_code` records `rejected:<reason>` against the
+Item, so the two cases can be told apart after the fact rather than
+guessed at from Caddy's access log.
+
+Do not "fix" this by relaxing verification.
+
 ## Rules for not burning credits
 
 These are requirements, not suggestions.

@@ -30,6 +30,11 @@ class ChatResult:
     model: str
     total_duration_ns: int | None = None
     eval_count: int | None = None
+    # Tokens the model READ: the whole conversation plus tool schemas.
+    # This is what fills the context window, and ollama reports it, so
+    # "how full is this chat" can be measured rather than guessed from
+    # a turn count.
+    prompt_eval_count: int | None = None
     # Tools the model asked us to run, each {"name": str, "arguments": dict}.
     # Empty for every non-tool call, so existing callers are unaffected.
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
@@ -206,6 +211,7 @@ class OllamaProvider(AIProvider):
             model=chosen,
             total_duration_ns=data.get("total_duration"),
             eval_count=data.get("eval_count"),
+            prompt_eval_count=data.get("prompt_eval_count"),
             tool_calls=calls,
             thinking=msg.get("thinking") or "",
             done_reason=data.get("done_reason"),

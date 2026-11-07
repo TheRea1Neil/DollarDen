@@ -2221,7 +2221,12 @@ async def run_ask(
     today = (_date.fromisoformat(request["today"]) if request.get("today")
              else _date.today())
 
-    result = await ask_agent.run(db, user, provider, question, today=today)
+    # Prior turns, oldest first, so a follow-up has something to refer
+    # to. The app owns the conversation: closing the screen starts a new
+    # one, which is why nothing is persisted here.
+    history = request.get("history") or []
+    result = await ask_agent.run(db, user, provider, question, today=today,
+                                 history=history)
     return {"question": question, **result.as_dict()}
 
 

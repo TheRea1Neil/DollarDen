@@ -49,6 +49,19 @@ log = logging.getLogger("nnf.ai.ask")
 # run two queries, compare -- without letting a confused model spin.
 MAX_TOOL_CALLS = 8
 
+# The window the agent runs in. Prior turns are kept until this is
+# nearly full rather than capped at a fixed number of exchanges: the
+# limit that matters is tokens, and a count of turns says nothing about
+# how long each one was. Raising num_ctx on a bigger machine then just
+# buys a longer conversation with no other change.
+CONTEXT_TOKENS = 16384
+
+# Leave room for the next question, the tool schemas and the answer.
+# Running the window to the brim makes ollama silently drop the OLDEST
+# messages, which here are the system prompt and the earliest turns --
+# so the agent quietly forgets its instructions rather than failing.
+CONTEXT_HEADROOM = 4096
+
 
 def _money(cents: int | None) -> str:
     return "—" if cents is None else f"${cents / 100:,.2f}"
@@ -193,6 +206,12 @@ class AskResult:
     tool_calls: int = 0
     model: str = ""
     hit_limit: bool = False
+    # Measured, not estimated: ollama reports how many tokens it read.
+    context_used: int = 0
+    context_limit: int = CONTEXT_TOKENS
+    # Oldest turns were dropped to make room. Worth surfacing -- the
+    # assistant will have forgotten the start of the conversation.
+    dropped_turns: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -204,6 +223,9 @@ class AskResult:
             "tool_calls": self.tool_calls,
             "model": self.model,
             "hit_limit": self.hit_limit,
+            "context_used": self.context_used,
+            "context_limit": self.context_limit,
+            "dropped_turns": self.dropped_turns,
         }
 
 
@@ -266,10 +288,30 @@ def _run_spending(db: Session, user: User, args: dict[str, Any],
     return out
 
 
+def _estimate_tokens(text: str) -> int:
+    """Rough token count for budgeting history before the call.
+
+    Four characters per token is the usual English approximation. It is
+    only used to decide how many prior turns to send; the number
+    REPORTED to the user is ollama's own count, measured after the fact.
+    """
+    return max(1, len(text) // 4)
+
+
 async def run(
     db: Session, user: User, provider: Any, question: str, *, today: date,
+    history: list[dict[str, str]] | None = None,
 ) -> AskResult:
-    """Let the model look things up until it can answer."""
+    """Let the model look things up until it can answer.
+
+    `history` is prior [{question, answer}] turns, oldest first. They are
+    replayed as plain user/assistant messages -- the model needs what it
+    SAID, not which lookups it ran to get there, and replaying tool calls
+    would cost most of the window for no benefit.
+
+    Without this a follow-up is meaningless: "what about last month?"
+    has no referent, which is the whole reason the chat needed memory.
+    """
     from app.ai import budget_context
     from app.analytics import taxonomy
 
@@ -278,21 +320,43 @@ async def run(
     types = taxonomy.active(db, user.id)
     tools = tools_for([t.name for t in types], [c.name for c in cats])
 
-    messages: list[dict[str, Any]] = [{
-        "role": "user",
-        "content": PROMPT.format(today=today.isoformat(), question=question,
-                                 max_calls=MAX_TOOL_CALLS),
-    }]
+    opening = PROMPT.format(today=today.isoformat(), question=question,
+                            max_calls=MAX_TOOL_CALLS)
+
+    # Fit as many prior turns as the window allows, newest first, then
+    # restore chronological order. Dropping from the OLDEST end keeps
+    # the turns a follow-up is most likely to refer to.
+    budget = CONTEXT_TOKENS - CONTEXT_HEADROOM - _estimate_tokens(opening)
+    kept: list[dict[str, str]] = []
+    dropped = 0
+    for turn in reversed(history or []):
+        q, a = str(turn.get("question", "")), str(turn.get("answer", ""))
+        cost = _estimate_tokens(q) + _estimate_tokens(a)
+        if cost > budget:
+            dropped += 1
+            continue
+        budget -= cost
+        kept.append(turn)
+    kept.reverse()
+
+    messages: list[dict[str, Any]] = []
+    for turn in kept:
+        messages.append({"role": "user", "content": str(turn.get("question", ""))})
+        messages.append({"role": "assistant", "content": str(turn.get("answer", ""))})
+    messages.append({"role": "user", "content": opening})
 
     steps: list[dict[str, Any]] = []
     calls = 0
     final = ""
     model_name = ""
+    context_used = 0
 
     while calls < MAX_TOOL_CALLS:
         res = await provider.chat("", messages=messages, tools=tools,
-                                  think=False, num_ctx=16384, num_predict=4096)
+                                  think=False, num_ctx=CONTEXT_TOKENS, num_predict=4096)
         model_name = res.model
+        # The last call read the most, so this ends up being the peak.
+        context_used = max(context_used, res.prompt_eval_count or 0)
         if not res.tool_calls:
             # It answered in prose instead of calling `answer`. Take it
             # rather than failing -- the content is what matters.
@@ -361,4 +425,6 @@ async def run(
         final = ("I could not work that out from your data. Try asking it a "
                  "different way, or more specifically.")
     return AskResult(answer=final, steps=steps, tool_calls=calls,
-                     model=model_name, hit_limit=hit_limit)
+                     model=model_name, hit_limit=hit_limit,
+                     context_used=context_used, context_limit=CONTEXT_TOKENS,
+                     dropped_turns=dropped)

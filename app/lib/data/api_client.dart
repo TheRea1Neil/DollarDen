@@ -1053,10 +1053,14 @@ class ApiClient {
   Future<SpendingAnswer> askAboutSpending(
     String question, {
     void Function(AiJob)? onProgress,
+    List<Map<String, String>> history = const [],
   }) async {
     final job = await queueJob('ask', {
       'question': question,
       'today': _localToday(),
+      // Prior turns, oldest first. Without them a follow-up like
+      // "what about last month?" has nothing to refer to.
+      if (history.isNotEmpty) 'history': history,
     });
     final done = await awaitJob(job.id, onProgress: onProgress);
     requireFinished(done, 'The assistant could not answer that.');

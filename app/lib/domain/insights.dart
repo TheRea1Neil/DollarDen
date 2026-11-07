@@ -379,12 +379,23 @@ class SpendingAnswer {
   /// rather than presenting a half-formed answer as complete.
   final bool hitLimit;
 
+  /// How full the model's context window was on this turn, measured by
+  /// the server rather than estimated from a turn count.
+  final int contextUsed;
+  final int contextLimit;
+
+  /// Oldest turns the server had to drop to make room.
+  final int droppedTurns;
+
   const SpendingAnswer({
     required this.question,
     required this.answer,
     this.steps = const [],
     this.toolCalls = 0,
     this.model = '',
+    this.contextUsed = 0,
+    this.contextLimit = 0,
+    this.droppedTurns = 0,
     this.hitLimit = false,
   });
 
@@ -397,6 +408,9 @@ class SpendingAnswer {
         toolCalls: j['tool_calls'] as int? ?? 0,
         model: j['model'] as String? ?? '',
         hitLimit: j['hit_limit'] as bool? ?? false,
+        contextUsed: j['context_used'] as int? ?? 0,
+        contextLimit: j['context_limit'] as int? ?? 0,
+        droppedTurns: j['dropped_turns'] as int? ?? 0,
       );
 
   /// A lookup that matched nothing is worth flagging: a zero from a bad

@@ -1434,6 +1434,27 @@ async def run_auto_categorise(
             "suggestion": suggestion,
         }
 
+    # Re-check under a lock before writing. The open-review check above
+    # happened BEFORE the model was called, and that call takes seconds
+    # -- long enough for the user to file the charge by hand in the app.
+    # That is not hypothetical: it happened on a real Mo Bettahs charge,
+    # the AI and a manual resolve each posted the same $11.81, and the
+    # envelope ended up twice as low as it should be.
+    #
+    # with_for_update serialises the two writers; transaction_is_fully_
+    # allocated catches any path that does not go through a review item
+    # at all.
+    from app.budget.ledger import transaction_is_fully_allocated
+
+    locked = db.scalars(
+        select(ReviewItem)
+        .where(ReviewItem.id == review.id, ReviewItem.resolved_at.is_(None))
+        .with_for_update()
+    ).first()
+    if locked is None or transaction_is_fully_allocated(db, txn):
+        db.rollback()
+        return {"outcome": "already_handled", "applied": False}
+
     cat_id = uuid.UUID(str(suggestion["category_id"]))
     post(
         db, user.id,
@@ -1441,8 +1462,8 @@ async def run_auto_categorise(
                f"AI: {suggestion.get('why') or 'matched this category'}")],
         transaction_id=txn.id,
     )
-    review.resolved_at = datetime.now(UTC)
-    review.resolution = {
+    locked.resolved_at = datetime.now(UTC)
+    locked.resolution = {
         "method": "ai",
         "splits": [[str(cat_id), -amount]],
         "why": suggestion.get("why"),

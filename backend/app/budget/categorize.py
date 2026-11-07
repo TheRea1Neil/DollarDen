@@ -261,6 +261,23 @@ def resolve_review(
     if txn is None:
         raise ValueError("review item references a missing transaction")
 
+    # Refuse if anything has already been allocated against this
+    # charge. The AI categoriser runs concurrently and can win the race
+    # by milliseconds, and this path always writes the FULL amount --
+    # so adding to an existing allocation overshoots rather than
+    # completing it. Both entries look perfectly ordinary in history,
+    # which is why it goes unnoticed.
+    #
+    # Net, not "any row": a charge whose allocations were reversed nets
+    # to zero and is genuinely unfiled again.
+    net = sum(a.amount_cents for a in allocations_for_transaction(db, txn))
+    if net != 0:
+        raise ValueError(
+            "That charge has already been filed — it may have been "
+            "categorised automatically while this screen was open. "
+            "Refresh to see where it went."
+        )
+
     amount = signed_amount(txn)
     total = sum(a for _, a in splits)
     if total != amount:

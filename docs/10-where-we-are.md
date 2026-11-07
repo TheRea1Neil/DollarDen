@@ -95,6 +95,32 @@ and the things that would be expensive to rediscover. Written
   yet.** The classifier works and is wired into the labelling queue
   only; a charge should get a category and a kind in one pass.
 
+- **Nothing re-queues a stranded AI categorisation.** Jobs are queued in
+  one place only -- inside `sync_item`, for transactions CREATED in that
+  sync run that ended up with an open review item. One pass, one chance,
+  and nothing ever goes back to look.
+
+  A transaction is therefore stranded if it arrived before the feature
+  existed (2026-11-04), if its job ended `failed` rather than `deferred`
+  (a deferred job retries hourly and eventually runs anyway; a failed one
+  is gone), if no AI provider was configured at that moment, or if it
+  reached the review queue by a route other than sync -- un-ignoring a
+  transaction does exactly that.
+
+  Distinct from the outcomes that are working correctly: `unsure` (the
+  model declined, which it does honestly when a merchant string says
+  nothing) and `suggested` (it hedged and left the decision). Those are
+  waiting for the user. A stranded one is waiting for nothing.
+
+  The problem is that all of them look identical in the app, so there is
+  no way to tell whether to wait or to act. The fix is a periodic sweep
+  queueing `auto_categorise` for anything unreviewed with no job still
+  coming; detectable as an open review item with no `ai_jobs` row whose
+  `request->>'transaction_id'` matches, or only terminal failures.
+
+  Deferred 2026-11-06 at Neil's call. Not yet measured whether his
+  account currently has any.
+
 - **No push notifications.** The paycheck prompt is in-app only.
   Deferred deliberately, with the reasoning and the plan written up in
   `docs/15-notifications.md` — the short version is that local

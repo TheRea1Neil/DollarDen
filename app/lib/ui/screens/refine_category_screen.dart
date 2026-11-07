@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/money.dart';
 import '../../data/api_client.dart';
+import '../widgets/ai_waiting.dart';
 import '../../data/providers.dart';
 import '../../domain/models.dart';
 
@@ -27,6 +28,10 @@ class _RefineCategoryScreenState extends ConsumerState<RefineCategoryScreen> {
   bool _busy = false;
   String _progress = '';
   String? _error;
+
+  /// Queued behind a busy graphics card. Not a failure, and
+  /// must not be shown as one.
+  JobDeferred? _deferred;
   RefinedCategory? _draft;
 
   Category get _c => widget.detail.category;
@@ -44,6 +49,7 @@ class _RefineCategoryScreenState extends ConsumerState<RefineCategoryScreen> {
     setState(() {
       _busy = true;
       _error = null;
+      _deferred = null;
       _draft = null;
       _progress = 'Queued…';
     });
@@ -66,6 +72,8 @@ class _RefineCategoryScreenState extends ConsumerState<RefineCategoryScreen> {
         return;
       }
       setState(() => _draft = RefinedCategory.fromJson(done.result ?? {}));
+    } on JobDeferred catch (d) {
+      if (mounted) setState(() => _deferred = d);
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } catch (e) {
@@ -179,6 +187,10 @@ class _RefineCategoryScreenState extends ConsumerState<RefineCategoryScreen> {
               child: Text(_error!,
                   style: TextStyle(color: theme.colorScheme.onErrorContainer)),
             ),
+          ],
+          if (_deferred != null) ...[
+            const SizedBox(height: 16),
+            AiWaiting(deferred: _deferred!, inline: true),
           ],
           if (_draft != null) ...[
             const SizedBox(height: 24),

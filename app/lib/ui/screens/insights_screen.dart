@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/money.dart';
 import '../../data/api_client.dart';
+import '../widgets/ai_waiting.dart';
 import '../../data/providers.dart';
 import '../../domain/insights.dart';
 import 'ask_screen.dart';
@@ -26,6 +27,11 @@ class _InsightsScreenState extends ConsumerState<InsightsScreen> {
   bool _narrating = false;
   String? _narrateError;
 
+  /// Queued behind a busy graphics card. This screen had no handling at
+  /// all for it -- the spinner simply stopped and nothing was said,
+  /// which is the worst of the three possible outcomes.
+  JobDeferred? _narrateDeferred;
+
   static const _periods = <String, String>{
     'this_month': 'This month',
     'last_month': 'Last month',
@@ -39,6 +45,7 @@ class _InsightsScreenState extends ConsumerState<InsightsScreen> {
     setState(() {
       _narrating = true;
       _narrateError = null;
+      _narrateDeferred = null;
     });
     try {
       final period = ref.read(insightsPeriodProvider);
@@ -46,6 +53,11 @@ class _InsightsScreenState extends ConsumerState<InsightsScreen> {
       if (mounted) setState(() => _narrative = out.narrative);
     } on ApiException catch (e) {
       if (mounted) setState(() => _narrateError = e.message);
+    } on JobDeferred catch (d) {
+      if (mounted) setState(() => _narrateDeferred = d);
+    } catch (e) {
+      // Never leave the spinner stopping with nothing said.
+      if (mounted) setState(() => _narrateError = '$e');
     } finally {
       if (mounted) setState(() => _narrating = false);
     }
@@ -109,6 +121,7 @@ class _InsightsScreenState extends ConsumerState<InsightsScreen> {
                       text: _narrative,
                       busy: _narrating,
                       error: _narrateError,
+                      deferred: _narrateDeferred,
                       onAsk: _narrate,
                     ),
                     for (final card in data.cards) _buildCard(context, card),
@@ -222,12 +235,14 @@ class _NarrativeBox extends StatelessWidget {
   final String? text;
   final bool busy;
   final String? error;
+  final JobDeferred? deferred;
   final VoidCallback onAsk;
 
   const _NarrativeBox({
     required this.text,
     required this.busy,
     required this.error,
+    required this.deferred,
     required this.onAsk,
   });
 
@@ -249,6 +264,12 @@ class _NarrativeBox extends StatelessWidget {
             Expanded(child: Text('Waking the assistant…')),
           ],
         ),
+      );
+    }
+    if (deferred != null) {
+      return _Card(
+        title: 'In plain words',
+        child: AiWaiting(deferred: deferred!, inline: true),
       );
     }
     if (text != null) {

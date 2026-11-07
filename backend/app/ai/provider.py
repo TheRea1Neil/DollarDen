@@ -74,7 +74,10 @@ class NullProvider(AIProvider):
     """AI disabled. Everything routes to deterministic rules and the review queue."""
 
     async def chat(self, prompt: str, **_: Any) -> ChatResult:
-        raise AIUnavailable("AI is disabled (ai_provider=none)")
+        raise AIUnavailable(
+            "AI features are switched off for this account. The rest of "
+            "the budget works without them."
+        )
 
     async def available(self) -> bool:
         return False
@@ -181,7 +184,10 @@ class OllamaProvider(AIProvider):
                 r.raise_for_status()
                 data = r.json()
         except Exception as exc:
-            raise AIUnavailable(f"Ollama call failed: {exc}") from exc
+            raise AIUnavailable(
+                "The AI computer stopped responding part-way through. "
+                "Nothing was saved — try again in a moment."
+            ) from exc
 
         msg = data.get("message", {}) or {}
         calls = []
@@ -236,7 +242,10 @@ class DeckProvider(OllamaProvider):
 
         s = self.settings
         if not s.wol_api_url or not s.wol_api_token:
-            raise AIUnavailable("AI host is asleep and no Wake-on-LAN API is configured")
+            raise AIUnavailable(
+                "The AI computer is asleep, and there is no way configured "
+                "to wake it. Turn it on and try again."
+            )
 
         log.info("AI host asleep; sending wake request")
         try:
@@ -248,7 +257,10 @@ class DeckProvider(OllamaProvider):
                 )
                 r.raise_for_status()
         except Exception as exc:
-            raise AIUnavailable(f"wake request failed: {exc}") from exc
+            raise AIUnavailable(
+                "Could not wake the AI computer. It may be unplugged or off "
+                "the network — turn it on and try again."
+            ) from exc
 
         # The host answers ICMP/SSH before Ollama is listening; poll the port.
         deadline = s.ai_wake_timeout_seconds
@@ -259,7 +271,10 @@ class DeckProvider(OllamaProvider):
                 return
             await asyncio.sleep(2)
             waited += 2
-        raise AIUnavailable(f"AI host did not expose Ollama within {deadline}s")
+        raise AIUnavailable(
+            f"The AI computer did not finish starting up within {deadline} "
+            f"seconds. It may still be booting — try again shortly."
+        )
 
     async def chat(self, prompt: str, **kwargs: Any) -> ChatResult:
         await self.ensure_awake()

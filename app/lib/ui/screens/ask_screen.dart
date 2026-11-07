@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/api_client.dart';
 import '../../data/providers.dart';
+import '../widgets/ai_waiting.dart';
 import '../../domain/insights.dart';
 import '../../domain/models.dart';
 
@@ -31,6 +32,12 @@ class _AskScreenState extends ConsumerState<AskScreen> {
   final _history = <SpendingAnswer>[];
   bool _busy = false;
   String? _error;
+
+  /// Not an error: the question is queued behind a busy graphics card.
+  /// Kept apart from _error so it can be explained rather than shown as
+  /// a failure.
+  JobDeferred? _deferred;
+  String? _lastQuestion;
   String _stage = '';
 
   static const _examples = <String>[
@@ -55,6 +62,8 @@ class _AskScreenState extends ConsumerState<AskScreen> {
     setState(() {
       _busy = true;
       _error = null;
+      _deferred = null;
+      _lastQuestion = question;
       _stage = 'Waking the assistant…';
     });
     try {
@@ -72,11 +81,37 @@ class _AskScreenState extends ConsumerState<AskScreen> {
         _history.insert(0, answer);
         _controller.clear();
       });
+    } on JobDeferred catch (d) {
+      // The GPU is busy or it is the middle of the night. The job is
+      // queued and will run on its own; saying "could not answer" here
+      // is both wrong and discouraging.
+      if (mounted) setState(() => _deferred = d);
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// Override the gate and ask again straight away.
+  Future<void> _runAnyway() async {
+    final d = _deferred;
+    final q = _lastQuestion;
+    if (d == null || q == null) return;
+    setState(() {
+      _deferred = null;
+      _busy = true;
+      _stage = 'Running it now…';
+    });
+    try {
+      await ref.read(apiProvider).retryJob(d.job.id);
+    } catch (_) {
+      // Retrying the parked job is best effort; asking again always
+      // works and is what the user wanted either way.
+    }
+    if (!mounted) return;
+    setState(() => _busy = false);
+    await _ask(q);
   }
 
   @override
@@ -129,6 +164,15 @@ class _AskScreenState extends ConsumerState<AskScreen> {
                           Expanded(child: Text(_stage)),
                         ],
                       ),
+                    ),
+                  ),
+                if (_deferred != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: AiWaiting(
+                      deferred: _deferred!,
+                      inline: true,
+                      onRunAnyway: _busy ? null : _runAnyway,
                     ),
                   ),
                 if (_error != null)

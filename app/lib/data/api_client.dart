@@ -23,6 +23,26 @@ class JobDeferred implements Exception {
   String toString() => reason;
 }
 
+
+/// Insist a finished job actually produced something, and say plainly
+/// why if it did not.
+///
+/// Every AI call used to make this judgement for itself, and four of
+/// them collapsed `deferred` into "the assistant could not answer
+/// that" -- which is wrong twice over: nothing failed, and the work is
+/// still queued. The user was told the feature was broken while it was
+/// quietly waiting for a game to finish.
+///
+/// `deferred` therefore throws JobDeferred, which is NOT an error. The
+/// screen should say what it is waiting for and offer to run it anyway.
+AiJob requireFinished(AiJob done, String couldNot) {
+  if (done.status == 'deferred') throw JobDeferred(done);
+  if (done.status != 'done' || done.result == null) {
+    throw ApiException(done.error ?? couldNot);
+  }
+  return done;
+}
+
 class ApiException implements Exception {
   final int? statusCode;
   final String message;
@@ -510,6 +530,14 @@ class ApiClient {
       // Deferred stops the poll. The job is waiting for the GPU or for
       // morning and could be an hour away -- spinning until the
       // timeout would show the user nothing and tell them less.
+      //
+      // It THROWS rather than returning, because returning left every
+      // caller to notice for itself and most did not: four of them
+      // reported "the assistant could not answer that" for a job that
+      // had not failed and was still queued. Throwing means a screen
+      // either handles it deliberately or shows the reason verbatim --
+      // both of which beat claiming the feature is broken.
+      if (job.status == 'deferred') throw JobDeferred(job);
       if (job.settled) return job;
       await Future<void>.delayed(interval);
     }
@@ -1031,9 +1059,7 @@ class ApiClient {
       'today': _localToday(),
     });
     final done = await awaitJob(job.id, onProgress: onProgress);
-    if (done.status != 'done' || done.result == null) {
-      throw ApiException(done.error ?? 'The assistant could not answer that.');
-    }
+    requireFinished(done, 'The assistant could not answer that.');
     return SpendingAnswer.fromJson(done.result!);
   }
 
@@ -1047,9 +1073,7 @@ class ApiClient {
       'today': _localToday(),
     });
     final done = await awaitJob(job.id, onProgress: onProgress);
-    if (done.status != 'done' || done.result == null) {
-      throw ApiException(done.error ?? 'The assistant could not summarise that.');
-    }
+    requireFinished(done, 'The assistant could not summarise that.');
     final r = done.result!;
     return (
       narrative: r['narrative'] as String? ?? '',
@@ -1073,9 +1097,7 @@ class ApiClient {
       if (itemDescription != null) 'item_description': itemDescription,
     });
     final done = await awaitJob(job.id, onProgress: onProgress);
-    if (done.status != 'done' || done.result == null) {
-      throw ApiException(done.error ?? 'The assistant could not classify that.');
-    }
+    requireFinished(done, 'The assistant could not classify that.');
     return TypeSuggestionResult.fromJson(done.result!);
   }
 
@@ -1110,9 +1132,7 @@ class ApiClient {
       // Not a failure. The caller shows why and offers to override.
       throw JobDeferred(done);
     }
-    if (done.status != 'done' || done.result == null) {
-      throw ApiException(done.error ?? 'The assistant could not read that receipt.');
-    }
+    requireFinished(done, 'The assistant could not read that receipt.');
     return ReceiptScan.fromJson(done.result!);
   }
 

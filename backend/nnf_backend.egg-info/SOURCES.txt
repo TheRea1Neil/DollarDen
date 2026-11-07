@@ -91,3 +91,4 @@ tests/test_split_missing_params.py
 tests/test_sync_refreshes_balances.py
 tests/test_token_backup.py
 tests/test_treatment.py
+tests/test_user_facing_messages.py

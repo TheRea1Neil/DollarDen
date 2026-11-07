@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/money.dart';
 import '../../core/theme.dart';
 import '../../data/api_client.dart';
+import '../widgets/ai_waiting.dart';
 import '../../data/providers.dart';
 import '../../domain/models.dart';
 
@@ -31,6 +32,10 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   String _progress = '';
   Proposal? _proposal;
   String? _error;
+
+  /// Queued behind a busy graphics card. Not a failure, and
+  /// must not be shown as one.
+  JobDeferred? _deferred;
 
   @override
   void initState() {
@@ -66,6 +71,8 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Goals saved')),
       );
+    } on JobDeferred catch (d) {
+      if (mounted) setState(() => _deferred = d);
     } on ApiException catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -83,6 +90,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     setState(() {
       _busy = true;
       _error = null;
+      _deferred = null;
       _proposal = null;
       _progress = 'Queued…';
     });
@@ -235,6 +243,10 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                     child: Text(_error!,
                         style: TextStyle(color: theme.colorScheme.onErrorContainer)),
                   ),
+                ],
+                if (_deferred != null) ...[
+                  const SizedBox(height: 16),
+                  AiWaiting(deferred: _deferred!, inline: true),
                 ],
                 if (_proposal != null) ...[
                   const SizedBox(height: 24),

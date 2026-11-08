@@ -247,45 +247,59 @@ class DeckProvider(OllamaProvider):
             return
 
         s = self.settings
-        if not s.wol_api_url or not s.wol_api_token:
+        from app.ai import hardpower
+
+        have_wol = bool(s.wol_api_url and s.wol_api_token)
+        have_relay = hardpower.configured(s)
+        if not have_wol and not have_relay:
             raise AIUnavailable(
                 "The AI computer is asleep, and there is no way configured "
                 "to wake it. Turn it on and try again."
             )
 
-        log.info("AI host asleep; sending wake request")
-        try:
-            async with httpx.AsyncClient(timeout=s.ai_wake_timeout_seconds + 30) as c:
-                r = await c.post(
-                    f"{s.wol_api_url.rstrip('/')}/wake",
-                    params={"wait": s.ai_wake_timeout_seconds},
-                    headers={"Authorization": f"Bearer {s.wol_api_token}"},
-                )
-                r.raise_for_status()
-        except Exception as exc:
+        deadline = s.ai_wake_timeout_seconds
+        wol_failed = ""
+
+        if have_wol:
+            log.info("AI host asleep; sending wake request")
+            try:
+                async with httpx.AsyncClient(
+                        timeout=deadline + 30) as c:
+                    r = await c.post(
+                        f"{s.wol_api_url.rstrip('/')}/wake",
+                        params={"wait": deadline},
+                        headers={"Authorization": f"Bearer {s.wol_api_token}"},
+                    )
+                    r.raise_for_status()
+            except Exception as exc:  # noqa: BLE001
+                # Do NOT give up here. A failing wake request is the
+                # STRONGEST evidence the machine is fully off, which is
+                # precisely when the power relay is the right answer --
+                # and bailing out meant the relay was never reached at
+                # all after a hard power-off.
+                wol_failed = str(exc)
+                log.info("wake request failed (%s); will try the relay", exc)
+            else:
+                # The host answers SSH before Ollama is listening, so
+                # poll the port rather than trusting the wake call.
+                waited = 0.0
+                while waited < deadline:
+                    if self._port_open(host, port):
+                        log.info("AI host awake after ~%.0fs", waited)
+                        return
+                    await asyncio.sleep(2)
+                    waited += 2
+
+        # Wake-on-LAN did not get there -- either it errored or the
+        # host never came up. WoL only reaches a NIC that still has
+        # power, so a machine at soft off, after a power cut, or with
+        # WoL disabled in the BIOS will never answer it however many
+        # packets are sent. That is what the relay is for.
+        if not have_relay:
             raise AIUnavailable(
                 "Could not wake the AI computer. It may be unplugged or off "
                 "the network — turn it on and try again."
-            ) from exc
-
-        # The host answers ICMP/SSH before Ollama is listening; poll the port.
-        deadline = s.ai_wake_timeout_seconds
-        waited = 0.0
-        while waited < deadline:
-            if self._port_open(host, port):
-                log.info("AI host awake after ~%.0fs", waited)
-                return
-            await asyncio.sleep(2)
-            waited += 2
-        # Wake-on-LAN did not get there. Work out why before doing
-        # anything physical: WoL only reaches a NIC that still has
-        # power, so a machine at soft off, after a power cut, or with
-        # WoL disabled in the BIOS will never answer it however many
-        # packets are sent.
-        from app.ai import hardpower
-
-        if not hardpower.configured(s):
-            raise AIUnavailable(
+                if wol_failed else
                 f"The AI computer did not wake within {deadline} seconds. It "
                 f"may be fully powered off — turn it on and try again."
             )

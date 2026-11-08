@@ -80,6 +80,17 @@ class ReviewItem {
   final String? merchantName;
   final int amountCents; // signed: positive == money out
 
+  /// Whether the assistant is still going to deal with this, or has
+  /// handed it back. working | deferred | unsure | suggested | failed |
+  /// none. Without it every open item looks the same and there is no
+  /// way to tell "wait" from "your turn".
+  final String aiState;
+
+  /// Why it could not decide, in its own words. The useful half.
+  final String? aiReason;
+  final String? aiSuggestedCategory;
+  final String? aiRetryAt;
+
   const ReviewItem({
     required this.id,
     required this.transactionId,
@@ -88,6 +99,10 @@ class ReviewItem {
     required this.name,
     required this.amountCents,
     this.merchantName,
+    this.aiState = 'none',
+    this.aiReason,
+    this.aiSuggestedCategory,
+    this.aiRetryAt,
   });
 
   factory ReviewItem.fromJson(Map<String, dynamic> j) => ReviewItem(
@@ -98,7 +113,16 @@ class ReviewItem {
         name: j['name'] as String,
         merchantName: j['merchant_name'] as String?,
         amountCents: j['amount_cents'] as int,
+        aiState: j['ai_state'] as String? ?? 'none',
+        aiReason: j['ai_reason'] as String?,
+        aiSuggestedCategory: j['ai_suggested_category'] as String?,
+        aiRetryAt: j['ai_retry_at'] as String?,
       );
+
+  /// Nothing more is coming: it is the user's call now.
+  bool get waitingOnYou =>
+      aiState == 'unsure' || aiState == 'suggested' ||
+      aiState == 'failed' || aiState == 'none';
 
   String get title => (merchantName?.trim().isNotEmpty ?? false) ? merchantName! : name;
 }

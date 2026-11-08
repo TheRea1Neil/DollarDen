@@ -87,6 +87,7 @@ tests/test_receipt_text.py
 tests/test_reconcile.py
 tests/test_refile.py
 tests/test_refresh_endpoint.py
+tests/test_review_ai_state.py
 tests/test_spend_criteria_required.py
 tests/test_split_engine.py
 tests/test_split_missing_params.py

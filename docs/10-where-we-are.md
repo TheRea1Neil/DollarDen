@@ -112,8 +112,11 @@ and the things that would be expensive to rediscover. Written
   nothing) and `suggested` (it hedged and left the decision). Those are
   waiting for the user. A stranded one is waiting for nothing.
 
-  The problem is that all of them look identical in the app, so there is
-  no way to tell whether to wait or to act. The fix is a periodic sweep
+  Since 2026-11-07 they no longer look identical: the review queue
+  reports an `ai_state` per item (working / deferred / unsure /
+  suggested / failed / none) with the model's own reason, so a
+  stranded item is at least visible as one. The sweep that would
+  re-queue it is still not built. The fix is a periodic sweep
   queueing `auto_categorise` for anything unreviewed with no job still
   coming; detectable as an open review item with no `ai_jobs` row whose
   `request->>'transaction_id'` matches, or only terminal failures.

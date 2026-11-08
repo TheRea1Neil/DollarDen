@@ -32,6 +32,7 @@ from app.budget.reconcile import (
 )
 from app.budget.split import RuleType, SplitPlanError, SplitRule as EngineRule, apply_split
 from app.db.models import (
+    AIJob,
     Account,
     Allocation,
     Category,
@@ -786,6 +787,82 @@ class ReviewOut(BaseModel):
     amount_cents: int
     suggestions: dict | None
 
+    # Whether the assistant is still going to deal with this, or has
+    # given up and handed it back. Without it every open item looks the
+    # same, and there is no way to tell "wait" from "your turn".
+    #
+    #   working   queued or running right now
+    #   deferred  waiting for the graphics card or for morning
+    #   unsure    it looked and could not decide -- ai_reason says why
+    #   suggested it has a guess but not enough confidence to file it
+    #   failed    the attempt errored; nothing is coming
+    #   none      never looked at (arrived before the feature, or the
+    #             AI was unconfigured). Nothing is coming for this one
+    #             either -- see docs/10 on stranded categorisations.
+    ai_state: str = "none"
+    ai_reason: str | None = None
+    ai_suggested_category: str | None = None
+    ai_retry_at: str | None = None
+
+
+def _ai_states(db: Session, user_id: uuid.UUID,
+               txn_ids: list[uuid.UUID]) -> dict[str, dict[str, Any]]:
+    """Latest auto_categorise attempt per transaction.
+
+    One query for the whole list rather than one per row: the review
+    queue can be long, and this is only ever decoration on it.
+    """
+    if not txn_ids:
+        return {}
+    wanted = {str(i) for i in txn_ids}
+    jobs = db.scalars(
+        select(AIJob)
+        .where(AIJob.user_id == user_id, AIJob.kind == "auto_categorise")
+        .order_by(AIJob.created_at.desc())
+    ).all()
+
+    # An ACTIVE attempt beats a finished one whatever the timestamps
+    # say. The question being answered is "is anything still coming for
+    # this?", and if a job is queued or deferred the answer is yes even
+    # if an earlier one already failed. Ordering alone cannot decide
+    # that: Postgres stamps now() from the transaction start, so two
+    # jobs written in one request tie exactly.
+    ACTIVE = {"queued", "waking", "running", "deferred"}
+    out: dict[str, dict[str, Any]] = {}
+    for j in sorted(jobs, key=lambda j: (j.status in ACTIVE, j.created_at),
+                    reverse=True):
+        tid = str((j.request or {}).get("transaction_id") or "")
+        if tid not in wanted or tid in out:
+            continue
+        result = j.result or {}
+        if j.status in ("queued", "waking", "running"):
+            out[tid] = {"ai_state": "working"}
+        elif j.status == "deferred":
+            out[tid] = {
+                "ai_state": "deferred",
+                "ai_reason": j.defer_reason,
+                "ai_retry_at": j.not_before.isoformat() if j.not_before else None,
+            }
+        elif j.status == "failed":
+            out[tid] = {"ai_state": "failed", "ai_reason": j.error}
+        else:
+            outcome = str(result.get("outcome") or "")
+            suggestion = result.get("suggestion") or {}
+            if outcome == "unsure":
+                out[tid] = {"ai_state": "unsure",
+                            "ai_reason": suggestion.get("why")}
+            elif outcome == "suggested":
+                out[tid] = {
+                    "ai_state": "suggested",
+                    "ai_reason": suggestion.get("why"),
+                    "ai_suggested_category": suggestion.get("category_name"),
+                }
+            else:
+                # applied/already_handled but the item is still open --
+                # nothing more is coming, so do not imply otherwise.
+                out[tid] = {"ai_state": "none"}
+    return out
+
 
 @router.get("/review", response_model=list[ReviewOut])
 def list_review(
@@ -797,11 +874,13 @@ def list_review(
         .where(ReviewItem.user_id == user.id, ReviewItem.resolved_at.is_(None))
         .order_by(Transaction.date.desc())
     ).all()
+    states = _ai_states(db, user.id, [t.id for _, t in rows])
     return [
         ReviewOut(
             id=str(r.id), transaction_id=str(t.id), reason=r.reason,
             date=t.date.isoformat(), name=t.name, merchant_name=t.merchant_name,
             amount_cents=signed_amount(t), suggestions=r.suggestions,
+            **states.get(str(t.id), {}),
         )
         for r, t in rows
     ]

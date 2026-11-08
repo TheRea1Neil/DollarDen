@@ -192,6 +192,105 @@ class _AllClear extends StatelessWidget {
   }
 }
 
+/// Whether the assistant is still going to deal with this one.
+///
+/// Every open item used to look identical, so there was no way to tell
+/// "it is still working on this" from "it looked and gave up" from "it
+/// never saw this at all". Two of those resolve themselves and two
+/// never will.
+class _AiStatus extends StatelessWidget {
+  final ReviewItem item;
+  const _AiStatus({required this.item});
+
+  /// "15:36" from the server's ISO timestamp, in local time.
+  String? get _retryAt {
+    final raw = item.aiRetryAt;
+    if (raw == null) return null;
+    final t = DateTime.tryParse(raw)?.toLocal();
+    if (t == null) return null;
+    return '${t.hour.toString().padLeft(2, '0')}:'
+        '${t.minute.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    final (IconData icon, String label, Color colour, String? detail) =
+        switch (item.aiState) {
+      'working' => (
+          Icons.auto_awesome,
+          'The assistant is looking at this',
+          theme.colorScheme.primary,
+          null,
+        ),
+      'deferred' => (
+          Icons.hourglass_empty,
+          _retryAt == null
+              ? 'Waiting for the AI computer'
+              : 'Waiting for the AI computer — around ${_retryAt!}',
+          theme.colorScheme.onSurfaceVariant,
+          item.aiReason,
+        ),
+      'suggested' => (
+          Icons.lightbulb_outline,
+          item.aiSuggestedCategory == null
+              ? 'Your call — the assistant was not sure enough'
+              : 'Your call — it suggests ${item.aiSuggestedCategory}',
+          theme.colorScheme.tertiary,
+          item.aiReason,
+        ),
+      'unsure' => (
+          Icons.help_outline,
+          'Your call — the assistant could not decide',
+          theme.colorScheme.tertiary,
+          item.aiReason,
+        ),
+      'failed' => (
+          Icons.error_outline,
+          'Your call — the assistant could not run',
+          theme.colorScheme.error,
+          item.aiReason,
+        ),
+      _ => (
+          Icons.person_outline,
+          'Your call — not looked at automatically',
+          theme.colorScheme.onSurfaceVariant,
+          null,
+        ),
+    };
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Icon(icon, size: 14, color: colour),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(label,
+                  style: theme.textTheme.labelSmall?.copyWith(color: colour)),
+            ),
+          ]),
+          // The model's own reasoning. This is the half worth reading --
+          // "Amazon sells everything from groceries to cloud services"
+          // tells you why it is your call far better than any status.
+          if (detail != null && detail.trim().isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 3, left: 20),
+              child: Text(detail.trim(),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant),
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _ReviewCard extends ConsumerWidget {
   final ReviewItem item;
   const _ReviewCard({required this.item});
@@ -219,6 +318,7 @@ class _ReviewCard extends ConsumerWidget {
                     Text(item.date,
                         style: theme.textTheme.bodySmall
                             ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                    _AiStatus(item: item),
                   ],
                 ),
               ),

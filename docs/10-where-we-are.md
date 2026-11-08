@@ -124,6 +124,11 @@ and the things that would be expensive to rediscover. Written
   Deferred 2026-11-06 at Neil's call. Not yet measured whether his
   account currently has any.
 
+- The deck can now be powered on from the Pi through a relay across its
+  power switch, for the cases Wake-on-LAN cannot reach (power cut, soft
+  off with WoL disabled, hard freeze). Last resort only, once, never
+  against a machine that answers. `docs/16-deck-power.md`.
+
 - **No push notifications.** The paycheck prompt is in-app only.
   Deferred deliberately, with the reasoning and the plan written up in
   `docs/15-notifications.md` — the short version is that local

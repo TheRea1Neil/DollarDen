@@ -277,9 +277,45 @@ class DeckProvider(OllamaProvider):
                 return
             await asyncio.sleep(2)
             waited += 2
+        # Wake-on-LAN did not get there. Work out why before doing
+        # anything physical: WoL only reaches a NIC that still has
+        # power, so a machine at soft off, after a power cut, or with
+        # WoL disabled in the BIOS will never answer it however many
+        # packets are sent.
+        from app.ai import hardpower
+
+        if not hardpower.configured(s):
+            raise AIUnavailable(
+                f"The AI computer did not wake within {deadline} seconds. It "
+                f"may be fully powered off — turn it on and try again."
+            )
+
+        result = await hardpower.press_once(s)
+        if not result.pressed:
+            raise AIUnavailable(
+                f"The AI computer did not wake, and its power switch could "
+                f"not be used: {result.detail}. Turn it on, then try again."
+            )
+
+        # Pressed once. A cold boot is POST plus a full SteamOS start,
+        # so this waits far longer than a wake would -- and if it still
+        # does not come up, it is reported rather than pressed again.
+        # Repeatedly stabbing the power button of a machine that is
+        # mid-boot is how a filesystem gets corrupted.
+        boot_deadline = s.deck_power_boot_seconds
+        waited = 0.0
+        while waited < boot_deadline:
+            if self._port_open(host, port):
+                log.info("AI host booted after ~%.0fs via the power relay", waited)
+                return
+            await asyncio.sleep(3)
+            waited += 3
+
         raise AIUnavailable(
-            f"The AI computer did not finish starting up within {deadline} "
-            f"seconds. It may still be booting — try again shortly."
+            "The AI computer did not come up after its power button was "
+            "pressed. It may still be booting, or it may need a look — "
+            "give it a minute and try again. It will not be pressed again "
+            "on its own."
         )
 
     async def chat(self, prompt: str, **kwargs: Any) -> ChatResult:

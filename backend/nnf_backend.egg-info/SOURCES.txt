@@ -5,6 +5,7 @@ app/ai/__init__.py
 app/ai/ask_agent.py
 app/ai/budget_context.py
 app/ai/gpu.py
+app/ai/hardpower.py
 app/ai/jobs.py
 app/ai/provider.py
 app/ai/receipt_loop.py
@@ -70,6 +71,7 @@ tests/test_card_payment_pairing.py
 tests/test_design_category_rule.py
 tests/test_dismiss_backlog.py
 tests/test_gpu_gate.py
+tests/test_hardpower.py
 tests/test_item_memory.py
 tests/test_ledger.py
 tests/test_move_money.py

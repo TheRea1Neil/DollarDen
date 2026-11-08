@@ -90,6 +90,15 @@ class Settings(BaseSettings):
     wol_api_url: str = ""
     wol_api_token: str = ""
     ai_wake_timeout_seconds: int = 90
+    # Relay across the deck's power switch, driven by a GPIO on the Pi.
+    # The fallback for when Wake-on-LAN cannot help: a machine at soft
+    # off with WoL disabled, after a power cut, or frozen hard.
+    deck_power_url: str = ""
+    deck_power_token: str = ""
+    # How long to wait for a cold boot after the button is pressed.
+    # Much longer than a wake: this is POST plus a full SteamOS start,
+    # not a resume.
+    deck_power_boot_seconds: int = 150
     ai_idle_shutdown_minutes: int = 30
 
     @property

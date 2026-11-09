@@ -925,3 +925,4 @@ COMMENT ON COLUMN public.transactions.treatment IS 'What this charge MEANS for t
 COMMENT ON TABLE public.user_goals IS 'What the user says they are trying to do with their money, in their own words. Free prose, read as context by five AI tasks -- the budget summary, the advice agent, and the three that design or refine categories.';
 
 COMMENT ON TABLE public.users IS 'One person with a login. Everything else in this database hangs off a user_id and cascades on delete, so removing a user removes their entire budget. Also holds that user''s own AI provider settings, so two users on the same server need not share a model host.';
+  

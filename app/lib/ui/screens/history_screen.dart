@@ -223,6 +223,87 @@ class _HistoryCard extends ConsumerWidget {
   /// Undoing an old paycheck cannot be casual: the money may already
   /// have been spent, and reversing does not bring it back. Show what
   /// it would do, then let the user decide.
+  /// Move a filed charge wholesale into a different envelope.
+  ///
+  /// One split covering the whole amount, which the refile endpoint
+  /// handles by REVERSING the old allocations and posting the new
+  /// ones. Nothing is edited: history keeps showing where it went
+  /// first, that it was undone, and where it went instead.
+  Future<void> _changeCategory(BuildContext context, WidgetRef ref) async {
+    final cats = await ref.read(categoriesProvider.future);
+    final choices = cats
+        .where((c) => !c.archived && !c.isUnallocated)
+        .toList()
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    if (!context.mounted || choices.isEmpty) return;
+
+    final picked = await showModalBottomSheet<Category>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) {
+        final theme = Theme.of(ctx);
+        return SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Move ${item.title}',
+                        style: theme.textTheme.titleMedium),
+                    const SizedBox(height: 2),
+                    Text(
+                      MoneyFlow.ofSigned(item.amountCents).isOut
+                          ? 'Takes it out of where it is now and charges it '
+                              'to the envelope you pick.'
+                          : 'This is money coming back. It will be taken off '
+                              'where it was credited and added to the '
+                              'envelope you pick instead.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant),
+                    ),
+                  ],
+                ),
+              ),
+              for (final c in choices)
+                ListTile(
+                  title: Text(c.name),
+                  subtitle: Text(Money.format(c.balanceCents),
+                      style: theme.textTheme.bodySmall),
+                  onTap: () => Navigator.of(ctx).pop(c),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+    if (picked == null || !context.mounted) return;
+
+    try {
+      await ref.read(apiProvider).refileTransaction(item.id, [
+        (categoryId: picked.id, amountCents: item.amountCents,
+         description: null),
+      ]);
+      ref.invalidate(summaryProvider);
+      ref.invalidate(categoriesProvider);
+      await onChanged();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Moved to ${picked.name}'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } on ApiException catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    }
+  }
+
   Future<void> _undo(BuildContext context, WidgetRef ref) async {
     final api = ref.read(apiProvider);
     UndoPreview preview;
@@ -351,6 +432,28 @@ class _HistoryCard extends ConsumerWidget {
                   },
                   icon: const Icon(Icons.receipt_long_outlined, size: 16),
                   label: const Text('Itemise'),
+                  style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      visualDensity: VisualDensity.compact),
+                ),
+              ),
+            ],
+            // Moving a filed charge to a different envelope. The only
+            // way to correct a wrong categorisation was Itemise, which
+            // is the full receipt-splitting flow and was offered for
+            // outflows only -- so a misfiled REFUND could not be
+            // corrected at all. Both directions matter: a refund in the
+            // wrong envelope is money credited to the wrong place.
+            if (!item.excluded &&
+                !item.awaitingReview &&
+                item.paycheckId == null) ...[
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () => _changeCategory(context, ref),
+                  icon: const Icon(Icons.swap_horiz, size: 16),
+                  label: const Text('Change category'),
                   style: TextButton.styleFrom(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                       visualDensity: VisualDensity.compact),

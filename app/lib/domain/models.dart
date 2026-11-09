@@ -1409,3 +1409,152 @@ class DismissPreview {
     this.newest,
   });
 }
+
+
+/// Everything known about one transaction, for the detail sheet.
+///
+/// The AI's reasoning was already recorded on every allocation it
+/// filed, but only ever surfaced as a subtitle that ellipsised after a
+/// few words. Seeing WHY a charge landed where it did is how you work
+/// out that a category's spend criteria needs tightening.
+class TxnDetail {
+  final String id;
+  final String date;
+  final String name;
+  final String? merchantName;
+  final int amountCents;
+  final bool pending;
+  final String treatment;
+  final String treatmentReason;
+  final String? account;
+  final String? accountType;
+  final String? plaidCategory;
+  final List<TxnLedgerEntry> allocations;
+  final TxnAiVerdict? ai;
+
+  const TxnDetail({
+    required this.id,
+    required this.date,
+    required this.name,
+    required this.amountCents,
+    required this.pending,
+    required this.treatment,
+    required this.treatmentReason,
+    this.merchantName,
+    this.account,
+    this.accountType,
+    this.plaidCategory,
+    this.allocations = const [],
+    this.ai,
+  });
+
+  factory TxnDetail.fromJson(Map<String, dynamic> j) => TxnDetail(
+        id: j['id'] as String,
+        date: j['date'] as String? ?? '',
+        name: j['name'] as String? ?? '',
+        merchantName: j['merchant_name'] as String?,
+        amountCents: j['amount_cents'] as int? ?? 0,
+        pending: j['pending'] as bool? ?? false,
+        treatment: j['treatment'] as String? ?? 'spend',
+        treatmentReason: j['treatment_reason'] as String? ?? '',
+        account: j['account'] as String?,
+        accountType: j['account_type'] as String?,
+        plaidCategory: j['plaid_category'] as String?,
+        allocations: ((j['allocations'] as List?) ?? const [])
+            .map((e) => TxnLedgerEntry.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        ai: j['ai'] == null
+            ? null
+            : TxnAiVerdict.fromJson((j['ai'] as Map).cast<String, dynamic>()),
+      );
+
+  String get title =>
+      (merchantName?.trim().isNotEmpty ?? false) ? merchantName! : name;
+
+  /// Where the money actually ended up, netting out reversals. A
+  /// corrected charge has three entries and belongs in one envelope.
+  Map<String, int> get netByCategory {
+    final out = <String, int>{};
+    for (final a in allocations) {
+      out[a.category] = (out[a.category] ?? 0) + a.amountCents;
+    }
+    out.removeWhere((_, v) => v == 0);
+    return out;
+  }
+}
+
+class TxnLedgerEntry {
+  final String category;
+  final int amountCents;
+  final String source;
+  final String? note;
+  final String? at;
+
+  const TxnLedgerEntry({
+    required this.category,
+    required this.amountCents,
+    required this.source,
+    this.note,
+    this.at,
+  });
+
+  factory TxnLedgerEntry.fromJson(Map<String, dynamic> j) => TxnLedgerEntry(
+        category: j['category'] as String? ?? '',
+        amountCents: j['amount_cents'] as int? ?? 0,
+        source: j['source'] as String? ?? '',
+        note: j['note'] as String?,
+        at: j['at'] as String?,
+      );
+
+  /// How it got here, in words rather than a database enum.
+  String get sourceLabel => switch (source) {
+        'ai_categorise' => 'Filed by the assistant',
+        'auto_categorise' => 'Filed by one of your rules',
+        'manual' => 'Filed by you',
+        'correction' => 'Correction',
+        'receipt_split' => 'From a receipt',
+        'paycheck_rule' => 'From a paycheck split',
+        'paycheck_manual' => 'Set aside from a paycheck',
+        'opening_balance' => 'Opening balance',
+        _ => source,
+      };
+}
+
+class TxnAiVerdict {
+  final String status;
+  final String? outcome;
+  final bool applied;
+  final String? categoryName;
+  final String? why;
+  final String? confidence;
+  final String? error;
+
+  const TxnAiVerdict({
+    required this.status,
+    required this.applied,
+    this.outcome,
+    this.categoryName,
+    this.why,
+    this.confidence,
+    this.error,
+  });
+
+  factory TxnAiVerdict.fromJson(Map<String, dynamic> j) => TxnAiVerdict(
+        status: j['status'] as String? ?? '',
+        applied: j['applied'] as bool? ?? false,
+        outcome: j['outcome'] as String?,
+        categoryName: j['category_name'] as String?,
+        why: j['why'] as String?,
+        confidence: j['confidence'] as String?,
+        error: j['error'] as String?,
+      );
+
+  String get headline => switch (outcome) {
+        'applied' => 'The assistant filed this',
+        'suggested' => 'The assistant had a guess but was not sure enough',
+        'unsure' => 'The assistant looked and could not decide',
+        'already_handled' => 'Already filed before the assistant got to it',
+        'not_budgeted' => 'Left out of the budget, so it was not filed',
+        _ => status == 'failed' ? 'The assistant could not run' : 'The assistant looked at this',
+      };
+}

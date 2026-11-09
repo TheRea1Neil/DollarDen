@@ -2769,6 +2769,124 @@ _TREATMENT_LABELS = {
 }
 
 
+class TxnDetailOut(BaseModel):
+    """Everything known about one transaction, in one place."""
+
+    id: str
+    date: str
+    name: str
+    merchant_name: str | None
+    amount_cents: int
+    pending: bool
+    treatment: str
+    treatment_reason: str
+    account: str | None
+    account_type: str | None
+    plaid_category: str | None
+    # Every ledger entry, including reversals, so a correction reads as
+    # what it is rather than looking like a second charge.
+    allocations: list[dict]
+    # How the assistant decided, where it was involved at all.
+    ai: dict | None
+
+
+@router.get("/transactions/{transaction_id}", response_model=TxnDetailOut)
+def transaction_detail(
+    transaction_id: str,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> TxnDetailOut:
+    """One transaction, with its ledger history and the AI's reasoning.
+
+    The reasoning was already being recorded on every allocation the
+    model filed, and on the job behind it -- but the only place it
+    surfaced was a one-line subtitle that ellipsised after a few words.
+    Seeing WHY a charge landed where it did is how someone works out
+    that a category's spend_criteria needs tightening, which is the
+    main lever they have over the categoriser.
+    """
+    txn = _own(db, Transaction, transaction_id, user)
+
+    acct = db.get(Account, txn.account_id) if txn.account_id else None
+    rows = db.execute(
+        select(Allocation, Category)
+        .join(Category, Category.id == Allocation.category_id)
+        .where(Allocation.transaction_id == txn.id)
+        .order_by(Allocation.created_at)
+    ).all()
+
+    allocations = [
+        {
+            "category": c.name,
+            "category_id": str(c.id),
+            "amount_cents": a.amount_cents,
+            "source": a.source,
+            "note": a.note,
+            "at": a.created_at.isoformat() if a.created_at else None,
+        }
+        for a, c in rows
+    ]
+
+    # The most recent attempt the model made on this charge. Its own
+    # words, not a paraphrase: "Amazon sells everything from groceries
+    # to cloud services" is the useful part.
+    # Include the PENDING row this one replaced, if any. The job was
+    # queued against the pending transaction, and promotion retires
+    # that row -- so looking only at this id loses the reasoning for
+    # every charge that was filed while pending, which is most of them.
+    ids = [str(txn.id)]
+    predecessor = db.scalars(
+        select(Transaction).where(
+            Transaction.user_id == user.id,
+            Transaction.pending_replaced_by == txn.plaid_transaction_id,
+        )
+    ).first()
+    if predecessor is not None:
+        ids.append(str(predecessor.id))
+
+    job = db.scalars(
+        select(AIJob)
+        .where(
+            AIJob.user_id == user.id,
+            AIJob.kind == "auto_categorise",
+            AIJob.request["transaction_id"].astext.in_(ids),
+        )
+        .order_by(AIJob.created_at.desc())
+    ).first()
+
+    ai: dict | None = None
+    if job is not None:
+        result = job.result or {}
+        suggestion = result.get("suggestion") or {}
+        ai = {
+            "status": job.status,
+            "outcome": result.get("outcome"),
+            "applied": bool(result.get("applied")),
+            "category_name": result.get("category_name")
+                             or suggestion.get("category_name"),
+            "why": result.get("why") or suggestion.get("why"),
+            "confidence": suggestion.get("confidence"),
+            "error": job.error,
+            "at": job.created_at.isoformat() if job.created_at else None,
+        }
+
+    return TxnDetailOut(
+        id=str(txn.id),
+        date=txn.date.isoformat(),
+        name=txn.name,
+        merchant_name=txn.merchant_name,
+        amount_cents=signed_amount(txn),
+        pending=bool(txn.pending),
+        treatment=txn.treatment,
+        treatment_reason=explain(Treatment(txn.treatment)),
+        account=acct.name if acct else None,
+        account_type=acct.type if acct else None,
+        plaid_category=txn.pfc_detailed or txn.pfc_primary,
+        allocations=allocations,
+        ai=ai,
+    )
+
+
 @router.get("/transactions", response_model=HistoryOut)
 def transaction_history(
     limit: int = Query(default=50, ge=1, le=200),

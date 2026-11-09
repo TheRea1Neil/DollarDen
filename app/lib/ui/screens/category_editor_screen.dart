@@ -6,6 +6,7 @@ import '../../core/theme.dart';
 import '../../data/api_client.dart';
 import '../../data/providers.dart';
 import '../../domain/models.dart';
+import '../widgets/transaction_detail_sheet.dart';
 import '../widgets/funding_editor.dart';
 import 'history_screen.dart';
 import 'refine_category_screen.dart';
@@ -783,12 +784,12 @@ class _BalanceCard extends StatelessWidget {
 /// The ledger stores a category-relative sign and the review queue stores
 /// a budget-relative one, which are opposites. `budgetSignedCents` does
 /// the translation so both screens colour and label money the same way.
-class _ActivityRow extends StatelessWidget {
+class _ActivityRow extends ConsumerWidget {
   final Activity activity;
   const _ActivityRow({required this.activity});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final signed = activity.budgetSignedCents;
     final flow = MoneyFlow.ofSigned(signed);
@@ -798,7 +799,15 @@ class _ActivityRow extends StatelessWidget {
       MoneyFlow.none => theme.colorScheme.onSurfaceVariant,
     };
 
-    return Padding(
+    final txnId = activity.transactionId;
+    return InkWell(
+      // Only where there is a charge to describe. A paycheck split or
+      // an opening balance has no transaction behind it, and offering
+      // a tap that opens nothing is worse than not offering one.
+      onTap: txnId == null
+          ? null
+          : () => showTransactionDetail(context, ref, txnId),
+      child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       child: Row(
         children: [
@@ -834,9 +843,14 @@ class _ActivityRow extends StatelessWidget {
               fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
+          if (txnId != null) ...[
+            const SizedBox(width: 4),
+            Icon(Icons.chevron_right,
+                size: 18, color: theme.colorScheme.onSurfaceVariant),
+          ],
         ],
       ),
-    );
+    ));
   }
 }
 

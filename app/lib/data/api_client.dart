@@ -1145,6 +1145,15 @@ class ApiClient {
   /// The splits must sum to the charge; the server refuses otherwise,
   /// because a split that drifts would quietly change what the budget
   /// thinks was spent.
+  /// Everything known about one transaction, including the AI's own
+  /// reasoning for where it put it.
+  Future<TxnDetail> transactionDetail(String transactionId) async {
+    final r = await _withRetry((o) =>
+        _dio.get('/budget/transactions/$transactionId', options: o));
+    if (r.statusCode != 200) _fail(r);
+    return TxnDetail.fromJson((r.data as Map).cast<String, dynamic>());
+  }
+
   Future<void> refileTransaction(
     String transactionId,
     List<({String categoryId, int amountCents, String? description})> splits,

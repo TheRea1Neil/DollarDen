@@ -7,6 +7,7 @@ import '../../core/theme.dart';
 import '../../data/api_client.dart';
 import '../../data/providers.dart';
 import '../../domain/models.dart';
+import '../widgets/transaction_detail_sheet.dart';
 import 'scan_receipt_screen.dart';
 
 /// Every transaction and where its money went.
@@ -405,6 +406,19 @@ class _HistoryCard extends ConsumerWidget {
             ),
             const SizedBox(height: 10),
             _Destination(item: item),
+            const SizedBox(height: 4),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () =>
+                    showTransactionDetail(context, ref, item.id),
+                icon: const Icon(Icons.info_outline, size: 16),
+                label: const Text('Details'),
+                style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    visualDensity: VisualDensity.compact),
+              ),
+            ),
             // Splitting a charge that already filed. Only offered for
             // spending that is actually in the budget: a transfer moves
             // money already accounted for, and a deposit is not a

@@ -361,7 +361,13 @@ class _HistoryCard extends ConsumerWidget {
 
     return Card(
       margin: EdgeInsets.zero,
-      child: Padding(
+      // The card itself opens the details. A "Details" button alongside
+      // Itemise and Change category made three buttons competing on one
+      // row, when the obvious gesture -- tap the thing -- was unused.
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => showTransactionDetail(context, ref, item.id),
+        child: Padding(
         padding: const EdgeInsets.all(14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -406,72 +412,54 @@ class _HistoryCard extends ConsumerWidget {
             ),
             const SizedBox(height: 10),
             _Destination(item: item),
-            const SizedBox(height: 4),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: () =>
-                    showTransactionDetail(context, ref, item.id),
-                icon: const Icon(Icons.info_outline, size: 16),
-                label: const Text('Details'),
-                style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    visualDensity: VisualDensity.compact),
-              ),
-            ),
             // Splitting a charge that already filed. Only offered for
             // spending that is actually in the budget: a transfer moves
             // money already accounted for, and a deposit is not a
             // receipt.
-            if (!item.excluded &&
-                !item.awaitingReview &&
-                item.paycheckId == null &&
-                MoneyFlow.ofSigned(item.amountCents).isOut) ...[
-              const SizedBox(height: 4),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: () async {
-                    final changed = await Navigator.of(context).push<bool>(
-                      MaterialPageRoute(
-                        builder: (_) => ScanReceiptScreen(
-                          transactionId: item.id,
-                          amountCents: item.amountCents,
-                          title: item.title,
-                          alreadyFiled: true,
-                        ),
-                      ),
-                    );
-                    if (changed == true) await onChanged();
-                  },
-                  icon: const Icon(Icons.receipt_long_outlined, size: 16),
-                  label: const Text('Itemise'),
-                  style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      visualDensity: VisualDensity.compact),
-                ),
-              ),
-            ],
-            // Moving a filed charge to a different envelope. The only
-            // way to correct a wrong categorisation was Itemise, which
-            // is the full receipt-splitting flow and was offered for
-            // outflows only -- so a misfiled REFUND could not be
-            // corrected at all. Both directions matter: a refund in the
-            // wrong envelope is money credited to the wrong place.
+            //
+            // One row, both actions. Itemise is offered only for
+            // spending that is actually in the budget -- a transfer
+            // moves money already accounted for, and a deposit is not
+            // a receipt -- so Change category often stands alone, and
+            // sits first in that case rather than leaving a gap.
             if (!item.excluded &&
                 !item.awaitingReview &&
                 item.paycheckId == null) ...[
               const SizedBox(height: 4),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: () => _changeCategory(context, ref),
-                  icon: const Icon(Icons.swap_horiz, size: 16),
-                  label: const Text('Change category'),
-                  style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      visualDensity: VisualDensity.compact),
-                ),
+              Row(
+                children: [
+                  if (MoneyFlow.ofSigned(item.amountCents).isOut) ...[
+                    TextButton.icon(
+                      onPressed: () async {
+                        final changed = await Navigator.of(context).push<bool>(
+                          MaterialPageRoute(
+                            builder: (_) => ScanReceiptScreen(
+                              transactionId: item.id,
+                              amountCents: item.amountCents,
+                              title: item.title,
+                              alreadyFiled: true,
+                            ),
+                          ),
+                        );
+                        if (changed == true) await onChanged();
+                      },
+                      icon: const Icon(Icons.receipt_long_outlined, size: 16),
+                      label: const Text('Itemise'),
+                      style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          visualDensity: VisualDensity.compact),
+                    ),
+                    const SizedBox(width: 4),
+                  ],
+                  TextButton.icon(
+                    onPressed: () => _changeCategory(context, ref),
+                    icon: const Icon(Icons.swap_horiz, size: 16),
+                    label: const Text('Change category'),
+                    style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        visualDensity: VisualDensity.compact),
+                  ),
+                ],
               ),
             ],
             if (item.paycheckApplied) ...[
@@ -491,7 +479,7 @@ class _HistoryCard extends ConsumerWidget {
           ],
         ),
       ),
-    );
+    ));
   }
 }
 

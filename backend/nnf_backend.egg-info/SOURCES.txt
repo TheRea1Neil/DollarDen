@@ -77,6 +77,7 @@ tests/test_ledger.py
 tests/test_move_money.py
 tests/test_no_double_allocation.py
 tests/test_paycheck_promotion.py
+tests/test_payday_from_deposits.py
 tests/test_pending_paycheck.py
 tests/test_pending_promotion.py
 tests/test_pending_reconciliation.py

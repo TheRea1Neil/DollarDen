@@ -135,6 +135,12 @@ class NextPayday {
   final String? expected;
   final String? latest;
 
+  /// Which evidence this came from: 'paychecks' (ones you split) or
+  /// 'deposits' (what the bank actually paid in). Worth distinguishing
+  /// -- a deposit-based estimate is a read of your pay pattern, not of
+  /// anything you have confirmed.
+  final String source;
+
   const NextPayday({
     required this.known,
     this.reason,
@@ -142,10 +148,12 @@ class NextPayday {
     this.earliest,
     this.expected,
     this.latest,
+    this.source = 'paychecks',
   });
 
   factory NextPayday.fromJson(Map<String, dynamic> j) => NextPayday(
         known: j['known'] as bool? ?? false,
+        source: j['source'] as String? ?? 'paychecks',
         reason: j['reason'] as String?,
         cadenceDays: j['cadence_days'] as int?,
         earliest: j['earliest'] as String?,

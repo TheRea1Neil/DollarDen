@@ -609,7 +609,14 @@ class _TotalCard extends StatelessWidget {
                     icon: Icons.event,
                     // A range, never a single date: the cadence estimate
                     // cannot support that much precision (docs/06).
-                    label: 'Payday ~${_short(payday.expected)}',
+                    //
+                    // The tilde carries that on its own for a paycheck
+                    // estimate. When it came from DEPOSITS the user has
+                    // not confirmed any of them, so say so rather than
+                    // implying they did.
+                    label: payday.source == 'deposits'
+                        ? 'Payday ~${_short(payday.expected)} (from deposits)'
+                        : 'Payday ~${_short(payday.expected)}',
                     tone: theme.colorScheme.primary,
                   ),
                 if (summary.pendingReview > 0)

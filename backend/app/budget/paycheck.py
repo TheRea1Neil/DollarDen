@@ -187,32 +187,89 @@ def candidates(db: Session, user_id: uuid.UUID, lookback_days: int = 60) -> list
     )
 
 
+def _income_deposit_dates(db: Session, user_id: uuid.UUID,
+                          limit: int = 10) -> list[date]:
+    """Dates of deposits that look like pay, newest first.
+
+    Used when there are not enough SPLIT paychecks to measure a
+    cadence. The deposits are better evidence anyway -- they are what
+    the bank actually did, and they exist from the first sync, whereas
+    a Paycheck row only appears once someone has sat down and divided
+    one up.
+
+    Treatment is deliberately ignored. Imported history gets dismissed
+    as `ignored` so it stops cluttering the review queue, and that
+    dismissal says nothing about whether the deposit happened.
+    """
+    rows = db.scalars(
+        select(Transaction)
+        .where(
+            Transaction.user_id == user_id,
+            Transaction.inflow_cents >= MIN_PAYCHECK_CENTS,
+            Transaction.outflow_cents == 0,
+            Transaction.pfc_primary == "INCOME",
+            Transaction.removed_at.is_(None),
+        )
+        .order_by(Transaction.date.desc())
+        .limit(limit)
+    ).all()
+
+    # One payday can appear twice: a pending row and its posted twin,
+    # or two deposits on the same day. Either way the GAP is zero and
+    # would drag the median down, so collapse to distinct dates.
+    seen: list[date] = []
+    for t in rows:
+        if t.date not in seen:
+            seen.append(t.date)
+    return seen
+
+
+def _cadence(dates: list[date]) -> tuple[int, int] | None:
+    """Median gap and spread, in days, or None if there is no pattern."""
+    gaps = [(dates[i] - dates[i + 1]).days for i in range(len(dates) - 1)]
+    gaps = [g for g in gaps if 0 < g <= 45]
+    if not gaps:
+        return None
+    median = int(statistics.median(gaps))
+    spread = int(statistics.pstdev(gaps)) if len(gaps) > 1 else 1
+    return median, max(1, min(spread, 7))
+
+
 def predict_next(db: Session, user_id: uuid.UUID) -> dict[str, object]:
     """Estimate the next payday from observed cadence.
 
     Returned as a RANGE. A single date implies precision this cannot have,
     and the alert it feeds ("Food is low and payday is ~6 days out") is only
     useful if the uncertainty is honest.
+
+    Prefers recorded paychecks, because those are confirmed income the
+    user has acted on. Falls back to income DEPOSITS when there are
+    fewer than two: waiting for someone to split two paychecks meant no
+    prediction for the first month of use, while the bank had already
+    handed over six perfectly regular payroll credits.
     """
-    rows = db.scalars(
+    recorded = db.scalars(
         select(Paycheck)
         .where(Paycheck.user_id == user_id)
         .order_by(Paycheck.received_on.desc())
         .limit(8)
     ).all()
 
-    if len(rows) < 2:
-        return {"known": False, "reason": "need at least two confirmed paychecks"}
+    dates = [p.received_on for p in recorded]
+    source = "paychecks"
+    if len(dates) < 2:
+        dates = _income_deposit_dates(db, user_id)
+        source = "deposits"
 
-    dates = [p.received_on for p in rows]
-    gaps = [(dates[i] - dates[i + 1]).days for i in range(len(dates) - 1)]
-    gaps = [g for g in gaps if 0 < g <= 45]
-    if not gaps:
-        return {"known": False, "reason": "no usable cadence in recent paychecks"}
+    if len(dates) < 2:
+        return {"known": False,
+                "reason": "need at least two paydays to see a pattern"}
 
-    median = int(statistics.median(gaps))
-    spread = int(statistics.pstdev(gaps)) if len(gaps) > 1 else 1
-    spread = max(1, min(spread, 7))
+    measured = _cadence(dates)
+    if measured is None:
+        return {"known": False, "reason": "no usable cadence in recent paydays"}
+
+    median, spread = measured
     expected = dates[0] + timedelta(days=median)
 
     return {
@@ -221,5 +278,9 @@ def predict_next(db: Session, user_id: uuid.UUID) -> dict[str, object]:
         "earliest": (expected - timedelta(days=spread)).isoformat(),
         "expected": expected.isoformat(),
         "latest": (expected + timedelta(days=spread)).isoformat(),
-        "based_on": len(gaps) + 1,
+        "based_on": len(dates),
+        # Which evidence this came from, so the app can say "from your
+        # deposits" rather than implying these were paychecks the user
+        # confirmed and split.
+        "source": source,
     }

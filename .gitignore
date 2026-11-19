@@ -76,11 +76,13 @@ app/ios/Flutter/ephemeral/
 # regenerate every launcher icon. Losing it means redrawing the logo.
 !brand/*.jpeg
 
-# ---- one deployment's operational notes: kept locally, not published ----
-# Runbooks and credentials for the author's own machines. Useful to
-# whoever runs that box, meaningless to everyone else, and a little
-# revealing. The design docs alongside them are deliberately NOT here:
-# they explain why the system is the way it is, which is the most
-# valuable thing in the repository.
+# ---- one deployment's operational notes ----
+# These moved to a separate private repository, where they are
+# actually version controlled rather than sitting untracked in a
+# working directory. Still ignored here so a stray copy cannot be
+# committed back by accident.
+#
+# The design docs alongside them deliberately stayed: they explain why
+# the system is the way it is, which is the most valuable thing here.
 docs/09-pi-operations.md
 docs/13-test-account.md

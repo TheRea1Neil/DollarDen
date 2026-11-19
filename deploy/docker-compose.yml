@@ -48,6 +48,18 @@ services:
       - nnf_receipts:/data/receipts
     expose:
       - "8081"
+    # Published on the host so the app can reach it directly, without a
+    # reverse proxy in front. That is the plain-HTTP, same-network setup
+    # someone uses to try this out before deciding whether they want a
+    # domain and a certificate.
+    #
+    # 21821 rather than something common: it has to not collide with
+    # whatever else is already on a home server.
+    #
+    # Override with NNF_PORT, or delete this block entirely if the only
+    # way in should be through the proxy.
+    ports:
+      - "${NNF_PORT:-21821}:8081"
     networks: [nnf, wg]   # wg = the existing Caddy network
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8081/api/health')\""]

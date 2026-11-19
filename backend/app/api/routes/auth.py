@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user
@@ -40,7 +40,7 @@ class RegisterIn(BaseModel):
     email: EmailStr
     password: str = Field(min_length=12, max_length=256)
     display_name: str | None = Field(default=None, max_length=120)
-    timezone: str = "America/Denver"
+    timezone: str = "UTC"
 
 
 class LoginIn(BaseModel):
@@ -79,6 +79,24 @@ def _issue(db: Session, user: User, user_agent: str | None) -> TokenOut:
 @router.post("/register", response_model=TokenOut, status_code=status.HTTP_201_CREATED)
 def register(body: RegisterIn, request: Request, db: Session = Depends(get_db)) -> TokenOut:
     enforce(request, REGISTER_LIMIT, "register", _proxies())
+
+    # An empty instance is being set up: this account becomes its owner.
+    # Any later account needs the owner to make it, unless the server
+    # has deliberately been opened up.
+    #
+    # Note "no accounts at all", not "no owner yet". An instance that
+    # predates roles has accounts and no owner, and must NOT be
+    # claimable by whoever reaches it first -- its owner is named with
+    # `python -m app.ownership`, from the machine itself.
+    s = get_settings()
+    first_ever = db.scalar(select(func.count()).select_from(User)) == 0
+    if not first_ever and not s.allow_open_registration:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "This server does not accept new sign-ups. Ask whoever runs "
+            "it to create an account for you.",
+        )
+
     existing = db.scalars(select(User).where(User.email == body.email.lower())).first()
     if existing:
         raise HTTPException(status.HTTP_409_CONFLICT, "An account with that email already exists")
@@ -88,6 +106,7 @@ def register(body: RegisterIn, request: Request, db: Session = Depends(get_db)) 
         password_hash=hash_password(body.password),
         display_name=body.display_name,
         timezone=body.timezone,
+        role="owner" if first_ever else "member",
     )
     db.add(user)
     db.flush()

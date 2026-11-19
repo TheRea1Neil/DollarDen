@@ -19,7 +19,7 @@ import sys
 import time
 import urllib.request
 
-DECK = "http://192.168.86.196:11434"
+DECK = "http://your-ai-host:11434"
 DEFAULT_MODELS = ["qwen2.5vl:7b", "gemma3:12b"]
 
 # The paper, read by eye.

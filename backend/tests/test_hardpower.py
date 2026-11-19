@@ -18,8 +18,8 @@ from app.core.config import Settings
 
 
 def _settings(**over) -> Settings:
-    base = dict(ai_provider="deck", ai_deck_url="http://deck:11434",
-                deck_power_url="http://pi:11436", deck_power_token="t")
+    base = dict(ai_provider="managed", ai_host_url="http://deck:11434",
+                power_relay_url="http://pi:11436", power_relay_token="t")
     base.update(over)
     return Settings(**base)
 
@@ -106,16 +106,16 @@ async def test_an_unreachable_relay_is_not_an_exception(monkeypatch):
 async def test_nothing_happens_when_no_relay_is_configured(monkeypatch):
     client = FakeClient(FakeResponse(200, {"pressed": True}))
     _patch(monkeypatch, client)
-    out = await hardpower.press_once(_settings(deck_power_url="",
-                                               deck_power_token=""))
+    out = await hardpower.press_once(_settings(power_relay_url="",
+                                               power_relay_token=""))
     assert out.pressed is False
     assert client.calls == [], "must not call anything"
 
 
 def test_configured_requires_both_url_and_token():
     assert hardpower.configured(_settings()) is True
-    assert hardpower.configured(_settings(deck_power_token="")) is False
-    assert hardpower.configured(_settings(deck_power_url="")) is False
+    assert hardpower.configured(_settings(power_relay_token="")) is False
+    assert hardpower.configured(_settings(power_relay_url="")) is False
 
 
 def test_there_is_no_force_off_in_the_web_path():

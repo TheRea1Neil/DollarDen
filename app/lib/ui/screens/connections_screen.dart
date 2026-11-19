@@ -95,7 +95,28 @@ class _ConnectionsScreenState extends ConsumerState<ConnectionsScreen> {
       ),
       body: items.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('$e')),
+        // Sign out has to be reachable here too, not only once the list
+        // loads. A stale session or an unreachable server is precisely
+        // when someone wants to sign out and back in, and this is now
+        // the only screen offering it.
+        error: (e, _) => Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text('$e', textAlign: TextAlign.center),
+                const SizedBox(height: 20),
+                OutlinedButton.icon(
+                  onPressed: () =>
+                      ref.read(authStateProvider.notifier).logout(),
+                  icon: const Icon(Icons.logout),
+                  label: const Text('Sign out'),
+                ),
+              ],
+            ),
+          ),
+        ),
         data: (list) => RefreshIndicator(
           onRefresh: () async {
             // This screen is where balances live, so a pull here has to
@@ -143,6 +164,38 @@ class _ConnectionsScreenState extends ConsumerState<ConnectionsScreen> {
                       color: Theme.of(context).colorScheme.onSurfaceVariant),
                 ),
               ],
+
+              // Signing out lives here rather than on the budget, which
+              // is the screen that gets opened every day. Spelled out
+              // and set apart rather than another glyph in the app bar:
+              // next to the backup icon it would be one mis-tap from
+              // ending the session, and nothing about a logout icon
+              // says which of the two it is.
+              const SizedBox(height: 28),
+              const Divider(),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: _busy
+                    ? null
+                    : () => ref.read(authStateProvider.notifier).logout(),
+                icon: const Icon(Icons.logout),
+                label: const Text('Sign out'),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size.fromHeight(50),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  'Your banks stay connected. Signing back in on this or '
+                  'any other phone picks up exactly where you left off.',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
+                ),
+              ),
             ],
           ),
         ),

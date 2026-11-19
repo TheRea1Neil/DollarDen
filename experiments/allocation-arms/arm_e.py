@@ -20,7 +20,7 @@ import urllib.request as u
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from scenarios import CATEGORIES, ORDER, SCENARIOS, engine_split
 
-OLLAMA = "http://192.168.86.196:11434/api/chat"
+OLLAMA = "http://your-ai-host:11434/api/chat"
 
 SCHEMA = {
     "type": "object",

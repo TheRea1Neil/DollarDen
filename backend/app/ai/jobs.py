@@ -19,7 +19,7 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.ai import gpu
-from app.ai.provider import AIUnavailable, build_provider
+from app.ai.provider import AIHostStalled, AIUnavailable, build_provider
 from app.core.config import Settings, get_settings
 from app.db.models import AIJob, User
 from app.db.session import SessionLocal
@@ -56,6 +56,50 @@ KINDS = {
 # A job still `running` after this long is assumed dead -- almost always a
 # restart mid-flight -- and is failed so it stops blocking the queue.
 STALE_AFTER_SECONDS = 900
+
+# Hosts that took a request and then went silent, and when it is worth
+# approaching them again.
+#
+# Keyed by base URL, not global: one person's own ollama box going quiet
+# must not hold up jobs bound for a different host.
+#
+# In memory on purpose. This is a "do not walk into the wall again for a
+# bit" note, not a fact about the budget, and a container restart is
+# exactly the moment it should be forgotten -- the host may well have
+# been fixed in the meantime.
+_stalled_until: dict[str, datetime] = {}
+
+
+def _host_key(provider: Any) -> str | None:
+    return getattr(provider, "base_url", None)
+
+
+def _note_stall(provider: Any, settings: Settings) -> None:
+    key = _host_key(provider)
+    if key is not None:
+        _stalled_until[key] = datetime.now(UTC) + timedelta(
+            seconds=settings.ai_stall_backoff_seconds)
+
+
+def _clear_stall(provider: Any) -> None:
+    key = _host_key(provider)
+    if key is not None:
+        _stalled_until.pop(key, None)
+
+
+def _stall_hold_remaining(provider: Any) -> timedelta | None:
+    """How much longer to leave a silent host alone, if at all."""
+    key = _host_key(provider)
+    if key is None:
+        return None
+    until = _stalled_until.get(key)
+    if until is None:
+        return None
+    remaining = until - datetime.now(UTC)
+    if remaining.total_seconds() <= 0:
+        _stalled_until.pop(key, None)
+        return None
+    return remaining
 
 
 def enqueue(db: Session, user_id: uuid.UUID, kind: str, request: dict[str, Any]) -> AIJob:
@@ -101,9 +145,63 @@ async def run_job(job_id: uuid.UUID) -> None:
         settings = get_settings()
         provider = provider_for(user, settings)
 
+        # A host that stopped answering is left alone for a while.
+        #
+        # The queue is serial and a wedged model process does not
+        # recover on its own, so without this every remaining job pays
+        # the full request timeout in turn: one stalled deck turned a
+        # handful of queued transactions into an hour of nothing.
+        #
+        # Deferred rather than failed -- the work is still wanted, just
+        # not now -- and `attempts` is deliberately NOT incremented,
+        # because the out-of-patience escape below exists for a busy
+        # GPU, and forcing a job onto a host that is not answering at
+        # all achieves nothing but another timeout.
+        hold = _stall_hold_remaining(provider)
+        if hold is not None and job.attempts >= settings.ai_stall_max_holds:
+            # Held long enough. A host this quiet is not recovering by
+            # itself, and waiting indefinitely is the worst outcome: the
+            # transaction shows "waiting for the AI" forever instead of
+            # reaching the review queue, which is the designed fallback
+            # and needs no AI at all (ADR 0003).
+            job.status = "failed"
+            job.error = (
+                "The AI computer has been switched on but not answering "
+                "for a while, so this was left for you to sort out by "
+                "hand. It may need restarting."
+            )
+            job.completed_at = datetime.now(UTC)
+            db.commit()
+            log.warning("job %s given up after %d holds on a silent host",
+                        job_id, job.attempts)
+            return
+        if hold is not None:
+            job.attempts += 1
+            minutes = max(1, int(hold.total_seconds() // 60))
+            job.status = "deferred"
+            job.defer_reason = (
+                "The AI computer is switched on but stopped answering. "
+                f"Leaving it alone for about {minutes} more minute"
+                f"{'' if minutes == 1 else 's'} before trying again — "
+                "it may need restarting."
+            )
+            job.not_before = datetime.now(UTC) + hold
+            db.commit()
+            log.info("job %s held: host stalled for another %.0fs",
+                     job_id, hold.total_seconds())
+            return
+
         # Gate: run immediately when there is room, wait when there is
         # not. The normal path is straight through -- see app/ai/gpu.py.
-        verdict = await gpu.can_run_now(settings)
+        #
+        # Skipped entirely for a provider with no machine of ours
+        # behind it. A busy graphics card and a sleeping PC are reasons
+        # to wait; a web service is neither, and deferring a hosted
+        # model until 08:00 would be a baffling way to behave.
+        verdict = (
+            await gpu.can_run_now(settings) if provider.uses_local_hardware
+            else gpu.Verdict(ok=True)
+        )
         if not verdict.ok and job.attempts < settings.ai_max_defer_attempts:
             job.status = "deferred"
             job.attempts += 1
@@ -132,6 +230,19 @@ async def run_job(job_id: uuid.UUID) -> None:
             job.result = result
             job.status = "done"
             job.provider = type(provider).__name__
+            _clear_stall(provider)
+        except AIHostStalled as exc:
+            # Powered on, took the request, never answered. Recorded so
+            # the rest of the queue waits instead of repeating it. This
+            # job still fails, which is what makes it the detector: its
+            # own fallback (human review, for a categorisation) is the
+            # right outcome either way.
+            _note_stall(provider, settings)
+            job.status = "failed"
+            job.error = str(exc)
+            log.warning("job %s stalled; holding %s for %ds: %s",
+                        job_id, _host_key(provider),
+                        settings.ai_stall_backoff_seconds, exc)
         except AIUnavailable as exc:
             # Expected: the host is asleep, offline, or mid-game. Not a bug,
             # and the message should say so plainly.

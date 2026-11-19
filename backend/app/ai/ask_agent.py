@@ -30,8 +30,10 @@ the model picks the filter, the database produces the number.
 """
 from __future__ import annotations
 
+import ast
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -144,6 +146,24 @@ def tools_for(type_names: list[str], cat_names: list[str]) -> list[dict[str, Any
             "description": "Charges that repeat: subscriptions and standing bills.",
             "parameters": {"type": "object", "properties": {}}}},
         {"type": "function", "function": {
+            "name": "payday",
+            "description": ("Today's date, and when the next payday is "
+                            "expected with how many days away that is. Pair "
+                            "it with `calculate` to work out how far money "
+                            "has to stretch."),
+            "parameters": {"type": "object", "properties": {}}}},
+        {"type": "function", "function": {
+            "name": "calculate",
+            "description": ("Work out any sum exactly: a balance divided over "
+                            "days, a per-day rate, a difference, a total. "
+                            "Give a plain expression such as "
+                            "'162.56 / 3' or '(220 - 45) / 11'. Use this for "
+                            "EVERY calculation — never work one out yourself."),
+            "parameters": {"type": "object", "properties": {
+                "expression": {"type": "string",
+                               "description": "plain arithmetic, e.g. 162.56 / 3"}},
+                "required": ["expression"]}}},
+        {"type": "function", "function": {
             "name": "answer",
             "description": ("Give the final answer. Every amount in it must have "
                             "come from a tool result above."),
@@ -157,10 +177,23 @@ PROMPT = """Answer a question about someone's own budget.
 Today is {today}.
 
 Look things up before answering. You have tools for their spending,
-their envelopes, the individual charges, and their repeating bills.
+their envelopes, the individual charges, their repeating bills, their
+payday, and a calculator.
 
-  - `spending` does all arithmetic. NEVER add, average or compare
-    figures yourself — ask for them.
+  - `spending` totals their TRANSACTIONS — what was spent, over what
+    period, grouped how. Never add charges up yourself; ask for the
+    total.
+  - `payday` knows today's date and when the next payday is due, with
+    how many days off it is. Do not count days between dates yourself.
+  - `calculate` does every other sum: a balance spread over days, a
+    difference, a rate, a total. Work out WHICH sum answers the
+    question, then have it computed — never do it in your head. An
+    allowance that is off by a third reads exactly as confident as a
+    right one.
+    To answer "how far does my food money go until payday": `budget`
+    for the balance, `payday` for the days, `calculate` to divide.
+  - A payday is a RANGE, not a date. If it matters to the answer, say
+    the expected day and that it could be a little either side.
   - If a lookup comes back empty, that is information: try a different
     filter before concluding they spent nothing. A shop name that
     matches nothing is not the same as no spending.
@@ -227,6 +260,145 @@ class AskResult:
             "context_limit": self.context_limit,
             "dropped_turns": self.dropped_turns,
         }
+
+
+# Arithmetic the model is allowed to ask for, and nothing else.
+#
+# `eval` on a string a language model wrote is a straightforward way to
+# hand it the process, so the expression is parsed and walked instead:
+# numbers and these operators, no names, no attributes, no calls except
+# the four below. Anything else is refused as a normal tool error, which
+# the model can read and correct, rather than an exception.
+_BINOPS = {
+    ast.Add: lambda a, b: a + b,
+    ast.Sub: lambda a, b: a - b,
+    ast.Mult: lambda a, b: a * b,
+    ast.Div: lambda a, b: a / b,
+    ast.FloorDiv: lambda a, b: a // b,
+    ast.Mod: lambda a, b: a % b,
+    ast.Pow: lambda a, b: a ** b,
+}
+_FUNCS = {"round": round, "abs": abs, "min": min, "max": max}
+
+
+def _eval_expr(node: ast.AST) -> float:
+    if isinstance(node, ast.Constant):
+        # bool is an int subclass; True + 1 is not arithmetic anyone meant.
+        if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+            raise ValueError("only numbers can be used")
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        v = _eval_expr(node.operand)
+        return v if isinstance(node.op, ast.UAdd) else -v
+    if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
+        left, right = _eval_expr(node.left), _eval_expr(node.right)
+        if isinstance(node.op, ast.Pow) and (abs(right) > 32 or abs(left) > 1e6):
+            # 9**9**9 is a valid expression and an unbounded wait.
+            raise ValueError("that power is too large to be useful")
+        if isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod)) and right == 0:
+            raise ValueError("cannot divide by zero")
+        return _BINOPS[type(node.op)](left, right)
+    if isinstance(node, ast.Call):
+        name = getattr(node.func, "id", None)
+        if name not in _FUNCS or node.keywords:
+            raise ValueError("only round, abs, min and max can be used")
+        return _FUNCS[name](*[_eval_expr(a) for a in node.args])
+    raise ValueError("that is not a plain arithmetic expression")
+
+
+def _run_calculate(args: dict[str, Any]) -> dict[str, Any]:
+    """Do one sum, exactly, so the model never has to.
+
+    Separate from `spending`, which adds up TRANSACTIONS in SQL. This is
+    for the arithmetic on top: how long a balance lasts, what a total
+    would be, how two figures compare. The model decides what to work
+    out; the result is computed rather than recalled.
+    """
+    expr = str(args.get("expression") or "").strip()
+    if not expr:
+        return {"error": "no expression given"}
+    if len(expr) > 200:
+        return {"error": "expression too long"}
+    try:
+        value = _eval_expr(ast.parse(expr, mode="eval").body)
+    except ZeroDivisionError:
+        return {"error": "cannot divide by zero"}
+    except ValueError as exc:
+        return {"error": str(exc)}
+    except Exception:  # noqa: BLE001
+        return {"error": "that is not a plain arithmetic expression"}
+
+    if not math.isfinite(value):
+        return {"error": "that does not come out to a usable number"}
+    return {
+        "expression": expr,
+        # Rounded because 162.56 / 3 is 54.18666666666667, and no answer
+        # about money should ever contain that.
+        "result": round(value, 4),
+        "as_money": _money(round(value * 100)),
+    }
+
+
+def _run_payday(db: Session, user: User, today: date,
+                cats: list[Category]) -> dict[str, Any]:
+    """Today, the next payday, and what each envelope allows per day.
+
+    The day counts and the division are done HERE, in Python, and handed
+    over as finished figures. That is ADR 0006 and 0009 applied to the
+    calendar: the model decides that "until payday" is the right horizon,
+    and the engine works out how long that is and what it means per day.
+
+    Letting the model do it instead means trusting it to know how many
+    days are between two dates and then to divide a balance by that --
+    two things language models get quietly, plausibly wrong. A daily food
+    allowance that is off by a third is worse than no answer.
+
+    The payday itself is a RANGE (see budget/paycheck.predict_next), so
+    all three dates are offered. `per_day` deliberately uses the EXPECTED
+    date: budgeting to the earliest it could arrive overstates what is
+    safe to spend, and the model can read the range and caveat it.
+    """
+    from app.budget import paycheck
+
+    out: dict[str, Any] = {
+        "today": today.isoformat(),
+        "weekday": today.strftime("%A"),
+    }
+
+    pred = paycheck.predict_next(db, user.id)
+    if not pred.get("known"):
+        out["next_payday"] = {
+            "known": False,
+            # Passed through verbatim: it says WHY, and "no pattern yet"
+            # is a real answer to "when do I get paid".
+            "reason": pred.get("reason"),
+        }
+        return out
+
+    expected = date.fromisoformat(str(pred["expected"]))
+    earliest = date.fromisoformat(str(pred["earliest"]))
+    latest = date.fromisoformat(str(pred["latest"]))
+    days = (expected - today).days
+
+    out["next_payday"] = {
+        "known": True,
+        "expected": expected.isoformat(),
+        "earliest": earliest.isoformat(),
+        "latest": latest.isoformat(),
+        "days_until_expected": days,
+        "days_until_earliest": (earliest - today).days,
+        "days_until_latest": (latest - today).days,
+        "paid_every_days": pred.get("cadence_days"),
+        "based_on_paydays": pred.get("based_on"),
+        "worked_out_from": pred.get("source"),
+    }
+    if days < 0:
+        # Overdue is not an error -- a late deposit is exactly when
+        # someone asks how far their money has to stretch. Say it
+        # plainly instead of returning a negative day count to divide by.
+        out["next_payday"]["overdue_by_days"] = -days
+
+    return out
 
 
 def _run_spending(db: Session, user: User, args: dict[str, Any],
@@ -399,6 +571,10 @@ async def run(
                     payload = {"transactions": rows}
                 except (PeriodError, ValueError) as exc:
                     payload = {"error": str(exc)}
+            elif name == "payday":
+                payload = _run_payday(db, user, today, cats)
+            elif name == "calculate":
+                payload = _run_calculate(args)
             elif name == "recurring_charges":
                 found = R.detect(db, user.id, today=today)
                 payload = {

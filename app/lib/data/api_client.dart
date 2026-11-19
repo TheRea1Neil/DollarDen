@@ -56,12 +56,22 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
-/// Talks to the backend at budget.example.org.
+/// Talks to whichever backend this install has been pointed at.
 ///
-/// The base URL is configurable so a user can point the app at their own
-/// deployment, and so development can target a local server.
+/// There is no built-in server. Every install picks one first and then
+/// signs in to it, the way a Jellyfin client does — which is the only
+/// shape that works when everyone self-hosts their own.
+///
+/// A build may supply a default so that someone building the app for
+/// their own household does not have to type it on every device:
+///
+///     flutter build apk --dart-define=NNF_SERVER_URL=https://budget.example.org
+///
+/// Left unset it is empty, the app asks on first run, and no one
+/// person's server is baked into the source.
 class ApiClient {
-  static const defaultBaseUrl = 'https://budget.example.org';
+  static const defaultBaseUrl =
+      String.fromEnvironment('NNF_SERVER_URL', defaultValue: '');
 
   final Dio _dio;
   final TokenStore _tokens;
@@ -85,6 +95,25 @@ class ApiClient {
             ));
 
   set baseUrl(String value) => _dio.options.baseUrl = '$value/api';
+
+  /// Is there an nnf backend at this URL?
+  ///
+  /// Checked before a URL is saved, because the alternative is someone
+  /// mistyping their address and then being told their password is
+  /// wrong. Unauthenticated and tiny.
+  static Future<bool> probe(String url) async {
+    final cleaned = url.trim().replaceAll(RegExp(r'/+$'), '');
+    try {
+      final r = await Dio(BaseOptions(
+        connectTimeout: const Duration(seconds: 10),
+        receiveTimeout: const Duration(seconds: 10),
+        validateStatus: (_) => true,
+      )).get('$cleaned/api/health');
+      return r.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
   String get baseUrl => _dio.options.baseUrl.replaceAll(RegExp(r'/api$'), '');
 
   // ------------------------------------------------------------------ //

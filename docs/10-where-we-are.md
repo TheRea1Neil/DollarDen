@@ -9,7 +9,7 @@ and the things that would be expensive to rediscover. Written
 | | |
 |---|---|
 | Phone app | Flutter, iOS + Android. Installed on Neil's iPhone 11 as `org.nonsensefinance.nnf` |
-| Backend | FastAPI + Postgres, in Docker on the Pi (`nando`) |
+| Backend | FastAPI + Postgres, in Docker on the Pi (the server) |
 | Public API | `https://budget.example.org` — real cert, works on cellular, no VPN needed |
 | AI | Ollama on the gaming PC (`deck`), woken on demand over Wake-on-LAN |
 | Model | `qwen2.5vl:7b`. `qwen3:14b` was tried and removed — see ADR 0006 |

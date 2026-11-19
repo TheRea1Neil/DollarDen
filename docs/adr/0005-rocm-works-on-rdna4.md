@@ -1,6 +1,12 @@
 # ADR 0005 — ROCm works on RDNA4; no Vulkan fallback needed
 
-**Status:** accepted · **Date:** 2026-10-21 · **Resolves:** the Phase 0 GPU spike
+**Status:** SUPERSEDED by ADR 0010 (2026-11-16) · **Date:** 2026-10-21 · **Resolves:** the Phase 0 GPU spike
+
+> **Superseded.** The measurements below stand; one conclusion did not.
+> "SteamOS updates cannot break it" was wrong — the container pins ROCm's
+> *userspace*, but AMDKFD is a **kernel** interface, and the 7.3.1 kernel
+> deadlocks in it while mapping a model into VRAM. See ADR 0010 and
+> `docs/16-deck-power.md`. Inference now runs on Vulkan.
 
 ## Context
 

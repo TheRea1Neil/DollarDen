@@ -23,7 +23,7 @@ from app.budget.split import RuleType, SplitRule, SplitPlanError, apply_split
 from scenarios import CATEGORIES, ORDER, SCENARIOS, engine_split
 from run import score
 
-OLLAMA = "http://192.168.86.196:11434/api/chat"
+OLLAMA = "http://your-ai-host:11434/api/chat"
 
 RULE_SCHEMA = {
     "type": "object",

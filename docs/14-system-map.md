@@ -13,8 +13,8 @@ live database. Regenerate with `scripts/dump-schema.sh`.
 | Where | What | Always on? |
 |---|---|---|
 | **Phone** (Pixel 9 Pro, Galaxy S21) | Flutter app, `org.nonsensefinance.nnf` | with you |
-| **`nando`** — Raspberry Pi, Europe/London | FastAPI + Postgres in Docker, behind Caddy | yes |
-| **`deck`** — gaming PC, SteamOS, America/Denver | Ollama (`gemma4:12b`) + a GPU probe | **no — sleeps** |
+| **the server** — Raspberry Pi, Europe/London | FastAPI + Postgres in Docker, behind Caddy | yes |
+| **The AI host** — a spare PC, asleep by default | Ollama (`gemma4:12b`) + a GPU probe | **no — sleeps** |
 | **Plaid** | bank connections, OAuth, transaction feed | external |
 
 The deck sleeping is a design constraint, not an accident: it is a
@@ -35,7 +35,7 @@ graph TB
         DUCK["DuckDNS<br/>dynamic DNS + ACME"]
     end
 
-    subgraph PI["🥧 nando — Raspberry Pi (always on)"]
+    subgraph PI["🥧 server — Raspberry Pi (always on)"]
         CADDY["wg-caddy :443<br/>TLS, routes by Host"]
         subgraph NNF["docker compose project 'nnf'"]
             API["nnf-api :8081<br/>FastAPI + AI job worker"]
@@ -61,7 +61,7 @@ graph TB
     PLAID --- BANK
     API -->|"LAN http :11434"| OLL
     API -->|"headroom check :11435"| PROBE
-    API -->|"Wake-on-LAN<br/>example.org/wol"| DECK
+    API -->|"Wake-on-LAN<br/>wake.example.org/wol"| DECK
     BK --> PG
     BK --> DUMPS
     CADDY --- DUCK
@@ -143,9 +143,9 @@ so anything installed under `/home` survives. The probe exists because
 Ollama's own `/api/ps` under-reports badly — it claimed 1411 MB for a
 model actually using nearly 10 GB.
 
-**The Pi reaches the deck directly over the LAN** (`http://192.168.86.196:11434`),
+**The Pi reaches the deck directly over the LAN** (`http://your-ai-host:11434`),
 not through the internet. Waking it is the exception: that goes out to
-the public Wake-on-LAN endpoint `example.org/wol`.
+the public Wake-on-LAN endpoint `wake.example.org/wol`.
 
 ### Why AI work is queued, never direct
 
@@ -175,7 +175,7 @@ sequenceDiagram
     API-->>App: result
 ```
 
-Quiet hours are pinned to **America/Denver**, not the server clock. The
+Quiet hours are pinned to **the AI machine's own timezone**, not the server clock. The
 Pi runs Europe/London, six hours ahead; "01:00–08:00" on the Pi's clock
 would have blocked 19:00–02:00 where the PC actually is.
 

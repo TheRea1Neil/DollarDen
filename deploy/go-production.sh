@@ -13,7 +13,7 @@
 # Plaid, so a typo costs nothing and leaves the box on sandbox.
 set -euo pipefail
 
-ENV_FILE="${NNF_ENV_FILE:-/home/neil/nnf/.env}"
+ENV_FILE="${NNF_ENV_FILE:-$HOME/nnf/.env}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 API="${NNF_API_CONTAINER:-nnf-api}"
 

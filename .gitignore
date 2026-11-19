@@ -1,3 +1,10 @@
+# ---- personal notes: never commit ----
+# Notes about one particular deployment -- hostnames, addresses, which
+# machine is which. Useful to its owner, meaningless and a little
+# revealing to everyone else.
+*.local.md
+NOTES.local.md
+
 # ---- secrets: never commit ----
 .env
 .env.*
@@ -68,3 +75,12 @@ app/ios/Flutter/ephemeral/
 # ...except the brand source art, which tools/make_icons.py reads to
 # regenerate every launcher icon. Losing it means redrawing the logo.
 !brand/*.jpeg
+
+# ---- one deployment's operational notes: kept locally, not published ----
+# Runbooks and credentials for the author's own machines. Useful to
+# whoever runs that box, meaningless to everyone else, and a little
+# revealing. The design docs alongside them are deliberately NOT here:
+# they explain why the system is the way it is, which is the most
+# valuable thing in the repository.
+docs/09-pi-operations.md
+docs/13-test-account.md

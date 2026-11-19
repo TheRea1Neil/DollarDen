@@ -42,7 +42,7 @@ costs connection credits. Store a copy in a password manager.
 
 The thing that makes a token durable is a tested restore, not a backup job.
 
-- Nightly `pg_dump` to `/home/neil/backups/` on the Pi.
+- Nightly `pg_dump` to `/var/backups/nnf/` on the Pi.
 - Weekly copy off-box.
 - `scripts/export-tokens.py` → encrypted file containing `item_id` +
   `access_token` pairs, stored separately. This is the last-resort recovery
@@ -75,8 +75,8 @@ With two users who know each other, the temptation is to be casual. Don't:
 | `finance.…/api/*` | JWT required |
 | `finance.…/plaid/webhook` | **JWT signature verification from Plaid** (docs/04), rate-limited |
 | `finance.…/api/health` | none; returns nothing sensitive |
-| `example.…/wol/*` | Bearer token (existing service) |
-| `example.…/` | wg-easy admin UI |
+| `example.org…/wol/*` | Bearer token (existing service) |
+| `example.org…/` | wg-easy admin UI |
 
 The finance API is deliberately reachable **without** the VPN, so the phone
 works on cellular. That makes the API itself the security boundary rather than

@@ -47,19 +47,19 @@ class PowerResult:
 
 
 def configured(settings: Settings) -> bool:
-    return bool(settings.deck_power_url and settings.deck_power_token)
+    return bool(settings.power_relay_url and settings.power_relay_token)
 
 
 async def status(settings: Settings, timeout: float = 5.0) -> dict[str, Any] | None:
     """What the relay shim reports, or None if it cannot be reached."""
     if not configured(settings):
         return None
-    url = settings.deck_power_url.rstrip("/")
+    url = settings.power_relay_url.rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.get(
                 f"{url}/status",
-                headers={"Authorization": f"Bearer {settings.deck_power_token}"},
+                headers={"Authorization": f"Bearer {settings.power_relay_token}"},
             )
             r.raise_for_status()
             return r.json()
@@ -79,12 +79,12 @@ async def press_once(settings: Settings, timeout: float = 20.0) -> PowerResult:
     if not configured(settings):
         return PowerResult(False, "no power relay is configured")
 
-    url = settings.deck_power_url.rstrip("/")
+    url = settings.power_relay_url.rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.post(
                 f"{url}/press",
-                headers={"Authorization": f"Bearer {settings.deck_power_token}"},
+                headers={"Authorization": f"Bearer {settings.power_relay_token}"},
             )
     except Exception as exc:  # noqa: BLE001
         log.warning("power relay call failed: %s", exc)

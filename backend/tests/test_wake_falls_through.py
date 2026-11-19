@@ -14,15 +14,15 @@ from __future__ import annotations
 import pytest
 
 from app.ai import hardpower, provider
-from app.ai.provider import AIUnavailable, DeckProvider
+from app.ai.provider import AIUnavailable, ManagedOllamaProvider
 from app.core.config import Settings
 
 
 def _settings(**over) -> Settings:
-    base = dict(ai_provider="deck", ai_deck_url="http://deck:11434",
+    base = dict(ai_provider="managed", ai_host_url="http://deck:11434",
                 wol_api_url="http://wol", wol_api_token="w",
-                deck_power_url="http://pi:11436", deck_power_token="t",
-                ai_wake_timeout_seconds=0, deck_power_boot_seconds=0)
+                power_relay_url="http://pi:11436", power_relay_token="t",
+                ai_wake_timeout_seconds=0, power_relay_boot_seconds=0)
     base.update(over)
     return Settings(**base)
 
@@ -45,7 +45,7 @@ def _never_open(self, host, port):
 @pytest.mark.asyncio
 async def test_the_relay_is_tried_when_the_wake_request_errors(monkeypatch):
     monkeypatch.setattr(provider.httpx, "AsyncClient", lambda **kw: _Boom())
-    monkeypatch.setattr(DeckProvider, "_port_open", _never_open)
+    monkeypatch.setattr(ManagedOllamaProvider, "_port_open", _never_open)
 
     pressed = []
 
@@ -55,7 +55,7 @@ async def test_the_relay_is_tried_when_the_wake_request_errors(monkeypatch):
 
     monkeypatch.setattr(hardpower, "press_once", fake_press)
 
-    p = DeckProvider(_settings())
+    p = ManagedOllamaProvider(_settings())
     with pytest.raises(AIUnavailable):
         # Boot timeout is 0, so it gives up after the press -- the point
         # is that the press HAPPENED.
@@ -66,28 +66,28 @@ async def test_the_relay_is_tried_when_the_wake_request_errors(monkeypatch):
 @pytest.mark.asyncio
 async def test_without_a_relay_the_old_message_still_stands(monkeypatch):
     monkeypatch.setattr(provider.httpx, "AsyncClient", lambda **kw: _Boom())
-    monkeypatch.setattr(DeckProvider, "_port_open", _never_open)
+    monkeypatch.setattr(ManagedOllamaProvider, "_port_open", _never_open)
 
-    p = DeckProvider(_settings(deck_power_url="", deck_power_token=""))
+    p = ManagedOllamaProvider(_settings(power_relay_url="", power_relay_token=""))
     with pytest.raises(AIUnavailable, match="unplugged or off the network"):
         await p.ensure_awake()
 
 
 @pytest.mark.asyncio
 async def test_a_host_that_is_already_up_is_left_alone(monkeypatch):
-    monkeypatch.setattr(DeckProvider, "_port_open", lambda self, h, p: True)
+    monkeypatch.setattr(ManagedOllamaProvider, "_port_open", lambda self, h, p: True)
 
     async def must_not_run(settings, timeout=20.0):
         raise AssertionError("the relay must never fire at a running host")
 
     monkeypatch.setattr(hardpower, "press_once", must_not_run)
-    await DeckProvider(_settings()).ensure_awake()
+    await ManagedOllamaProvider(_settings()).ensure_awake()
 
 
 @pytest.mark.asyncio
 async def test_a_relay_only_setup_works_without_wake_on_lan(monkeypatch):
     """The relay alone is a complete answer; WoL is the optimisation."""
-    monkeypatch.setattr(DeckProvider, "_port_open", _never_open)
+    monkeypatch.setattr(ManagedOllamaProvider, "_port_open", _never_open)
     pressed = []
 
     async def fake_press(settings, timeout=20.0):
@@ -96,7 +96,7 @@ async def test_a_relay_only_setup_works_without_wake_on_lan(monkeypatch):
 
     monkeypatch.setattr(hardpower, "press_once", fake_press)
 
-    p = DeckProvider(_settings(wol_api_url="", wol_api_token=""))
+    p = ManagedOllamaProvider(_settings(wol_api_url="", wol_api_token=""))
     with pytest.raises(AIUnavailable):
         await p.ensure_awake()
     assert pressed

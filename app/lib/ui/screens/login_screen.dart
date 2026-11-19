@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/api_client.dart';
 import '../../data/providers.dart';
+import 'server_screen.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -42,11 +43,16 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     } on ApiException catch (e) {
       // Rate limiting is deliberate on these endpoints (docs/07), so say so
       // rather than showing a generic failure.
-      setState(() => _error = e.isRateLimited
-          ? 'Too many attempts. Wait a few minutes and try again.'
-          : e.message);
+      setState(
+        () => _error = e.isRateLimited
+            ? 'Too many attempts. Wait a few minutes and try again.'
+            : e.message,
+      );
     } catch (e) {
-      setState(() => _error = 'Could not reach the server. Check the address in settings.');
+      setState(
+        () => _error =
+            'Could not reach the server. Check the address in settings.',
+      );
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -55,7 +61,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final baseUrl = ref.watch(baseUrlProvider);
+    final baseUrl = ref.watch(baseUrlProvider) ?? '';
 
     return Scaffold(
       body: SafeArea(
@@ -93,14 +99,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Text('no-nonsense',
-                                  style: theme.textTheme.headlineSmall
-                                      ?.copyWith(fontWeight: FontWeight.w300)),
-                              Text('finance',
-                                  style: theme.textTheme.headlineSmall?.copyWith(
-                                    fontWeight: FontWeight.w700,
-                                    color: theme.colorScheme.primary,
-                                  )),
+                              Text(
+                                'no-nonsense',
+                                style: theme.textTheme.headlineSmall?.copyWith(
+                                  fontWeight: FontWeight.w300,
+                                ),
+                              ),
+                              Text(
+                                'finance',
+                                style: theme.textTheme.headlineSmall?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                  color: theme.colorScheme.primary,
+                                ),
+                              ),
                             ],
                           ),
                         ),
@@ -113,8 +124,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       autocorrect: false,
                       autofillHints: const [AutofillHints.email],
                       decoration: const InputDecoration(labelText: 'Email'),
-                      validator: (v) =>
-                          (v == null || !v.contains('@')) ? 'Enter your email' : null,
+                      validator: (v) => (v == null || !v.contains('@'))
+                          ? 'Enter your email'
+                          : null,
                     ),
                     const SizedBox(height: 12),
                     TextFormField(
@@ -123,7 +135,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       autofillHints: const [AutofillHints.password],
                       decoration: const InputDecoration(labelText: 'Password'),
                       validator: (v) {
-                        if (v == null || v.isEmpty) return 'Enter your password';
+                        if (v == null || v.isEmpty)
+                          return 'Enter your password';
                         // The backend requires 12+; say so before a round trip.
                         if (_registering && v.length < 12) {
                           return 'At least 12 characters';
@@ -140,8 +153,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           color: theme.colorScheme.errorContainer,
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: Text(_error!,
-                            style: TextStyle(color: theme.colorScheme.onErrorContainer)),
+                        child: Text(
+                          _error!,
+                          style: TextStyle(
+                            color: theme.colorScheme.onErrorContainer,
+                          ),
+                        ),
                       ),
                     ],
                     const SizedBox(height: 24),
@@ -149,27 +166,45 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       onPressed: _busy ? null : _submit,
                       child: _busy
                           ? const SizedBox(
-                              height: 20, width: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2))
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
                           : Text(_registering ? 'Create account' : 'Sign in'),
                     ),
                     TextButton(
                       onPressed: _busy
                           ? null
                           : () => setState(() {
-                                _registering = !_registering;
-                                _error = null;
-                              }),
-                      child: Text(_registering
-                          ? 'I already have an account'
-                          : 'Create an account'),
+                              _registering = !_registering;
+                              _error = null;
+                            }),
+                      child: Text(
+                        _registering
+                            ? 'I already have an account'
+                            : 'Create an account',
+                      ),
                     ),
                     const SizedBox(height: 8),
+                    // Which server you are signing in to, and a way to
+                    // change it. Shown even when it is the only one you
+                    // have ever used: "wrong password" and "right
+                    // password, wrong server" look identical otherwise.
                     TextButton.icon(
-                      onPressed: _busy ? null : () => _editServer(context, baseUrl),
+                      onPressed: _busy
+                          ? null
+                          : () => Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => ServerScreen(current: baseUrl),
+                              ),
+                            ),
                       icon: const Icon(Icons.dns_outlined, size: 18),
-                      label: Text(Uri.parse(baseUrl).host,
-                          style: theme.textTheme.bodySmall),
+                      label: Text(
+                        baseUrl.isEmpty
+                            ? 'Choose a server'
+                            : Uri.parse(baseUrl).host,
+                        style: theme.textTheme.bodySmall,
+                      ),
                     ),
                   ],
                 ),
@@ -179,31 +214,5 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         ),
       ),
     );
-  }
-
-  Future<void> _editServer(BuildContext context, String current) async {
-    final controller = TextEditingController(text: current);
-    final result = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Server address'),
-        content: TextField(
-          controller: controller,
-          autocorrect: false,
-          keyboardType: TextInputType.url,
-          decoration: const InputDecoration(hintText: 'https://…'),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, controller.text),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-    if (result != null && result.trim().isNotEmpty) {
-      await ref.read(baseUrlProvider.notifier).set(result);
-    }
   }
 }

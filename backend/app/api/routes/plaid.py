@@ -18,7 +18,7 @@ from app.core.security import decrypt_token, encrypt_token
 from app.db.models import Account, PlaidItem, User
 from app.db.session import SessionLocal, get_db
 from app.plaid.client import PlaidClient, PlaidError
-from app.plaid.sync import SyncIncomplete, refresh_accounts, sync_item
+from app.plaid.sync import refresh_items, SyncIncomplete, refresh_accounts, sync_item
 from app.plaid.webhook import WebhookVerificationError, verify
 
 log = logging.getLogger("nnf.api.plaid")
@@ -26,8 +26,24 @@ log = logging.getLogger("nnf.api.plaid")
 router = APIRouter(prefix="/plaid", tags=["plaid"])
 
 
-def _client(s: Settings = Depends(get_settings)) -> PlaidClient:
-    return PlaidClient(s)
+def _client(s: Settings = Depends(get_settings),
+            user: User = Depends(current_user)) -> PlaidClient:
+    """A Plaid client for the signed-in account's environment.
+
+    Sandbox and real accounts live on the same instance, so the
+    environment cannot come from the server's configuration -- it is a
+    property of whose behalf we are acting on.
+    """
+    return PlaidClient.for_user(s, user)
+
+
+def _client_for_env(s: Settings, environment: str) -> PlaidClient:
+    """A client for a named environment, for callers with no user.
+
+    The webhook is the one that matters: it arrives unauthenticated and
+    its environment comes from the path it was delivered to.
+    """
+    return PlaidClient(s, environment=environment)
 
 
 # --------------------------------------------------------------------------- #
@@ -205,58 +221,13 @@ async def refresh_everything(
     because the honest answer to "refresh twice in five seconds" is
     "nothing has changed".
     """
-    items = db.scalars(select(PlaidItem).where(PlaidItem.user_id == user.id)).all()
-    now = datetime.now(UTC)
-    synced = skipped = added = nudged = 0
-    errors: list[str] = []
-
-    for item in items:
-        fresh_enough = (
-            item.last_synced_at is not None
-            and (now - item.last_synced_at).total_seconds() < s.plaid_refresh_min_seconds
-        )
-        if fresh_enough:
-            skipped += 1
-            continue
-        try:
-            access_token = decrypt_token(item.access_token_encrypted)
-
-            # Ask Plaid to re-read the bank before asking what it holds.
-            # Without this a pull can only ever surface what Plaid
-            # already had, and Plaid polls a bank just a few times a
-            # day -- so a charge from ten minutes ago is not there, and
-            # no amount of syncing will find it.
-            last_nudge = item.last_force_refresh_at
-            if (
-                last_nudge is None
-                or (now - last_nudge).total_seconds() >= s.plaid_force_refresh_min_seconds
-            ):
-                try:
-                    await client.refresh_transactions(access_token)
-                    item.last_force_refresh_at = now
-                    nudged += 1
-                    # Plaid fetches asynchronously and announces the
-                    # result by webhook. Pause briefly so a fast bank
-                    # lands in THIS sync rather than only the next one;
-                    # anything slower still arrives by webhook.
-                    await asyncio.sleep(s.plaid_force_refresh_wait_seconds)
-                except PlaidError as exc:
-                    # Rate limited or unsupported: not fatal, the plain
-                    # sync below still runs.
-                    log.info("transactions/refresh declined: %s", exc.error_code)
-
-            stats = await sync_item(db, client, item, access_token)
-            synced += 1
-            added += stats.added
-            errors.extend(stats.errors)
-        except PlaidError as exc:
-            if exc.needs_reauth:
-                item.status = "login_required"
-                db.commit()
-            errors.append(f"{item.institution_name or 'bank'}: {exc.error_code}")
-        except Exception as exc:  # noqa: BLE001
-            log.exception("refresh failed for %s", item.plaid_item_id)
-            errors.append(f"{item.institution_name or 'bank'}: {type(exc).__name__}")
+    items = list(
+        db.scalars(select(PlaidItem).where(PlaidItem.user_id == user.id)).all())
+    # Same code path as the background schedule, on purpose: see
+    # plaid/sync.refresh_items.
+    tally = await refresh_items(db, client, items, s)
+    synced, skipped = tally.synced, tally.skipped
+    added, nudged, errors = tally.added, tally.nudged, tally.errors
 
     as_of = db.scalar(
         select(func.max(Account.balance_as_of)).where(Account.user_id == user.id)
@@ -315,20 +286,86 @@ SYNC_CODES = {"SYNC_UPDATES_AVAILABLE", "INITIAL_UPDATE", "HISTORICAL_UPDATE", "
 REAUTH_CODES = {"ITEM_LOGIN_REQUIRED", "PENDING_EXPIRATION"}
 
 
+@router.post("/rewebhook")
+async def repoint_webhooks(
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+    client: PlaidClient = Depends(_client),
+    s: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Point every existing connection at this server's webhook URL.
+
+    Needed because Plaid fixes an Item's webhook at link time. Move the
+    server -- put a certificate in front of it, change the domain, move
+    it to another box -- and every connection made before the move
+    keeps calling the old address. Nothing errors; transactions just
+    quietly stop arriving in real time for the oldest accounts, which
+    is the hardest kind of failure to notice.
+
+    The alternative is re-linking, and on the Trial plan that spends
+    one of a small lifetime allowance which removing an Item does not
+    return. So this exists to keep "add HTTPS later" free.
+    """
+    # The same URL a fresh link would register, environment path and
+    # all -- otherwise re-pointing would send old Items somewhere new
+    # Items never go.
+    target = client.webhook_url()
+    if not target:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "No webhook URL is configured for this server.",
+        )
+
+    items = db.scalars(select(PlaidItem).where(PlaidItem.user_id == user.id)).all()
+    updated, failed = [], []
+    for item in items:
+        try:
+            await client.update_item_webhook(
+                decrypt_token(item.access_token_encrypted), target
+            )
+            updated.append(item.institution_name or str(item.id))
+        except Exception as exc:  # noqa: BLE001
+            # One bad Item must not stop the rest: a connection that
+            # needs re-authenticating will fail here and is exactly the
+            # one the user most needs told about.
+            log.warning("could not repoint webhook for item %s: %s", item.id, exc)
+            failed.append(item.institution_name or str(item.id))
+
+    return {"webhook": target, "updated": updated, "failed": failed}
+
+
+@router.post("/webhook/{environment}", include_in_schema=False)
 @router.post("/webhook", include_in_schema=False)
 async def webhook(
     request: Request,
+    environment: str | None = None,
     s: Settings = Depends(get_settings),
-    client: PlaidClient = Depends(_client),
 ) -> dict[str, str]:
     """Receive a Plaid webhook.
 
     Public endpoint. Every request is signature-verified before anything is
     read from it; unverified requests are rejected without side effects.
+
+    **The environment comes from the path**, because verification needs
+    it before the body can be trusted. Plaid's signing key is fetched
+    from the environment's own host, so verifying a sandbox webhook
+    against production keys fails -- and the only other ways to know
+    which environment sent it are to read the unverified body, or to
+    try both and double every key fetch. The webhook URL is registered
+    per Item at link time, so the path is free and certain.
+
+    The bare `/webhook` route remains for Items linked before this
+    existed; it falls back to the instance's configured environment,
+    which is exactly what those Items were created under.
     """
+    env = (environment or s.plaid_env).strip().lower()
+    if env not in ("sandbox", "production"):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown webhook path")
+    client = _client_for_env(s, env)
+
     body = await request.body()
     try:
-        await verify(body, request.headers.get("plaid-verification"), client)
+        await verify(body, request.headers.get("plaid-verification"), client, env)
     except WebhookVerificationError as exc:
         # Record the rejection against the Item before refusing. A
         # webhook that silently stops being accepted looks identical to

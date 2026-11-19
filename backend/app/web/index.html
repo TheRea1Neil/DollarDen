@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>no-nonsense-finance · server</title>
+<link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+
+<!-- First run: no accounts exist, so this instance is being set up. -->
+<section id="setup" class="center hide">
+  <h1>Set up this server</h1>
+  <p class="sub">Nobody has an account here yet. The first one you make
+    owns the server and can create the rest.</p>
+  <div class="panel">
+    <label for="su-email">Your email</label>
+    <input id="su-email" type="email" autocomplete="username">
+    <label for="su-pw">Password</label>
+    <input id="su-pw" type="password" autocomplete="new-password">
+    <p class="hint">At least 12 characters. There is no password reset —
+      keep it somewhere safe.</p>
+    <label for="su-tz">Time zone</label>
+    <input id="su-tz" type="text" placeholder="America/Denver">
+    <p class="hint">Used for dates in your budget.</p>
+    <div class="row" style="margin-top:18px">
+      <button id="su-go">Create owner account</button>
+    </div>
+    <div id="su-err"></div>
+  </div>
+</section>
+
+<!-- Already set up: sign in. -->
+<section id="login" class="center hide">
+  <h1>Server settings</h1>
+  <p class="sub">Sign in with the owner account.</p>
+  <div class="panel">
+    <label for="li-email">Email</label>
+    <input id="li-email" type="email" autocomplete="username">
+    <label for="li-pw">Password</label>
+    <input id="li-pw" type="password" autocomplete="current-password">
+    <div class="row" style="margin-top:18px">
+      <button id="li-go">Sign in</button>
+    </div>
+    <div id="li-err"></div>
+  </div>
+</section>
+
+<!-- Signed in. -->
+<main id="app" class="wrap hide">
+  <div class="spread">
+    <div>
+      <h1>Server settings</h1>
+      <p class="sub" id="whoami"></p>
+    </div>
+    <button class="quiet" id="signout">Sign out</button>
+  </div>
+
+  <nav>
+    <button data-tab="health" aria-current="true">Overview</button>
+    <button data-tab="plaid">Bank</button>
+    <button data-tab="ai">AI</button>
+    <button data-tab="people">Accounts</button>
+  </nav>
+
+  <!-- Overview -->
+  <section id="tab-health" class="tab">
+    <div class="panel">
+      <h2>How things are</h2>
+      <div class="grid" id="health-grid"></div>
+      <div id="health-notes"></div>
+    </div>
+  </section>
+
+  <!-- Bank -->
+  <section id="tab-plaid" class="tab hide">
+    <div class="panel">
+      <h2>Plaid</h2>
+      <p class="muted">Start in <strong>sandbox</strong> and only move to real
+        banking once the whole loop works — linking, transactions, categorising.
+        Each real connection spends one of a small, permanent allowance that
+        removing a bank does <em>not</em> give back.</p>
+      <div id="plaid-fields"></div>
+      <div class="row" style="margin-top:18px">
+        <button data-save="plaid">Save</button>
+        <button class="quiet" id="rewebhook">Re-point webhooks</button>
+      </div>
+      <p class="hint">Press re-point after changing the server's address, so
+        banks connected earlier keep sending updates. It costs nothing;
+        re-linking would cost a connection.</p>
+      <div id="plaid-msg"></div>
+    </div>
+  </section>
+
+  <!-- AI -->
+  <section id="tab-ai" class="tab hide">
+    <div class="panel">
+      <h2>AI</h2>
+      <p class="muted">Entirely optional. With it switched off the budget works
+        exactly as it does now, and anything it would have categorised waits in
+        the review queue instead.</p>
+      <div class="note">
+        <strong>Your own machine</strong> — transactions never leave your
+        network. A spare PC is enough, and the server can wake it when it
+        is needed.<br>
+        <strong>A hosted service</strong> — easiest to set up. Merchant
+        names, amounts and the goals you have written are sent to that
+        company, and you pay per use.
+      </div>
+      <div id="ai-fields"></div>
+      <div class="row" style="margin-top:18px"><button data-save="ai">Save</button></div>
+      <div id="ai-msg"></div>
+    </div>
+  </section>
+
+  <!-- Accounts -->
+  <section id="tab-people" class="tab hide">
+    <div class="panel">
+      <h2>Accounts</h2>
+      <p class="muted">Nobody can sign themselves up. Accounts are made here.</p>
+      <table><thead><tr><th>Email</th><th>Role</th><th>Added</th></tr></thead>
+        <tbody id="people-rows"></tbody></table>
+    </div>
+    <div class="panel">
+      <h2>Add someone</h2>
+      <div class="row">
+        <div style="flex:2 1 220px">
+          <label for="nu-email">Email</label>
+          <input id="nu-email" type="email">
+        </div>
+        <div style="flex:2 1 220px">
+          <label for="nu-pw">Password</label>
+          <input id="nu-pw" type="password">
+        </div>
+        <div style="flex:1 1 130px">
+          <label for="nu-role">Role</label>
+          <select id="nu-role">
+            <option value="member">Member</option>
+            <option value="owner">Owner</option>
+          </select>
+        </div>
+      </div>
+      <div class="row" style="margin-top:16px"><button id="nu-go">Create account</button></div>
+      <div id="nu-msg"></div>
+    </div>
+  </section>
+</main>
+
+<script src="/admin/admin.js"></script>
+</body>
+</html>

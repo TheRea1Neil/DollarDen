@@ -66,7 +66,13 @@ def _clean_tables():
                 "TRUNCATE item_memory, allocations, review_items, receipts, ai_jobs, paychecks, "
                 "expense_types, "
                 "split_rules, split_plans, category_rules, categories, transactions, "
-                "accounts, plaid_items, user_goals, sessions, users RESTART IDENTITY CASCADE"
+                "accounts, plaid_items, user_goals, sessions, instance_settings, users "
+                "RESTART IDENTITY CASCADE"
             )
         )
         s.commit()
+    # Stored settings override the environment, so one test leaving a
+    # value behind silently reconfigures every test after it.
+    from app.core.config import refresh_settings
+
+    refresh_settings()

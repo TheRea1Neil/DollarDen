@@ -37,15 +37,60 @@ class PlaidError(RuntimeError):
     def needs_reauth(self) -> bool:
         return self.error_code in {"ITEM_LOGIN_REQUIRED", "PENDING_EXPIRATION"}
 
+    @property
+    def is_dead(self) -> bool:
+        """The token will never work again, whatever we do.
+
+        Distinct from needing re-authentication, which the user can fix
+        by signing in again. These mean the token is simply wrong: it
+        was revoked, the Item was deleted at Plaid, or -- the common one
+        here -- it was issued in a different Plaid environment from the
+        one now configured, which happens to every sandbox connection
+        the moment an instance moves to real banking.
+
+        Worth distinguishing because a background schedule should stop
+        calling a dead connection rather than retrying it hourly,
+        forever, on someone's behalf.
+        """
+        return self.error_code in {
+            "INVALID_ACCESS_TOKEN", "ITEM_NOT_FOUND", "INVALID_API_KEYS",
+        }
+
 
 class PlaidClient:
-    def __init__(self, settings: Settings, timeout: float = 60.0) -> None:
+    """Talks to one Plaid environment.
+
+    Which one is a property of the ACCOUNT, not the instance, because
+    sandbox and real banking coexist on one server: people try the whole
+    loop with fake banks before spending any of a small, lifetime
+    allowance of real connections. A client is therefore built for the
+    account it is acting on behalf of, and carries that environment's
+    host and secret together -- the two must never be mixed, since a
+    production secret against the sandbox host authenticates nothing.
+
+    `environment` defaults to the instance setting so that every caller
+    that predates per-account environments keeps working unchanged.
+    """
+
+    def __init__(self, settings: Settings, timeout: float = 60.0,
+                 environment: str | None = None) -> None:
         self.s = settings
-        self.base = settings.plaid_host
+        self.environment = environment or settings.plaid_env
+        self.base = settings.host_for(self.environment)
         self.timeout = timeout
 
+    @classmethod
+    def for_user(cls, settings: Settings, user: Any,
+                 timeout: float = 60.0) -> "PlaidClient":
+        """A client for whichever environment this account belongs to."""
+        return cls(settings, timeout,
+                   environment=getattr(user, "plaid_env", None) or settings.plaid_env)
+
     def _auth(self) -> dict[str, str]:
-        return {"client_id": self.s.plaid_client_id, "secret": self.s.plaid_secret}
+        return {
+            "client_id": self.s.plaid_client_id,
+            "secret": self.s.secret_for(self.environment),
+        }
 
     async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         payload = {**self._auth(), **body}
@@ -99,12 +144,32 @@ class PlaidClient:
         else:
             body["products"] = [p.strip() for p in self.s.plaid_products.split(",")]
 
-        hook = webhook or self.s.plaid_webhook_url
+        hook = webhook or self.webhook_url()
         if hook:
             body["webhook"] = hook
 
         self._apply_oauth_return_path(body, platform)
         return await self._post("/link/token/create", body)
+
+    def webhook_url(self) -> str:
+        """Where Plaid should post updates for Items linked by this client.
+
+        The environment is in the path. Plaid fixes an Item's webhook at
+        link time and the receiving end must know which environment sent
+        a request before it can verify the signature -- the signing key
+        is fetched from the environment's own host. Putting it in the
+        path makes that free and certain, with nothing read from an
+        unverified body to decide it.
+
+        A URL that already names an environment is left alone, so an
+        operator who configured the full path by hand is not overridden.
+        """
+        base = (self.s.plaid_webhook_url or "").strip().rstrip("/")
+        if not base:
+            return ""
+        if base.endswith("/sandbox") or base.endswith("/production"):
+            return base
+        return f"{base}/{self.environment}"
 
     def _apply_oauth_return_path(self, body: dict[str, Any], platform: str | None) -> None:
         """Attach exactly one of android_package_name / redirect_uri.
@@ -118,7 +183,7 @@ class PlaidClient:
         In sandbox it is only a warning: the non-OAuth test institutions
         (First Platypus and friends) link fine without either.
         """
-        production = self.s.plaid_env == "production"
+        production = self.environment == "production"
 
         if platform == "android":
             pkg = self.s.plaid_android_package_name
@@ -206,6 +271,28 @@ class PlaidClient:
     async def webhook_verification_key(self, key_id: str) -> dict[str, Any]:
         return await self._post("/webhook_verification_key/get", {"key_id": key_id})
 
+    async def update_item_webhook(
+        self, access_token: str, webhook: str
+    ) -> dict[str, Any]:
+        """Point an EXISTING connection at a different webhook URL.
+
+        Plaid stores the webhook per Item, fixed at link time. So moving
+        the server -- adding a certificate, changing domain, moving
+        host -- silently orphans every connection made before the move:
+        new ones get the new URL, old ones keep calling the old one
+        forever, and nothing reports an error. Transactions simply stop
+        arriving in real time for the accounts you have had longest.
+
+        Without this call the only remedy is re-linking, and on the
+        Trial plan every link spends one of a small, lifetime allowance
+        that removing an Item does not give back. That turns "I set up
+        HTTPS afterwards" into a permanent cost.
+        """
+        return await self._post(
+            "/item/webhook/update",
+            {"access_token": access_token, "webhook": webhook},
+        )
+
     # ---------------- Sandbox only ----------------
     async def sandbox_create_public_token(
         self, institution_id: str = "ins_109508", products: list[str] | None = None
@@ -234,5 +321,5 @@ class PlaidClient:
         return await self._post("/sandbox/item/reset_login", {"access_token": access_token})
 
     def _require_sandbox(self) -> None:
-        if self.s.plaid_env != "sandbox":
+        if self.environment != "sandbox":
             raise RuntimeError("sandbox-only endpoint called outside the sandbox environment")

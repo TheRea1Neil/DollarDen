@@ -258,7 +258,7 @@ Notes:
 
 ## Webhooks
 
-Endpoint: `https://example.org/plaid/webhook` — already has valid TLS
+Endpoint: `https://budget.example.org/plaid/webhook` — already has valid TLS
 via the deployed Caddy.
 
 Webhooks that matter:

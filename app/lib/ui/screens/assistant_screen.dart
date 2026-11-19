@@ -24,7 +24,6 @@ class AssistantScreen extends ConsumerStatefulWidget {
 
 class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   final _goals = TextEditingController();
-  final _extra = TextEditingController();
 
   bool _loadingGoals = true;
   bool _saving = false;
@@ -46,7 +45,6 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   @override
   void dispose() {
     _goals.dispose();
-    _extra.dispose();
     super.dispose();
   }
 
@@ -68,16 +66,18 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     try {
       await ref.read(apiProvider).setGoals(_goals.text.trim());
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Goals saved')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Goals saved')));
     } on JobDeferred catch (d) {
       if (mounted) setState(() => _deferred = d);
     } on ApiException catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.message),
-              backgroundColor: Theme.of(context).colorScheme.error),
+          SnackBar(
+            content: Text(e.message),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
         );
       }
     } finally {
@@ -96,9 +96,13 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     });
     try {
       await api.setGoals(_goals.text.trim());
-      final job = await api.queueJob('design_categories', {
-        'instructions': _extra.text.trim(),
-      });
+      // Nothing extra to pass: what used to be a second "fixed amounts"
+      // box now belongs in the goals text itself. That box was never
+      // saved or reloaded, so anything typed in it was gone by the next
+      // visit and absent from every later summary -- the opposite of
+      // what someone writing down their rent would expect. The server
+      // still accepts `instructions`; the app simply has one field.
+      final job = await api.queueJob('design_categories', const {});
       final done = await api.awaitJob(
         job.id,
         onProgress: (j) {
@@ -107,7 +111,9 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       );
       if (!mounted) return;
       if (!done.ok) {
-        setState(() => _error = done.error ?? 'The assistant could not finish.');
+        setState(
+          () => _error = done.error ?? 'The assistant could not finish.',
+        );
         return;
       }
       setState(() => _proposal = Proposal.fromJson(done.result ?? {}));
@@ -125,24 +131,29 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     if (p == null) return;
     setState(() => _busy = true);
     try {
-      final out = await ref.read(apiProvider).applyProposal(
-            categories: p.categories,
-            rules: p.rules,
-          );
+      final out = await ref
+          .read(apiProvider)
+          .applyProposal(categories: p.categories, rules: p.rules);
       ref.invalidate(summaryProvider);
       ref.invalidate(categoriesProvider);
       if (!mounted) return;
       final created = (out['created_categories'] as List).length;
       final reused = (out['reused_categories'] as List).length;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('$created created, $reused reused · plan v${out['plan_version']}'),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '$created created, $reused reused · plan v${out['plan_version']}',
+          ),
+        ),
+      );
       setState(() => _proposal = null);
     } on ApiException catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.message),
-              backgroundColor: Theme.of(context).colorScheme.error),
+          SnackBar(
+            content: Text(e.message),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
         );
       }
     } finally {
@@ -162,7 +173,8 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 20),
               child: SizedBox(
-                height: 18, width: 18,
+                height: 18,
+                width: 18,
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
             )
@@ -179,45 +191,58 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                Text('What are you trying to do with your money?',
-                    style: theme.textTheme.titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w600)),
-                const SizedBox(height: 4),
                 Text(
-                  'Written in your own words. This also shapes the spending '
-                  'summaries you get later.',
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  'Describe your money in your own words',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 6),
+                Text(
+                  'This is the starting point for your whole budget. It is '
+                  'read twice: once to suggest a set of envelopes, and again '
+                  'whenever your spending is summarised later — so it is '
+                  'worth writing properly once.',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                const _WhatToInclude(),
+                const SizedBox(height: 14),
                 TextField(
                   controller: _goals,
-                  maxLines: 5,
-                  minLines: 3,
+                  // Grows with what you write. It was capped at five
+                  // lines, so a budget described properly could only be
+                  // read back through a letterbox -- and you cannot
+                  // check something you cannot see all of.
+                  maxLines: null,
+                  minLines: 8,
                   textCapitalization: TextCapitalization.sentences,
+                  keyboardType: TextInputType.multiline,
                   decoration: const InputDecoration(
-                    hintText: 'Save \$6,000 for emergencies, then for a newer '
-                        'car. Eat out less. Tithing comes first.',
+                    border: OutlineInputBorder(),
+                    alignLabelWithHint: true,
+                    hintText:
+                        'How you are paid, what has to be paid, what '
+                        'you are saving for, and what you want to change.',
                   ),
                 ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: _extra,
-                  maxLines: 3,
-                  minLines: 2,
-                  textCapitalization: TextCapitalization.sentences,
-                  decoration: const InputDecoration(
-                    labelText: 'Fixed amounts it should know (optional)',
-                    hintText: 'Paid every two weeks. Rent \$350. Health \$150.',
-                  ),
+                const SizedBox(height: 10),
+                _ExampleCard(
+                  onUse: _goals.text.trim().isEmpty
+                      ? () => setState(() => _goals.text = _exampleGoals)
+                      : null,
                 ),
                 const SizedBox(height: 16),
                 FilledButton.icon(
                   onPressed: _busy ? null : _generate,
                   icon: _busy
                       ? const SizedBox(
-                          height: 18, width: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2))
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
                       : const Icon(Icons.auto_awesome),
                   label: Text(_busy ? _progress : 'Suggest a budget'),
                 ),
@@ -228,8 +253,9 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                       'The AI server sleeps when idle — this takes about ten '
                       'seconds the first time.',
                       textAlign: TextAlign.center,
-                      style: theme.textTheme.bodySmall
-                          ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ),
                 if (_error != null) ...[
@@ -240,8 +266,12 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                       color: theme.colorScheme.errorContainer,
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: Text(_error!,
-                        style: TextStyle(color: theme.colorScheme.onErrorContainer)),
+                    child: Text(
+                      _error!,
+                      style: TextStyle(
+                        color: theme.colorScheme.onErrorContainer,
+                      ),
+                    ),
                   ),
                 ],
                 if (_deferred != null) ...[
@@ -259,6 +289,152 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                 ],
               ],
             ),
+    );
+  }
+}
+
+/// The example, written to be copied rather than admired.
+///
+/// Deliberately specific: real figures, a real pay cadence, a stated
+/// priority and a habit to change. Vague goals ("spend less, save
+/// more") produce vague envelopes, and nothing in the form otherwise
+/// tells you how much detail is useful.
+const String _exampleGoals = '''
+I get paid every two weeks, usually around \$1,650 after tax.
+
+Fixed things that have to be paid: rent \$350, car insurance \$150 a
+month, phone \$60, and about \$120 a month on health.
+
+I want to save \$6,000 for emergencies first, then start putting money
+aside for a newer car. Tithing comes first, before anything else.
+
+I spend too much eating out and on random Amazon orders, and I would
+like those kept separate from the weekly food shop so I can see them.''';
+
+/// What makes a useful description, said plainly and up front.
+class _WhatToInclude extends StatelessWidget {
+  const _WhatToInclude();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    const points = [
+      'How and how often you get paid',
+      'Bills that must be paid, with amounts',
+      'What you are saving towards, and how much',
+      'What comes first when money is tight',
+      'Spending you want kept separate so you can see it',
+    ];
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Worth mentioning',
+            style: theme.textTheme.labelLarge?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 8),
+          for (final p in points)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '•  ',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      p,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 6),
+          Text(
+            'Amounts and names are what make the difference. "Save more" '
+            'cannot become an envelope; "\$6,000 for emergencies" can.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A full worked example, collapsed until asked for.
+///
+/// [onUse] is null once anything has been typed, so pressing it can
+/// never silently overwrite someone's own words.
+class _ExampleCard extends StatefulWidget {
+  final VoidCallback? onUse;
+  const _ExampleCard({required this.onUse});
+
+  @override
+  State<_ExampleCard> createState() => _ExampleCardState();
+}
+
+class _ExampleCardState extends State<_ExampleCard> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            TextButton.icon(
+              onPressed: () => setState(() => _open = !_open),
+              icon: Icon(
+                _open ? Icons.expand_less : Icons.expand_more,
+                size: 18,
+              ),
+              label: Text(_open ? 'Hide example' : 'See an example'),
+            ),
+            const Spacer(),
+            if (widget.onUse != null)
+              TextButton(
+                onPressed: widget.onUse,
+                child: const Text('Start from it'),
+              ),
+          ],
+        ),
+        if (_open)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              _exampleGoals.trim(),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+                height: 1.45,
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -285,21 +461,28 @@ class _ProposalView extends StatelessWidget {
       children: [
         Row(
           children: [
-            Text('Suggested budget',
-                style: theme.textTheme.titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w700)),
+            Text(
+              'Suggested budget',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
             const Spacer(),
-            Text('tap to edit',
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            Text(
+              'tap to edit',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
           ],
         ),
         const SizedBox(height: 4),
         Text(
           'Check these before applying. The assistant gets amounts wrong '
           'sometimes — especially by a factor of ten.',
-          style: theme.textTheme.bodySmall
-              ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
         ),
         if (proposal.notes.isNotEmpty) ...[
           const SizedBox(height: 12),
@@ -317,9 +500,12 @@ class _ProposalView extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Needs fixing before this can be applied',
-                    style: theme.textTheme.labelLarge
-                        ?.copyWith(color: AppTheme.warning)),
+                Text(
+                  'Needs fixing before this can be applied',
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: AppTheme.warning,
+                  ),
+                ),
                 const SizedBox(height: 6),
                 for (final p in proposal.problems)
                   Text('• $p', style: theme.textTheme.bodySmall),
@@ -339,9 +525,12 @@ class _ProposalView extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('This will not work the way you expect',
-                    style: theme.textTheme.labelLarge
-                        ?.copyWith(color: AppTheme.danger)),
+                Text(
+                  'This will not work the way you expect',
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: AppTheme.danger,
+                  ),
+                ),
                 const SizedBox(height: 6),
                 for (final w in proposal.warnings)
                   Padding(
@@ -354,10 +543,15 @@ class _ProposalView extends StatelessWidget {
         ],
         if (proposal.notices.isNotEmpty) ...[
           const SizedBox(height: 12),
-          for (final n in proposal.notices.where((n) => !n.contains('already exists')))
-            Text('· $n',
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+          for (final n in proposal.notices.where(
+            (n) => !n.contains('already exists'),
+          ))
+            Text(
+              '· $n',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
         ],
         const SizedBox(height: 16),
         Text('Categories', style: theme.textTheme.labelLarge),
@@ -378,9 +572,12 @@ class _ProposalView extends StatelessWidget {
 
         const SizedBox(height: 16),
         Text('How each paycheck gets split', style: theme.textTheme.labelLarge),
-        Text('In order, top to bottom',
-            style: theme.textTheme.bodySmall
-                ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+        Text(
+          'In order, top to bottom',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
         const SizedBox(height: 6),
         Card(
           child: Column(
@@ -393,16 +590,21 @@ class _ProposalView extends StatelessWidget {
                     backgroundColor: theme.colorScheme.surfaceContainerHighest,
                     child: Text('${i + 1}', style: theme.textTheme.labelSmall),
                   ),
-                  title: Text(proposal.rules[i].categoryName,
-                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                  title: Text(
+                    proposal.rules[i].categoryName,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
                   subtitle: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(proposal.rules[i].describe()),
                       if (proposal.rules[i].why.isNotEmpty)
-                        Text(proposal.rules[i].why,
-                            style: theme.textTheme.bodySmall?.copyWith(
-                                color: theme.colorScheme.onSurfaceVariant)),
+                        Text(
+                          proposal.rules[i].why,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -414,17 +616,20 @@ class _ProposalView extends StatelessWidget {
         const SizedBox(height: 20),
         FilledButton(
           onPressed: (busy || !proposal.applicable) ? null : onApply,
-          child: Text(proposal.applicable
-              ? 'Apply this budget'
-              : 'Fix the problems above first'),
+          child: Text(
+            proposal.applicable
+                ? 'Apply this budget'
+                : 'Fix the problems above first',
+          ),
         ),
         const SizedBox(height: 6),
         Text(
           'Nothing changes until you tap apply. You can edit everything '
           'afterwards too.',
           textAlign: TextAlign.center,
-          style: theme.textTheme.bodySmall
-              ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
         ),
       ],
     );
@@ -444,9 +649,11 @@ class _CategoryRow extends StatelessWidget {
       title: Row(
         children: [
           Flexible(
-            child: Text(category.name,
-                style: const TextStyle(fontWeight: FontWeight.w600),
-                overflow: TextOverflow.ellipsis),
+            child: Text(
+              category.name,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
           if (category.alreadyExists) ...[
             const SizedBox(width: 8),
@@ -499,27 +706,38 @@ class _CategoryRow extends StatelessWidget {
                 items: const [
                   DropdownMenuItem(value: 'spending', child: Text('Spending')),
                   DropdownMenuItem(
-                      value: 'savings_bucket', child: Text('Savings bucket')),
-                  DropdownMenuItem(value: 'obligation', child: Text('Obligation')),
+                    value: 'savings_bucket',
+                    child: Text('Savings bucket'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'obligation',
+                    child: Text('Obligation'),
+                  ),
                 ],
                 onChanged: (v) => setLocal(() => kind = v ?? kind),
               ),
               const SizedBox(height: 12),
               TextField(
                 controller: target,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
                 decoration: const InputDecoration(
-                    labelText: 'Refill target', prefixText: r'$'),
+                  labelText: 'Refill target',
+                  prefixText: r'$',
+                ),
               ),
             ],
           ),
           actions: [
             TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Cancel')),
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
             FilledButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Save')),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Save'),
+            ),
           ],
         ),
       ),

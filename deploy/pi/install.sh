@@ -11,14 +11,15 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DEST=/opt/deck-power
-USER_NAME="${SUDO_USER:-neil}"
+# Whoever is running this, not whoever wrote it.
+USER_NAME="${SUDO_USER:-$(id -un)}"
 
 install -d -m 755 "$DEST"
 install -m 755 "$HERE/deck_power.py" "$DEST/deck_power.py"
 install -m 755 "$HERE/deck_power_api.py" "$DEST/deck_power_api.py"
 ln -sf "$DEST/deck_power.py" /usr/local/bin/deck-power
 
-# The log has to be writable by both the CLI (run as neil) and the
+# The log has to be writable by both the CLI (run as that user) and the
 # service, so it is group-owned by gpio -- which is already the group
 # allowed to touch the pins.
 install -d -m 775 -o "$USER_NAME" -g gpio /var/lib/deck-power

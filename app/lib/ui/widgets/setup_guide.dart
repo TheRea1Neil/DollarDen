@@ -115,6 +115,10 @@ class SetupGuide extends StatelessWidget {
   final VoidCallback onNewCategory;
   final VoidCallback onAllocate;
 
+  /// Opens Goals, where a budget is described in plain words and a set
+  /// of envelopes is suggested from it.
+  final VoidCallback onDescribeBudget;
+
   const SetupGuide({
     super.key,
     required this.state,
@@ -122,6 +126,7 @@ class SetupGuide extends StatelessWidget {
     required this.onChooseAccounts,
     required this.onNewCategory,
     required this.onAllocate,
+    required this.onDescribeBudget,
   });
 
   @override
@@ -148,11 +153,12 @@ class SetupGuide extends StatelessWidget {
       SetupStage.makeCategories => (
         'Now make some envelopes',
         'You have ${Money.format(state.availableCents)} to divide, but '
-            'nowhere to put it yet. Make the envelopes first — rent, '
-            'groceries, fuel, whatever you actually spend on — then share '
-            'the money out between them.',
-        'Add a category',
-        onNewCategory,
+            'nowhere to put it yet. The quickest way is to describe your '
+            'money in your own words — how you are paid, what has to be '
+            'paid, what you are saving for — and get a full set of '
+            'envelopes suggested, which you can then edit.',
+        'Describe your budget',
+        onDescribeBudget,
       ),
       SetupStage.allocate => (
         'Divide up ${Money.format(state.unallocatedCents)}',
@@ -201,9 +207,21 @@ class SetupGuide extends StatelessWidget {
             ],
 
             const SizedBox(height: 14),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: FilledButton(onPressed: onTap, child: Text(action)),
+            Row(
+              children: [
+                FilledButton(onPressed: onTap, child: Text(action)),
+                // Describing the budget is offered first because naming
+                // envelopes from a blank page is the step people stall
+                // on. Building one by hand stays one tap away for anyone
+                // who already knows what they want.
+                if (state.stage == SetupStage.makeCategories) ...[
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: onNewCategory,
+                    child: const Text('Add one by hand'),
+                  ),
+                ],
+              ],
             ),
           ],
         ),

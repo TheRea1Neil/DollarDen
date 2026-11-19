@@ -111,6 +111,8 @@ def in_quiet_hours(settings: Settings, now: datetime | None = None) -> bool:
     window and precisely backwards: it would block the evening and allow
     3am.
     """
+    if not settings.ai_quiet_enabled:
+        return False
     tz = ZoneInfo(settings.ai_quiet_timezone)
     local = (now or datetime.now(tz)).astimezone(tz).time()
     start = time(settings.ai_quiet_start_hour, 0)
@@ -119,7 +121,7 @@ def in_quiet_hours(settings: Settings, now: datetime | None = None) -> bool:
         return False
     if start < end:
         return start <= local < end
-    # Window wraps past midnight, which the default 01:00-08:00 does not
+    # Window wraps past midnight, which the default 00:00-08:00 does not
     # but a user-chosen 22:00-06:00 would.
     return local >= start or local < end
 
@@ -139,7 +141,7 @@ async def model_already_loaded(settings: Settings, timeout: float = 5.0) -> bool
 
     An already-loaded model is the BEST case, not a blocked one.
     """
-    base = (settings.ai_deck_url or "").rstrip("/")
+    base = (settings.ai_host_url or "").rstrip("/")
     if not base:
         return False
     want = (settings.ai_model_text or "").strip()

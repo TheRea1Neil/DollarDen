@@ -9,7 +9,8 @@ import 'ui/screens/home_screen.dart';
 import 'ui/screens/insights_screen.dart';
 import 'ui/screens/connections_screen.dart';
 import 'ui/screens/login_screen.dart';
-import 'ui/screens/review_screen.dart';
+import 'ui/screens/server_screen.dart';
+import 'ui/screens/transactions_screen.dart';
 
 void main() => runApp(const ProviderScope(child: NnfApp()));
 
@@ -18,21 +19,40 @@ class NnfApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final signedIn = ref.watch(authStateProvider);
+    final baseUrl = ref.watch(baseUrlProvider);
 
     return MaterialApp(
       title: 'no-nonsense-finance',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
-      // Null means "still checking for a session" -- showing a splash avoids
-      // flashing the login screen at an already-signed-in user.
-      home: switch (signedIn) {
+      // Which server, then who you are. There is nothing to sign in to
+      // until the first is answered, and `authStateProvider` is
+      // deliberately not read until then -- reading it would start a
+      // session check against a server that has not been chosen.
+      home: switch (baseUrl) {
         null => const _Splash(),
-        false => const LoginScreen(),
-        true => const _Shell(),
+        '' => const ServerScreen(),
+        _ => const _AuthGate(),
       },
     );
+  }
+}
+
+/// Signed in or not, for a server that is already known.
+class _AuthGate extends ConsumerWidget {
+  const _AuthGate();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final signedIn = ref.watch(authStateProvider);
+    // Null means "still checking for a session" -- showing a splash avoids
+    // flashing the login screen at an already-signed-in user.
+    return switch (signedIn) {
+      null => const _Splash(),
+      false => const LoginScreen(),
+      true => const _Shell(),
+    };
   }
 }
 
@@ -100,7 +120,7 @@ class _ShellState extends ConsumerState<_Shell> with WidgetsBindingObserver {
         index: _tab,
         children: const [
           HomeScreen(),
-          ReviewScreen(),
+          TransactionsScreen(),
           InsightsScreen(),
           ConnectionsScreen(),
         ],
@@ -115,13 +135,16 @@ class _ShellState extends ConsumerState<_Shell> with WidgetsBindingObserver {
             label: 'Budget',
           ),
           NavigationDestination(
+            // The count stays on the bar, not just on the Review
+            // section inside: it is what makes outstanding work visible
+            // without opening the tab at all.
             icon: Badge.count(
               count: pending,
               isLabelVisible: pending > 0,
-              child: const Icon(Icons.inbox_outlined),
+              child: const Icon(Icons.receipt_long_outlined),
             ),
-            selectedIcon: const Icon(Icons.inbox),
-            label: 'Review',
+            selectedIcon: const Icon(Icons.receipt_long),
+            label: 'Transactions',
           ),
           const NavigationDestination(
             icon: Icon(Icons.insights_outlined),

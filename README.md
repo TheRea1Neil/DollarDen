@@ -1,66 +1,165 @@
 # no-nonsense-finance
 
-A self-hosted personal budgeting app. Bank data comes from Plaid, lives on
-hardware you own, and AI analysis runs on your own GPU — nothing financial is
-sent to a third-party model provider.
+An envelope budget you run yourself. Your bank data stays on your
+hardware, in your house, in a database you own.
 
-## The idea
+It connects to your bank through Plaid, sorts transactions into
+envelopes, and keeps an append-only ledger of every movement of money.
+Optionally it will categorise transactions for you using a language
+model — one you host yourself, or one you pay for, or none at all.
 
-Most budgeting apps track what you *spent*. This one models how you decide to
-*allocate* money: every paycheck is split into categories by rules you write,
-and every transaction is drawn back out of the right category.
+**Status: working, and used daily by its author. Not yet packaged for
+strangers.** Installation is being smoothed out; see `docs/17`.
 
-- **Categories with refill rules** — "top food up to $300 each paycheck",
-  "keep short-term savings at $2000".
-- **Paycheck split instructions** — ordered rules: tithe 10% first, then $350
-  rent, then $150 health insurance, then refill buckets, remainder to the car
-  fund.
-- **Automatic draw-down** — a grocery charge comes out of Food; a payment to
-  the church comes out of Tithing.
-- **Ask when unsure** — anything ambiguous goes to a review queue instead of
-  being silently miscategorised. Receipts can be photographed and split across
-  several categories line by line.
-- **Goal-aware analysis** — you state what you're trying to achieve; the
-  summaries and suggestions are written against those goals.
+## What makes it different
 
-## Shape of the system
+**Money is divided, not forecast.** Every pound or dollar sits in
+exactly one envelope. The sum of the envelopes equals the money you
+actually have. There is no projection and no hypothetical.
 
-| Piece | Runs on | What it is |
-|---|---|---|
-| Mobile app | iOS + Android | Flutter, with a local SQLite mirror for offline use |
-| API + budget engine | Raspberry Pi (`nando`) | Backend, Postgres, Plaid sync, webhook receiver |
-| AI inference | Gaming PC (`steamdeck`) | Ollama + Qwen 3, woken on demand by the Pi |
-| Public edge | Pi, via Caddy | HTTPS on `example.org`, already deployed |
+**Corrections are entries, never edits.** The ledger is append-only. A
+mistake is fixed by an opposing entry, so the history of how money
+moved stays true. Balances are derived, not typed.
 
-The AI host is asleep most of the time. The Pi wakes it with a Wake-on-LAN
-call when a job needs it, then lets it idle back to sleep. Users can instead
-point the app at their own Ollama instance.
+**The engine divides money. The model does not.** Where AI is used it
+chooses labels and composes queries; the arithmetic is done in code
+and tested. An amount that appears in an answer came from a database
+query, not from a model's recollection.
 
-## Planning docs
+**AI is optional, and the app is whole without it.** With no model
+configured, nothing is hidden or broken — transactions simply wait in
+a review queue for you instead of being filed automatically.
 
-Read in order:
+## What you need
 
-| Doc | Covers |
+| | |
 |---|---|
-| [01 Overview & goals](docs/01-overview-and-goals.md) | What this is, scope, non-goals |
-| [02 Architecture](docs/02-architecture.md) | Components, network topology, request flows |
-| [03 Data model](docs/03-data-model.md) | Postgres schema, SQLite mirror, sync rules |
-| [04 Plaid integration](docs/04-plaid-integration.md) | **Connection-credit conservation**, tokens, webhooks |
-| [05 AI architecture](docs/05-ai-architecture.md) | Provider abstraction, wake-on-demand, prompts |
-| [06 Budget engine](docs/06-budget-engine.md) | Categories, rules, paycheck splits, categorisation |
-| [07 Security](docs/07-security.md) | Secrets, encryption, auth, multi-user |
-| [08 Roadmap](docs/08-roadmap.md) | Phased build order and gates |
-| [09 Pi operations](docs/09-pi-operations.md) | Resource cleanup, ports, backups, runbook |
-| [ADRs](docs/adr/) | Decisions and why |
+| **A machine to run it on** | Anything that runs Docker. A Raspberry Pi is plenty |
+| **A Plaid account** | Free sandbox to start. Their Trial plan for real banks — see below |
+| **The app** | Android and iOS clients connect to your server. Build from `app/`, or install the published client when available |
+| **A model (optional)** | Your own Ollama host, or an API key for a hosted one, or neither |
 
-## Before writing code
+## Install
 
-Read **[docs/04](docs/04-plaid-integration.md)** first. Production Plaid
-connections are a finite resource on this account (10), and the single most
-expensive mistake available is losing an `access_token` and having to re-link.
-The roadmap gates production access behind a working sandbox build for exactly
-this reason.
+```bash
+git clone <this repo> && cd no-nonsense-finance/deploy
+cp ../.env.example .env
+```
 
-## Status
+Fill in `.env`. The three that must be set:
 
-Planning. No application code yet.
+```bash
+POSTGRES_PASSWORD=...
+JWT_SIGNING_KEY=$(python3 -c "import secrets;print(secrets.token_urlsafe(48))")
+TOKEN_ENCRYPTION_KEY=$(python3 -c "import secrets,base64;print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())")
+```
+
+> **Keep `TOKEN_ENCRYPTION_KEY` somewhere safe.** It encrypts your
+> stored bank connections. Lose it and every bank must be linked again,
+> and re-linking spends one of a small, permanent allowance of Plaid
+> connections. Back it up before you connect anything.
+
+Then:
+
+```bash
+docker compose -f docker-compose.selfhost.yml up -d
+```
+
+It migrates its own database on start. Open
+`http://your-server:21821/admin/` and the setup wizard will ask you to
+create the owner account. **There are no default credentials**, and
+nobody can sign themselves up afterwards — the owner creates accounts
+from the admin portal.
+
+## Connecting a bank
+
+Plaid is how this reaches your bank. Two things are worth knowing
+before you start, because one of them is irreversible.
+
+**Do the whole thing in sandbox first.** Sandbox is free and
+unlimited, with fake banks that behave like real ones. Link one,
+watch transactions arrive, categorise a few, confirm webhooks reach
+you. Only move on when the entire loop works.
+
+**Then apply for Plaid's Trial plan — not production.** Trial gives a
+small number of real bank connections. That number is a *lifetime*
+allowance: every attempt against a real bank spends one, and removing
+a connection does **not** give it back. A typo in the Plaid dashboard
+costs one permanently.
+
+Sandbox and real banking live side by side on one server, because
+**the environment belongs to the account, not the instance**:
+
+1. Create a **sandbox** account, break things freely, learn the app
+2. Sign up for Trial, put the credentials in the admin portal
+3. Create a **production** account and connect your real bank there
+4. Keep the sandbox account — it stays free, for trying anything risky
+
+An account's environment is fixed when it is created. A sandbox access
+token means nothing in production, so an account that could switch
+would strand every bank it had already linked.
+
+### Webhooks
+
+Transactions arrive fastest when Plaid can call your server, which
+needs an HTTPS address reachable from the internet. Without one, the
+server **pulls on a schedule instead** — hourly by default. Plaid only
+reads most banks a few times a day, so an hourly pull is close to what
+webhooks would have told you anyway.
+
+Adding HTTPS later costs nothing: change the address and press
+**re-point webhooks** in the admin portal, which moves existing
+connections without re-linking them.
+
+## HTTPS
+
+The app speaks plain HTTP on a port. Certificates belong to a reverse
+proxy — Caddy, nginx, a Cloudflare tunnel, Tailscale. That is not a
+dodge: Let's Encrypt needs port 80 reachable or DNS API credentials,
+neither of which this container has, and binding 443 inside it would
+fight whatever else runs on your host.
+
+On your own network, plain HTTP is fine and needs nothing.
+
+## Choosing an AI, or not
+
+Three options, and the first is a real one:
+
+**None.** Everything works. Transactions wait in the review queue for
+you to file. Nothing is hidden or degraded.
+
+**Your own model.** An [Ollama](https://ollama.com) host on your own
+network — a spare desktop with a GPU is ideal. Your transactions never
+leave your house. If that machine sleeps, the server can wake it on
+demand: give it a URL to call, and it will.
+
+**A hosted model.** An API key for a provider. Easiest to set up, and
+the trade is worth stating plainly: **merchant names, amounts and the
+goals you write are sent to that company, and you pay per use.** Both
+choices are legitimate; a budgeting app is the wrong place to be
+vague about which one you made.
+
+All of it is configured in the admin portal, and can be changed later.
+
+## The phone app
+
+The app has no server built into it. On first run it asks for your
+server's address, then signs you in — the way a Jellyfin client does.
+One build works against any instance.
+
+Build it yourself from `app/` with Flutter, or install the published
+client and point it at your server.
+
+## Documentation
+
+`docs/` holds the design in full, and `docs/adr/` the decisions with
+the reasoning that produced them — why money is integer cents, why
+corrections are entries, why the engine divides money and the model
+does not. They are written to explain *why*, not just what.
+
+`docs/17-open-source-plan.md` is the live plan for making this
+installable by people who are not its author.
+
+## Licence
+
+MIT. See `LICENSE`.

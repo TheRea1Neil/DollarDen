@@ -25,7 +25,7 @@ from app.analytics.period import resolve  # noqa: E402
 from app.analytics.taxonomy import STARTER_TYPES  # noqa: E402
 
 HERE = pathlib.Path(__file__).resolve().parent
-DECK = "http://192.168.86.196:11434"
+DECK = "http://your-ai-host:11434"
 MODEL = sys.argv[1] if len(sys.argv) > 1 else "qwen2.5vl:7b"
 
 # A plausible account: the standard vocabulary, which is what a user who

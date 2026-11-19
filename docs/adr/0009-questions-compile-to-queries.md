@@ -111,3 +111,57 @@ transactions; a worse one does not change where the SQL goes.
   month boundary moves real money between two answers, and "last 3
   months" including a half-built current month makes every comparison
   look like a decline.
+
+## Amendment, 2026-11-17: facts and a calculator, not pre-computed answers
+
+The principle above — the model picks, the engine computes — held for
+sums over transactions. It did not cover the arithmetic *on top* of
+them: "how much can I spend a day on food until payday" needs a
+balance, a day count and a division, and only the first came from a
+tool.
+
+The first attempt had the `payday` tool pre-compute it: every envelope
+balance divided by the days remaining. Run against the real budget it
+produced
+
+```
+Rent          $3,076.59 -> $1,025.53 /day
+New Car Fund  $1,933.05 ->   $644.35 /day
+```
+
+which is not a thing. Rent is one committed payment and a car fund is
+being accumulated, not drawn down. Pre-computing had answered one
+scenario, badly, for two thirds of the envelopes — and a figure like
+that sitting in a tool result is an invitation to repeat it.
+
+**So the tools supply facts and the model composes them.** `payday`
+returns dates and day counts only. `calculate` does one sum, exactly,
+whatever sum the question turns out to need. The model still never does
+arithmetic — it decides *which* arithmetic, which is the judgement it
+is actually good at. Observed end to end:
+
+```
+budget {} → payday {} → calculate {"expression": "162.56 / 3"}
+"...you can spend approximately $54.19 per day on food."
+```
+
+This generalises where pre-computing could not. "What if I skip eating
+out" and "how much is left if I spend $30 today" need no new tool.
+
+### Evaluating a string the model wrote
+
+`calculate` is the one place in the app that evaluates an expression
+written by a language model, so it does not use `eval`. The expression
+is parsed to an AST and walked: numeric literals, the seven arithmetic
+operators, and `round`/`abs`/`min`/`max`. Names, attributes, strings,
+subscripts and every other call are refused.
+
+Two limits are about cost rather than access: `**` is capped, because
+`9**9**9` is a perfectly valid expression and an unbounded wait, and
+the expression length is capped.
+
+Failures come back as `{"error": ...}` rather than raising. An
+exception kills the job and the question goes unanswered; an error
+string lets the model read what went wrong and try a different sum.
+`tests/test_calculator_tool.py` covers the refusals explicitly — they
+are the reason for the design, not a side effect of it.

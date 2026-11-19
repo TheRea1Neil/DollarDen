@@ -23,7 +23,7 @@ import 'scan_receipt_screen.dart';
 /// workaround is deleting rows, which loses the record. These are
 /// marked ignored instead: they stay in history, and because they never
 /// allocated anything no balance moves.
-Future<void> _dismissOld(BuildContext context, WidgetRef ref) async {
+Future<void> dismissOldHistory(BuildContext context, WidgetRef ref) async {
   final now = DateTime.now();
   final picked = await showDatePicker(
     context: context,
@@ -106,23 +106,32 @@ Future<void> _dismissOld(BuildContext context, WidgetRef ref) async {
 }
 
 class ReviewScreen extends ConsumerWidget {
-  const ReviewScreen({super.key});
+  /// Rendered inside the Transactions tab rather than as its own tab.
+  ///
+  /// When embedded the app bar belongs to the tab, which also hosts the
+  /// "dismiss old history" action -- it is a Review action, so the tab
+  /// only shows it while this section is the one on screen.
+  final bool embedded;
+
+  const ReviewScreen({super.key, this.embedded = false});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final items = ref.watch(reviewProvider);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Review'),
-        actions: [
-          IconButton(
-            tooltip: 'Dismiss old history',
-            icon: const Icon(Icons.history_toggle_off),
-            onPressed: () => _dismissOld(context, ref),
-          ),
-        ],
-      ),
+      appBar: embedded
+          ? null
+          : AppBar(
+              title: const Text('Review'),
+              actions: [
+                IconButton(
+                  tooltip: 'Dismiss old history',
+                  icon: const Icon(Icons.history_toggle_off),
+                  onPressed: () => dismissOldHistory(context, ref),
+                ),
+              ],
+            ),
       body: items.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(child: Text('$e')),

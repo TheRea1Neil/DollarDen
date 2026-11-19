@@ -5,6 +5,6 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/neil/nnf/deploy/backup.sh
+ExecStart=$HOME/nnf/deploy/backup.sh
 # The dump holds financial history; keep it readable only by its owner.
 UMask=0077

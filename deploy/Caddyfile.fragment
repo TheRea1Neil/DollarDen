@@ -1,12 +1,12 @@
 # ---------------------------------------------------------------------------
-# Add this as a NEW top-level site block in /home/neil/wireguard/Caddyfile,
+# Add this as a NEW top-level site block in $HOME/wireguard/Caddyfile,
 # alongside (not inside) the existing example.org block.
 #
 # Why a subdomain:
 #   * wg-easy already owns /api/* on the apex domain. A separate hostname
 #     removes the collision entirely instead of renaming the finance API.
 #   * DuckDNS wildcards every subdomain to the same IP (verified:
-#     budget.example.org -> 136.36.34.173), so there is no DNS
+#     budget.example.org -> <your public IP>), so there is no DNS
 #     setup to do.
 #   * Caddy routes by Host header, so port 443 — already forwarded — serves
 #     both hostnames. NO new port forwarding is required.

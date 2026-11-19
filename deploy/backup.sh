@@ -18,8 +18,8 @@
 # Install: see docs/09-pi-operations.md.
 set -euo pipefail
 
-ENV_FILE="${NNF_ENV_FILE:-/home/neil/nnf/.env}"
-OUT_DIR="${NNF_BACKUP_DIR:-/home/neil/nnf/deploy/backups}"
+ENV_FILE="${NNF_ENV_FILE:-$HOME/nnf/.env}"
+OUT_DIR="${NNF_BACKUP_DIR:-$HOME/nnf/deploy/backups}"
 CONTAINER="${NNF_PG_CONTAINER:-nnf-postgres}"
 KEEP_DAYS="${NNF_BACKUP_KEEP:-14}"
 

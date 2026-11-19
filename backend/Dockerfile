@@ -19,8 +19,15 @@ COPY app ./app
 COPY migrations ./migrations
 COPY alembic.ini ./
 
+# Copied with its mode already set, and BEFORE dropping privileges:
+# a `RUN chmod` here would run as nnf, which cannot write to
+# /usr/local/bin, and the build fails.
+COPY --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
+
 RUN useradd -m -u 1000 nnf && mkdir -p /data/receipts && chown -R nnf /data /app
 USER nnf
 
 EXPOSE 8081
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8081"]

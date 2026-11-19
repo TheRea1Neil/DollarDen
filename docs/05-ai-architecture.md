@@ -8,7 +8,7 @@ choice below.
 
 ## Surveyed hardware (measured, not assumed)
 
-`steamdeck` — 192.168.86.196:
+the AI host — your-ai-host:
 
 | | |
 |---|---|
@@ -69,18 +69,29 @@ update would wipe it. Use `podman` (already present):
 - Bind `0.0.0.0:11434` on the LAN only. **Never port-forward it** — Ollama has
   no authentication.
 
-### GPU backend is the open question
+### GPU backend: settled on Vulkan
 
-RDNA4 is new, ROCm is not installed, Vulkan is. In order:
+RDNA4 is new, ROCm was not installed, Vulkan was. The ladder was:
 
 1. Ollama's **ROCm** image — if it claims gfx1200-class support, best case.
 2. A **Vulkan** backend build — Vulkan is confirmed present.
 3. **CPU only** — 16 cores and 31 GB RAM. Slow but functional, and every job
    here is async anyway.
 
-**Spike this before building on it** (roadmap Phase 0). Measure tokens/sec for
-each path and record the result as an ADR. If all three are unusably slow,
-`NullProvider` becomes the default and the app still ships — see ADR 0003.
+Both of the first two were tried, in that order, and the answer changed:
+
+- **ROCm** won the Phase 0 spike on raw numbers (ADR 0005) and ran for three
+  weeks.
+- Then a SteamOS kernel update deadlocked it. AMDKFD — the compute interface
+  ROCm uses — is part of the **kernel**, so pinning ROCm inside a container
+  pins only half of it. `llama-server` wedged in state `D` mapping the model
+  into VRAM, unkillable, which also hung shutdown. See `docs/16-deck-power.md`.
+- **Vulkan** reaches the GPU through the DRM render node instead, never
+  touching that interface. It was healthy throughout the incident and is now
+  the backend: ADR 0010 supersedes 0005.
+
+Rung 3 was never needed. `NullProvider` remains the floor if it ever is —
+the app ships without AI either way (ADR 0003).
 
 ## Provider abstraction
 
@@ -103,11 +114,11 @@ named model is present when they save it, not at first use.
 ## Wake-on-demand
 
 The AI host sleeps by default. The Wake-on-LAN API is **already deployed and
-verified** (`https://example.org/wol`, measured ~10 s cold wake).
+verified** (`https://wake.example.org/wol`, measured ~10 s cold wake).
 
 ```
 job dispatched
-   ├─ probe 192.168.86.196:11434 → awake? go
+   ├─ probe your-ai-host:11434 → awake? go
    ├─ not awake:
    │     POST {WOL_API_URL}/wake?wait=90   (Bearer {WOL_API_TOKEN})
    │     poll :11434 until it answers

@@ -472,3 +472,115 @@ async def sync_item(db: Session, client: Any, item: PlaidItem,
 
     log.info("sync %s: %s", item.plaid_item_id, stats)
     return stats
+
+
+# --------------------------------------------------------------------- #
+# Refreshing a set of items: nudge the bank, then pull
+# --------------------------------------------------------------------- #
+
+
+@dataclass
+class RefreshTally:
+    synced: int = 0
+    skipped: int = 0
+    added: int = 0
+    nudged: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+async def refresh_items(
+    db: Session, client: Any, items: list[PlaidItem], s: Any,
+    *, now: datetime | None = None, skip_dead: bool = False,
+) -> RefreshTally:
+    """Ask the bank for anything new, for each item, then pull it in.
+
+    Shared by pull-to-refresh and the background schedule, deliberately.
+    The two must not drift: the throttles, the nudge-then-wait ordering
+    and the re-auth handling are all easy to get subtly different, and a
+    scheduled pull that behaves unlike the manual one is a bug nobody
+    reproduces on demand.
+
+    `skip_dead` is the one deliberate difference. The background
+    schedule passes it so a connection whose token can never work --
+    revoked, deleted, or issued in a different Plaid environment -- is
+    left alone instead of being retried every hour for the life of the
+    server. A person pressing refresh is asking explicitly, so the
+    manual path still tries.
+    """
+    from app.core.security import decrypt_token
+    from app.plaid.client import PlaidError
+
+    import asyncio
+
+    now = now or datetime.now(UTC)
+    tally = RefreshTally()
+
+    for item in items:
+        if skip_dead and item.status in ("dead", "unreadable"):
+            tally.skipped += 1
+            continue
+        fresh_enough = (
+            item.last_synced_at is not None
+            and (now - item.last_synced_at).total_seconds() < s.plaid_refresh_min_seconds
+        )
+        if fresh_enough:
+            tally.skipped += 1
+            continue
+        try:
+            try:
+                access_token = decrypt_token(item.access_token_encrypted)
+            except Exception as exc:  # noqa: BLE001
+                # Almost always TOKEN_ENCRYPTION_KEY having changed.
+                # Permanent until the original key comes back, so
+                # marking it stops an hourly stack trace that says the
+                # same thing every time.
+                item.status = "unreadable"
+                db.commit()
+                tally.errors.append(
+                    f"{item.institution_name or 'bank'}: stored key unreadable")
+                log.warning("cannot decrypt access token for item %s: %s",
+                            item.id, exc)
+                continue
+
+            # Ask Plaid to re-read the bank before asking what it holds.
+            # Without this a pull can only ever surface what Plaid
+            # already had, and Plaid polls a bank just a few times a
+            # day -- so a charge from ten minutes ago is not there, and
+            # no amount of syncing will find it.
+            last_nudge = item.last_force_refresh_at
+            if (
+                last_nudge is None
+                or (now - last_nudge).total_seconds() >= s.plaid_force_refresh_min_seconds
+            ):
+                try:
+                    await client.refresh_transactions(access_token)
+                    item.last_force_refresh_at = now
+                    tally.nudged += 1
+                    # Plaid fetches asynchronously and announces the
+                    # result by webhook. Pause briefly so a fast bank
+                    # lands in THIS sync rather than only the next one;
+                    # anything slower still arrives by webhook.
+                    await asyncio.sleep(s.plaid_force_refresh_wait_seconds)
+                except PlaidError as exc:
+                    # Rate limited or unsupported: not fatal, the plain
+                    # sync below still runs.
+                    log.info("transactions/refresh declined: %s", exc.error_code)
+
+            stats = await sync_item(db, client, item, access_token)
+            tally.synced += 1
+            tally.added += stats.added
+            tally.errors.extend(stats.errors)
+        except PlaidError as exc:
+            if exc.needs_reauth:
+                item.status = "login_required"
+                db.commit()
+            elif exc.is_dead:
+                item.status = "dead"
+                db.commit()
+            tally.errors.append(f"{item.institution_name or 'bank'}: {exc.error_code}")
+        except Exception as exc:  # noqa: BLE001
+            log.exception("refresh failed for %s", item.plaid_item_id)
+            tally.errors.append(
+                f"{item.institution_name or 'bank'}: {type(exc).__name__}")
+
+    return tally

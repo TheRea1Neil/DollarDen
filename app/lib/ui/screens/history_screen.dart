@@ -19,7 +19,17 @@ class HistoryScreen extends ConsumerStatefulWidget {
   final String? categoryId;
   final String? categoryName;
 
-  const HistoryScreen({super.key, this.categoryId, this.categoryName});
+  /// Rendered inside the Transactions tab rather than pushed on its own.
+  ///
+  /// Only difference is the app bar: the tab already has one, with the
+  /// History/Review switcher in it, and a second title bar underneath
+  /// it would be both ugly and wrong. Still pushed standalone from the
+  /// category editor, filtered to one envelope, which is why the title
+  /// has to stay for that case.
+  final bool embedded;
+
+  const HistoryScreen({super.key, this.categoryId, this.categoryName,
+      this.embedded = false});
 
   @override
   ConsumerState<HistoryScreen> createState() => _HistoryScreenState();
@@ -99,11 +109,13 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.categoryName == null
-            ? 'History'
-            : '${widget.categoryName} history'),
-      ),
+      appBar: widget.embedded
+          ? null
+          : AppBar(
+              title: Text(widget.categoryName == null
+                  ? 'History'
+                  : '${widget.categoryName} history'),
+            ),
       body: Column(
         children: [
           Padding(

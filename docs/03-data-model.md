@@ -22,7 +22,7 @@ users (
   email           citext unique not null,
   password_hash   text not null,          -- argon2id
   display_name    text,
-  timezone        text not null default 'America/Denver',
+  timezone        text not null default 'UTC',
   created_at      timestamptz not null default now()
 )
 

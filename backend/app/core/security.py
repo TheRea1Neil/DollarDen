@@ -79,8 +79,18 @@ def decode_access_token(token: str) -> dict[str, Any]:
 # password: a stolen DB dump alone must not yield usable Plaid tokens.
 # Losing this key means re-linking every bank, which burns connection credits.
 # --------------------------------------------------------------------------- #
-def _fernet() -> Fernet:
-    key = get_settings().token_encryption_key
+def _fernet(key: str | None = None) -> Fernet:
+    """The cipher, optionally with a key the caller already has.
+
+    The key argument exists for one caller: loading the stored
+    settings. That runs *inside* `get_settings()`, so looking the key
+    up through `get_settings()` would be a call to the function from
+    within itself -- which `lru_cache` handles by caching the INNER
+    result and discarding the outer one, quietly serving a settings
+    object with none of the stored values in it. Passing the key in
+    removes the cycle instead of guarding it.
+    """
+    key = key if key is not None else get_settings().token_encryption_key
     if not key:
         raise RuntimeError("TOKEN_ENCRYPTION_KEY is not set; refusing to handle Plaid tokens")
     return Fernet(key.encode())
@@ -103,9 +113,9 @@ def encrypt_token(plaintext: str) -> bytes:
     return _fernet().encrypt(plaintext.encode())
 
 
-def decrypt_token(blob: bytes) -> str:
+def decrypt_token(blob: bytes, key: str | None = None) -> str:
     try:
-        return _fernet().decrypt(blob).decode()
+        return _fernet(key).decrypt(blob).decode()
     except InvalidToken as exc:
         raise RuntimeError(
             "Could not decrypt a Plaid access_token. The TOKEN_ENCRYPTION_KEY has "

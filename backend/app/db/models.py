@@ -58,12 +58,45 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str | None] = mapped_column(String(120))
-    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="America/Denver")
+    timezone: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="UTC")
     # NULL means follow the server default. "none" disables AI entirely,
     # which is a supported configuration rather than a degraded one.
+    # "owner" configures the instance and creates accounts; "member"
+    # uses it. Nobody is promoted automatically -- see app/ownership.py
+    # and migration 0014 for why guessing is worse than asking.
+    role: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="member", index=True)
+    # "sandbox" or "production". Fixed at creation and never changed:
+    # a Plaid access token issued in one environment is meaningless in
+    # the other, so flipping this would strand every bank the account
+    # has already linked. See migration 0016.
+    plaid_env: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="sandbox")
     ai_provider: Mapped[str | None] = mapped_column(String(16))
     ai_base_url: Mapped[str | None] = mapped_column(String(300))
     created_at: Mapped[datetime] = _now()
+
+
+class InstanceSetting(Base):
+    """One owner-editable setting, overriding the environment.
+
+    A key/value table rather than typed columns because the set of
+    settings changes often and a migration per knob is friction that
+    ends with knobs not being added. Validation happens on the way out,
+    by constructing the real Settings object -- see core/config.py.
+    """
+
+    __tablename__ = "instance_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text)
+    # Secrets only. Same key as Plaid access tokens: the database
+    # already holds those, so storing a client secret in plain text
+    # beside them would be the weakest link, not a simplification.
+    value_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary)
+    updated_at: Mapped[datetime] = _now()
+    updated_by: Mapped[str | None] = mapped_column(String(320))
 
 
 class Session(Base):
@@ -443,7 +476,12 @@ class AIJob(Base):
     user_id: Mapped[uuid.UUID] = _user_fk()
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
-    provider: Mapped[str | None] = mapped_column(String(16))
+    # Which implementation produced this result. 64, not 16: the
+    # class name goes in here, and renaming DeckProvider to
+    # ManagedOllamaProvider overflowed the old width -- failing the
+    # commit AFTER the model had answered, so it looked exactly
+    # like the AI had stopped responding. See migration 0017.
+    provider: Mapped[str | None] = mapped_column(String(64))
     request: Mapped[dict] = mapped_column(JSONB, nullable=False)
     result: Mapped[dict | None] = mapped_column(JSONB)
     error: Mapped[str | None] = mapped_column(Text)

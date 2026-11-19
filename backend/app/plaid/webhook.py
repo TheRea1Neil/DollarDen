@@ -20,8 +20,17 @@ from jwt.algorithms import ECAlgorithm
 
 log = logging.getLogger("nnf.plaid.webhook")
 
-# key_id -> JWK. Plaid rotates keys, so this is a cache, not a fixture.
-_key_cache: dict[str, dict[str, Any]] = {}
+# (environment, key_id) -> JWK. Plaid rotates keys, so this is a cache,
+# not a fixture.
+#
+# Keyed by environment as well as kid, and that is not belt and braces.
+# Sandbox and production are separate key sets fetched from separate
+# hosts; cached by kid alone, a key id appearing in both would serve
+# whichever environment asked first to whichever asked second. The
+# failure would be a signature that does not verify, on a webhook that
+# is perfectly genuine, intermittently -- and the usual symptom of a
+# rejected webhook is simply that transactions stop arriving.
+_key_cache: dict[tuple[str, str], dict[str, Any]] = {}
 
 MAX_AGE_SECONDS = 5 * 60
 
@@ -30,7 +39,8 @@ class WebhookVerificationError(Exception):
     pass
 
 
-async def verify(body: bytes, header: str | None, client: Any) -> dict[str, Any]:
+async def verify(body: bytes, header: str | None, client: Any,
+                 environment: str = "sandbox") -> dict[str, Any]:
     """Verify a Plaid webhook. Returns the decoded JWT claims.
 
     Raises WebhookVerificationError on anything suspicious. Callers must
@@ -53,7 +63,8 @@ async def verify(body: bytes, header: str | None, client: Any) -> dict[str, Any]
     if not key_id:
         raise WebhookVerificationError("JWT header has no kid")
 
-    jwk = _key_cache.get(key_id)
+    cache_key = (environment, key_id)
+    jwk = _key_cache.get(cache_key)
     if jwk is None:
         try:
             resp = await client.webhook_verification_key(key_id)
@@ -62,7 +73,7 @@ async def verify(body: bytes, header: str | None, client: Any) -> dict[str, Any]
         jwk = resp.get("key")
         if not jwk:
             raise WebhookVerificationError("Plaid returned no key for that kid")
-        _key_cache[key_id] = jwk
+        _key_cache[cache_key] = jwk
 
     try:
         public_key = ECAlgorithm.from_jwk(jwk)

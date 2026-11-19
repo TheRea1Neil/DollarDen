@@ -34,7 +34,38 @@ import time
 from datetime import UTC, datetime
 
 PIN = int(os.environ.get("DECK_POWER_PIN", "17"))
-HOST = os.environ.get("DECK_HOST", "192.168.86.196")
+def _load_env_file(path: str = "/etc/deck-power.env") -> None:
+    """Read the service's config file, for the CLI's benefit.
+
+    The systemd unit gets this through `EnvironmentFile=`; the command
+    line gets nothing, because it is the script itself rather than a
+    wrapper. Before DECK_HOST was required that difference was
+    invisible -- the CLI fell back to a hardcoded address and worked by
+    luck. Reading the same file here keeps one source of configuration
+    instead of two that drift.
+
+    Anything already in the environment wins, so a one-off override on
+    the command line still behaves as expected.
+    """
+    f = pathlib.Path(os.environ.get("DECK_POWER_ENV_FILE", path))
+    try:
+        text = f.read_text()
+    except OSError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_env_file()
+
+# No default: one address on one home network is not a sensible guess
+# anywhere else, and a wrong one here means pressing a power button
+# based on a reachability check against somebody else's machine.
+HOST = os.environ.get("DECK_HOST", "").strip()
 PORTS = (22, 11434)
 
 SHORT_PRESS = 0.5
@@ -48,6 +79,27 @@ LOG_PATH = STATE_DIR / "actions.log"
 # machine that is mid-boot would power-cycle it repeatedly, which is
 # how you corrupt a filesystem.
 COOLDOWN_SECONDS = int(os.environ.get("DECK_POWER_COOLDOWN", "180"))
+
+
+def require_host() -> str:
+    """The address of the machine being switched, or refuse to act.
+
+    Not optional, and not defaultable. Every safety check here rests on
+    knowing whether the machine is already up: `on` refuses when it is
+    reachable, precisely so a short press cannot land on a running
+    machine and trigger an ACPI shutdown. With no address that check
+    answers "not reachable" for everything, and the guard silently
+    inverts into the hazard it exists to prevent.
+    """
+    if not HOST:
+        raise SystemExit(
+            "DECK_HOST is not set. Put the address of the machine this "
+            "relay switches in /etc/deck-power.env, e.g.\n"
+            "    DECK_HOST=192.168.1.50\n"
+            "Refusing to act without it: every safety check here depends "
+            "on knowing whether that machine is already running."
+        )
+    return HOST
 
 
 def host_is_up(host: str = HOST, ports: tuple[int, ...] = PORTS,
@@ -122,6 +174,7 @@ def _refuse(reason: str, **fields: object) -> int:
 
 
 def cmd_on(args: argparse.Namespace) -> int:
+    require_host()
     up = host_is_up()
     if up and not args.force:
         return _refuse(
@@ -157,6 +210,7 @@ def cmd_on(args: argparse.Namespace) -> int:
 
 
 def cmd_force_off(args: argparse.Namespace) -> int:
+    require_host()
     remaining = cooldown_remaining()
     if remaining > 0 and not args.force:
         return _refuse(f"pressed recently; waiting {remaining:.0f}s more.")
@@ -168,6 +222,7 @@ def cmd_force_off(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    require_host()
     last = last_action_at()
     state = {
         "deck_host": HOST,

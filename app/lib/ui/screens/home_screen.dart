@@ -10,7 +10,6 @@ import '../widgets/setup_guide.dart';
 import 'add_category_screen.dart';
 import 'category_editor_screen.dart';
 import 'connections_screen.dart';
-import 'history_screen.dart';
 import 'assistant_screen.dart';
 import 'move_money_screen.dart';
 import 'paycheck_screen.dart';
@@ -92,22 +91,15 @@ class HomeScreen extends ConsumerWidget {
               MaterialPageRoute<void>(builder: (_) => const AssistantScreen()),
             ),
           ),
-          IconButton(
-            tooltip: 'History',
-            icon: const Icon(Icons.receipt_long_outlined),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const HistoryScreen()),
-            ),
-          ),
+          // History moved into the Transactions tab, next to Review --
+          // same transactions, two stages of the same life. Sign out
+          // moved to Accounts: it was sitting on the screen opened most
+          // often, one slip away from the add button, and is used about
+          // as often as the Accounts tab itself.
           IconButton(
             tooltip: 'New category',
             icon: const Icon(Icons.add),
             onPressed: () => _newCategory(context),
-          ),
-          IconButton(
-            tooltip: 'Sign out',
-            icon: const Icon(Icons.logout),
-            onPressed: () => ref.read(authStateProvider.notifier).logout(),
           ),
         ],
       ),
@@ -166,6 +158,9 @@ class HomeScreen extends ConsumerWidget {
                       MaterialPageRoute<void>(
                           builder: (_) => const ConnectionsScreen())),
                   onNewCategory: () => _newCategory(context),
+                  onDescribeBudget: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                          builder: (_) => const AssistantScreen())),
                   onAllocate: () => Navigator.of(context).push(
                       MaterialPageRoute<void>(
                           builder: (_) => const MoveMoneyScreen(

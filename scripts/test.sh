@@ -30,6 +30,7 @@ echo "==> installing from pyproject.toml only, then testing"
 docker run --rm --network host -v "$PWD/backend":/src -w /src \
   -e POSTGRES_HOST=127.0.0.1 -e POSTGRES_PORT="$PG_PORT" \
   -e POSTGRES_USER=nnf -e POSTGRES_PASSWORD=devpw -e POSTGRES_DB=nnf \
+  -e ALLOW_OPEN_REGISTRATION=true \
   python:3.11-slim-bookworm bash -c '
     set -e
     apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential >/dev/null

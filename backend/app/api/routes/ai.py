@@ -227,6 +227,17 @@ def retry_job(
     job.defer_reason = None
     job.error = None
     job.attempts = settings.ai_max_defer_attempts
+    # Asking again by hand also lifts the "this host went silent" hold.
+    #
+    # Without this the retry is worse than useless: `attempts` is set
+    # high on purpose to skip the GPU gate, which would take it straight
+    # past the hold to the give-up branch and fail it without even
+    # trying. Someone pressing retry has usually just restarted the
+    # machine, so believe them -- once. If it is still silent, the next
+    # timeout puts the hold straight back.
+    from app.ai.jobs import _clear_stall, provider_for
+
+    _clear_stall(provider_for(user, settings))
     db.commit()
     db.refresh(job)
     return _job_out(job)
@@ -302,7 +313,7 @@ async def ai_status(
             "The AI host sleeps when idle. 'available_now: false' usually "
             "means asleep, not broken — the first job wakes it, taking about "
             "ten seconds."
-            if name == "DeckProvider" and not available
+            if name == "ManagedOllamaProvider" and not available
             else None
         ),
     }

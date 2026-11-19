@@ -10,7 +10,7 @@
                  │ HTTPS (public) or WireGuard (private)
                  ▼
    ┌─────────────────────────────┐
-   │ nando — Raspberry Pi        │   192.168.86.105
+   │ server — Raspberry Pi        │   your-server
    │                             │
    │  Caddy  :443  TLS edge ─────┼──► already deployed, Let's Encrypt via DuckDNS DNS-01
    │  API    :8080 backend       │
@@ -20,12 +20,12 @@
           │              │ Wake-on-LAN magic packet
           │              ▼
           │   ┌─────────────────────────┐
-          │   │ steamdeck — gaming PC   │  192.168.86.196
+          │   │ AI host — a spare PC   │  your-ai-host
           │   │  Ollama :11434          │  asleep unless needed
           │   │  Qwen 3 on RX 9060 XT   │
           │   └─────────────────────────┘
           ▼
-    Plaid API  ◄── webhooks ──► https://example.org/plaid/webhook
+    Plaid API  ◄── webhooks ──► https://budget.example.org/plaid/webhook
 ```
 
 Everything in the Pi box already exists except the API and Postgres. Caddy, the
@@ -111,7 +111,7 @@ preserved**):
 Still running: the WireGuard stack (Caddy, wg-easy, duckdns), Jellyfin,
 Portainer, and the `wol-api` service.
 
-Backups live in `/home/neil/backups/pre-nnf-cleanup-2026-10-21/`. Nothing was
+Backups live in `/var/backups/nnf/pre-nnf-cleanup-2026-10-21/`. Nothing was
 deleted — every service can be restarted with `docker compose up -d` against
 its original compose file.
 
@@ -200,7 +200,7 @@ Three things make it nearly free, all verified:
   create — `budget.example.org` already resolves.
 * **Port forwarding:** none needed. TCP 443 is already forwarded, and Caddy
   serves unlimited hostnames on it via SNI.
-* **Certificates:** DuckDNS answers `_acme-challenge.<sub>.example.org`
+* **Certificates:** DuckDNS answers `_acme-challenge.<sub>.<yourname>.duckdns.org`
   with the account-level TXT, so DNS-01 issues a normal per-subdomain cert.
   Caveat: DuckDNS has a single TXT slot, so certificates for different
   subdomains must be issued sequentially.
@@ -209,8 +209,8 @@ Three things make it nearly free, all verified:
 |---|---|---|
 | `https://budget.example.org/plaid/webhook` | public | Plaid only; JWT-verified |
 | `https://budget.example.org/*` | public | the mobile app API (JWT-authenticated) |
-| `https://example.org/wol/*` | public | existing WoL API, token-auth |
-| `192.168.86.196:11434` | **LAN only** | Ollama. Never exposed publicly |
+| `https://wake.example.org/wol/*` | public | existing WoL API, token-auth |
+| `your-ai-host:11434` | **LAN only** | Ollama. Never exposed publicly |
 | Postgres | **container network only** | never published to the LAN |
 
 Ollama has no authentication. It must never be port-forwarded. The backend

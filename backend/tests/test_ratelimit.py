@@ -46,9 +46,9 @@ def test_spoofed_forwarded_header_is_ignored_from_untrusted_peers() -> None:
             self.client = type("C", (), {"host": peer})()
             self.headers = {"x-forwarded-for": xff} if xff else {}
 
-    trusted = {"10.42.42.43"}
+    trusted = {"10.0.0.2"}
     # From our proxy: the forwarded address is believed.
-    assert client_key(Req("10.42.42.43", "1.2.3.4"), trusted) == "1.2.3.4"
+    assert client_key(Req("10.0.0.2", "1.2.3.4"), trusted) == "1.2.3.4"
     # Direct from a stranger claiming to be someone else: ignored.
     assert client_key(Req("9.9.9.9", "1.2.3.4"), trusted) == "9.9.9.9"
 

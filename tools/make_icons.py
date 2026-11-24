@@ -4,6 +4,10 @@
     tools/.imgvenv/bin/python tools/make_icons.py      # needs Pillow
     cd app && dart run flutter_launcher_icons
 
+`--personal` reads brand/personal/logo.jpeg instead -- private art that
+is gitignored and never ships in the public build. Don't run that by
+hand; tools/personal does it and puts the public icons back afterwards.
+
 Two things here are not guesswork and should not be "simplified":
 
 1. The background is removed by flooding inward from the border, not by
@@ -24,13 +28,14 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SRC = ROOT / 'brand' / 'dollarden-personal-logo.jpeg'
+SRC = ROOT / 'brand' / 'dollarden-logo.jpeg'
+PERSONAL_SRC = ROOT / 'brand' / 'personal' / 'logo.jpeg'
 OUT = ROOT / 'app' / 'assets' / 'logo'
 SENTINEL = (255, 0, 255)
 FRACTION = 0.82
 
-def squared_artwork():
-    src = Image.open(SRC).convert('RGB')
+def squared_artwork(path):
+    src = Image.open(path).convert('RGB')
     box = src.convert('L').point(lambda p: 255 if p < 242 else 0).getbbox()
     art = src.crop(box)
     w, h = art.size
@@ -63,10 +68,14 @@ def place(source, name, canvas_px, fraction, bg):
     print(f'  {name:24s} {canvas.size[0]}px, artwork {fraction:.0%}')
 
 def main():
+    path = PERSONAL_SRC if '--personal' in sys.argv[1:] else SRC
+    if not path.exists():
+        print(f'missing source art: {path}', file=sys.stderr)
+        return 1
     OUT.mkdir(parents=True, exist_ok=True)
-    sq = squared_artwork()
+    sq = squared_artwork(path)
     cut = cutout(sq)
-    print('writing icon sources:')
+    print(f'writing icon sources from {path.relative_to(ROOT)}:')
     place(sq, 'icon.png', 1024, 0.78, (255, 255, 255, 255))   # iOS: no alpha
     place(cut, 'icon_foreground.png', 1024, FRACTION, None)
     place(cut, 'logo.png', 512, 0.96, None)                   # in-app

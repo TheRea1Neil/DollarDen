@@ -51,3 +51,17 @@ default, so it is not on `PATH` for a non-interactive shell.
   credential for `cdn.plaid.com`, once warning that `pass_good` was
   found in a breach (it is a public test password). Both are bottom
   sheets that steal focus; dismiss with `key back` / `tap OK`.
+
+## Personal builds: `tools/personal`
+
+The committed icons and in-app logo are the public DollarDen logo
+(`brand/dollarden-logo.jpeg`). For a personal build with your own logo,
+put the art at `brand/personal/logo.jpeg` (gitignored, never pushed) and
+prefix any flutter command:
+
+    tools/personal build apk --release
+    tools/personal run --release -d <device>
+
+It regenerates every icon from the personal art, runs flutter, then puts
+the public icons back, even if the build fails or you Ctrl-C it.
+Needs Pillow: `python3 -m venv tools/.imgvenv && tools/.imgvenv/bin/pip install Pillow`.

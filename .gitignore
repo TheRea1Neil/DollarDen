@@ -75,6 +75,8 @@ app/ios/Flutter/ephemeral/
 # ...except the brand source art, which tools/make_icons.py reads to
 # regenerate every launcher icon. Losing it means redrawing the logo.
 !brand/*.jpeg
+# Personal-build art (tools/personal) stays on this machine only.
+brand/personal/
 
 # ---- one deployment's operational notes ----
 # These moved to a separate private repository, where they are

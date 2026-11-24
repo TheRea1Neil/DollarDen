@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Run any flutter command as a PERSONAL build: same app, but every icon
+# and the login-screen logo come from brand/personal/logo.jpeg instead
+# of the public DollarDen logo.
+#
+#   tools/personal build apk --release
+#   tools/personal build ios --release
+#   tools/personal run --release -d <device>
+#
+# The personal art is gitignored, so the public repo never contains it.
+# The committed icons are the public ones; this script swaps the
+# personal set in, runs flutter, and copies the public set back on exit
+# (including Ctrl-C or a failed build), so the working tree ends up
+# exactly as it started and there is nothing personal to commit by
+# accident.
+#
+# Needs brand/personal/logo.jpeg and Pillow in tools/.imgvenv
+# (python3 -m venv tools/.imgvenv && tools/.imgvenv/bin/pip install Pillow).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP="$ROOT/app"
+PY="$ROOT/tools/.imgvenv/bin/python"
+
+[[ $# -gt 0 ]] || { sed -n '2,8p' "$0"; exit 1; }
+[[ -f "$ROOT/brand/personal/logo.jpeg" ]] || {
+  echo "no personal art at brand/personal/logo.jpeg" >&2; exit 1; }
+[[ -x "$PY" ]] || { echo "missing $PY -- see the header of this script" >&2; exit 1; }
+
+# Everything make_icons.py and flutter_launcher_icons write to.
+ICON_DIRS=(
+  assets/logo
+  android/app/src/main/res
+  ios/Runner/Assets.xcassets/AppIcon.appiconset
+  macos/Runner/Assets.xcassets/AppIcon.appiconset
+)
+
+BACKUP="$(mktemp -d)"
+restore() {
+  for d in "${ICON_DIRS[@]}"; do
+    rsync -a --delete "$BACKUP/$d/" "$APP/$d/"
+  done
+  rm -rf "$BACKUP"
+  echo "personal: public icons restored"
+}
+
+# Back up what is there now, not what git has, so uncommitted icon work
+# survives a personal build untouched.
+for d in "${ICON_DIRS[@]}"; do
+  mkdir -p "$BACKUP/$d"
+  rsync -a "$APP/$d/" "$BACKUP/$d/"
+done
+trap restore EXIT
+
+"$PY" "$ROOT/tools/make_icons.py" --personal
+(cd "$APP" && dart run flutter_launcher_icons >/dev/null)
+echo "personal: icons swapped in, running flutter $*"
+
+cd "$APP" && flutter "$@"

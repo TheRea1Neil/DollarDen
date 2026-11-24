@@ -511,7 +511,7 @@
   "error": "a split plan needs exactly one remainder rule, found 2"
  },
  {
-  "name": "remainder not last",
+  "name": "remainder first sweeps everything and starves the rest",
   "gross": 200000,
   "balances": {},
   "rules": [
@@ -528,7 +528,120 @@
     }
    }
   ],
-  "error": "the remainder rule must be last"
+  "expect": {
+   "allocations": {
+    "rest": 200000
+   },
+   "remaining": 0,
+   "unfunded": [
+    [
+     "rent",
+     35000
+    ]
+   ]
+  }
+ },
+ {
+  "name": "remainder in the middle funds above it, starves below",
+  "gross": 200000,
+  "balances": {
+   "food": 0,
+   "vac": 0
+  },
+  "rules": [
+   {
+    "category_id": "tithe",
+    "rule_type": "percent",
+    "params": {
+     "rate": "0.10",
+     "of": "gross"
+    }
+   },
+   {
+    "category_id": "rent",
+    "rule_type": "fixed",
+    "params": {
+     "amount_cents": 35000
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   },
+   {
+    "category_id": "food",
+    "rule_type": "refill_to",
+    "params": {
+     "target_cents": 30000
+    }
+   },
+   {
+    "category_id": "vac",
+    "rule_type": "fixed",
+    "params": {
+     "amount_cents": 10000
+    }
+   }
+  ],
+  "expect": {
+   "allocations": {
+    "tithe": 20000,
+    "rent": 35000,
+    "rest": 145000
+   },
+   "remaining": 0,
+   "unfunded": [
+    [
+     "food",
+     30000
+    ],
+    [
+     "vac",
+     10000
+    ]
+   ]
+  }
+ },
+ {
+  "name": "remainder early but money already gone leaves it nothing",
+  "gross": 35000,
+  "balances": {
+   "food": 0
+  },
+  "rules": [
+   {
+    "category_id": "rent",
+    "rule_type": "fixed",
+    "params": {
+     "amount_cents": 35000
+    }
+   },
+   {
+    "category_id": "rest",
+    "rule_type": "remainder",
+    "params": {}
+   },
+   {
+    "category_id": "food",
+    "rule_type": "refill_to",
+    "params": {
+     "target_cents": 30000
+    }
+   }
+  ],
+  "expect": {
+   "allocations": {
+    "rent": 35000
+   },
+   "remaining": 0,
+   "unfunded": [
+    [
+     "food",
+     30000
+    ]
+   ]
+  }
  },
  {
   "name": "conditional with no threshold",

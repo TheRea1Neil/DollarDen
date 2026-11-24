@@ -29,7 +29,7 @@ significant — tithing is computed on gross before anything else consumes it.
 | `fixed` | `amount_cents` | Rent: $350 |
 | `refill_to` | `target_cents`, `max_contribution_cents?` | Food: bring up to $300; contribute nothing if already there |
 | `conditional` | `when` (predicate), `then` (nested rule) | "if Car Insurance < $450, add $50" |
-| `remainder` | — | Everything left. Exactly one, always last |
+| `remainder` | — | Everything left at its position. Exactly one; order is free |
 
 ### Worked example
 
@@ -225,12 +225,21 @@ user is dragging. The category list shows a notice in reorder mode stating
 plainly that it changes display only.
 
 A funding reorder is a **plan revision**: it bumps `version`, deactivates
-the old plan, and is validated like any other edit. In particular a drag
-that leaves the `remainder` rule somewhere other than last is **rejected**,
-not silently repaired — if the user dragged the catch-all into the middle,
-the right response is to tell them, because any automatic fix would be a
-guess about intent. A rejected drag leaves the live plan active and
-untouched.
+the old plan, and is validated like any other edit.
+
+The `remainder` rule may be dragged **anywhere**, the top included. It
+then sweeps up whatever is left *at that point* and the rules below it
+get nothing. That is a deliberate move — one paycheck straight into
+savings, the rest of the plan paused, without editing and then
+un-editing every rule underneath — so it is allowed, and the preview
+names the categories that end up with nothing instead. Refusing it was
+a guess about intent dressed up as a correctness rule: nothing about
+the invariants needs the remainder last, because wherever it lands it
+takes `remaining`, leaving nothing unallocated.
+
+What is still **rejected** is a plan with no catch-all or more than
+one: unallocated money is a real correctness hole. A rejected drag
+leaves the live plan active and untouched.
 
 ## Category descriptions
 
@@ -297,8 +306,8 @@ asserts the port matches all of them to the cent.
 Regenerate the goldens after any change to the Python engine:
 
 ```bash
-cd dollarden
-backend/.venv/bin/python experiments/gen_split_golden.py > app/test/split_golden.json
+cd DollarDen
+python3 experiments/gen_split_golden.py > app/test/split_golden.json
 cd app && flutter test test/split_engine_test.dart
 ```
 

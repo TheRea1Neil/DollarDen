@@ -339,9 +339,10 @@ class _DraftEditor extends ConsumerWidget {
                   if (draft.ruleType != null) ...[
                     const SizedBox(height: 8),
                     Text(
-                      'It goes last in the funding order, just ahead of '
-                      'whatever sweeps up the remainder, so it cannot '
-                      'starve your bills.',
+                      'It goes last in the funding order, so it cannot '
+                      'starve your bills. You can drag it earlier later, '
+                      'and you can move the bucket that sweeps up the '
+                      'remainder too.',
                       style: theme.textTheme.bodySmall
                           ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                     ),

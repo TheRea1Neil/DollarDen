@@ -624,11 +624,37 @@ class TestReorder:
         # Rules travelled with their categories, not with their positions.
         assert out["rules"][0]["rule_type"] == "refill_to"
 
-    def test_dragging_remainder_off_the_end_is_rejected(self, client: TestClient) -> None:
+    def test_dragging_the_catch_all_to_the_top_is_allowed(
+            self, client: TestClient) -> None:
+        """It used to be a 422. Moving the catch-all up is deliberate.
+
+        The user wants it to sweep up whatever is left AT THAT POINT;
+        the rules below then get nothing, which the preview reports
+        rather than the API refusing.
+        """
         h = _auth(client)
         plan, cats = self._plan(client, h)
         r = client.post(f"/api/budget/plans/{plan['id']}/reorder",
                         json={"category_ids": [cats["left"]["id"], cats["rent"]["id"],
+                                               cats["food"]["id"]]}, headers=h)
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["version"] == plan["version"] + 1 and out["is_active"]
+        assert [x["category_id"] for x in out["rules"]] == [
+            cats["left"]["id"], cats["rent"]["id"], cats["food"]["id"]]
+        assert out["rules"][0]["rule_type"] == "remainder"
+
+    def test_a_reorder_that_drops_the_remainder_is_still_rejected(
+            self, client: TestClient) -> None:
+        """Position is free; having exactly one catch-all is not.
+
+        Unallocated money stays a correctness hole, so the plan must
+        still name somewhere for it to land.
+        """
+        h = _auth(client)
+        plan, cats = self._plan(client, h)
+        r = client.post(f"/api/budget/plans/{plan['id']}/reorder",
+                        json={"category_ids": [cats["rent"]["id"],
                                                cats["food"]["id"]]}, headers=h)
         assert r.status_code == 422
         # The original plan is untouched -- a rejected drag must not
@@ -1141,10 +1167,11 @@ class TestPaycheckPreview:
         r = client.post("/api/budget/paychecks/preview", json={
             "gross_cents": 200000,
             "rules": [
+                # Two catch-alls: still impossible, whatever the order.
                 {"category_id": c["left"]["id"], "order_index": 1,
                  "rule_type": "remainder", "params": {}},
                 {"category_id": c["rent"]["id"], "order_index": 2,
-                 "rule_type": "fixed", "params": {"amount_cents": 35000}},
+                 "rule_type": "remainder", "params": {}},
             ],
         }, headers=h)
         assert r.status_code == 422
@@ -1327,10 +1354,11 @@ class TestOneOffPaycheckAdjustments:
         r = client.post("/api/budget/paychecks", json={
             "gross_cents": 200000, "apply": True,
             "rules": [
+                # Two catch-alls: still impossible, whatever the order.
                 {"category_id": c["left"]["id"], "order_index": 1,
                  "rule_type": "remainder", "params": {}},
                 {"category_id": c["rent"]["id"], "order_index": 2,
-                 "rule_type": "fixed", "params": {"amount_cents": 35000}},
+                 "rule_type": "remainder", "params": {}},
             ],
         }, headers=h)
         assert r.status_code == 422

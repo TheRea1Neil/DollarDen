@@ -89,8 +89,19 @@ def apply_split(
         raise SplitPlanError(
             f"a split plan needs exactly one remainder rule, found {len(remainder_rules)}"
         )
-    if active[-1].rule_type is not RuleType.REMAINDER:
-        raise SplitPlanError("the remainder rule must be last")
+
+    # The remainder rule may sit ANYWHERE in the order. It used to be
+    # forced last, which was a guess about intent dressed up as a
+    # correctness rule: "sweep up what is left at THIS point, and fund
+    # nothing after it" is a thing people deliberately want -- one
+    # paycheck straight into savings, the rest of the plan paused,
+    # without editing and then un-editing every rule below.
+    #
+    # Nothing about the invariants needs it last. Wherever it lands it
+    # takes `remaining`, so `remaining` is 0 afterwards and no money
+    # goes unallocated; rules below it simply want more than the 0 left
+    # and report themselves in `unfunded`, which the app already
+    # surfaces as "N categories got nothing". Loud, and not a refusal.
 
     allocations: list[Allocation] = []
     unfunded: list[tuple[str, int]] = []

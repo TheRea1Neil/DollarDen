@@ -131,13 +131,55 @@ def test_plan_without_remainder_is_rejected() -> None:
         apply_split(1000_00, rules, {})
 
 
-def test_remainder_must_be_last() -> None:
+def test_remainder_may_go_anywhere_and_sweeps_up_at_that_point() -> None:
+    """Putting the catch-all earlier is deliberate, not an error.
+
+    It used to raise "the remainder rule must be last", which was a
+    guess about intent dressed up as a correctness rule. "Sweep up what
+    is left HERE and fund nothing below" is a thing people want -- one
+    paycheck straight into savings without editing and then un-editing
+    every rule underneath.
+    """
     rules = [
         SplitRule(NEWCAR, 1, RuleType.REMAINDER),
         SplitRule(RENT, 2, RuleType.FIXED, {"amount_cents": 100_00}),
     ]
-    with pytest.raises(SplitPlanError, match="last"):
-        apply_split(1000_00, rules, {})
+    res = apply_split(1000_00, rules, {})
+
+    got = {a.category_id: a.amount_cents for a in res.allocations}
+    assert got == {NEWCAR: 1000_00}
+    assert res.unfunded == [(RENT, 100_00)], "rent reports itself, loudly"
+    # The invariant the old guard was supposedly protecting: money is
+    # never left unallocated, wherever the remainder sits.
+    assert res.remaining_cents == 0
+    assert res.total_cents == 1000_00
+
+
+def test_remainder_in_the_middle_funds_above_and_starves_below() -> None:
+    rules = [
+        SplitRule(RENT, 1, RuleType.FIXED, {"amount_cents": 100_00}),
+        SplitRule(NEWCAR, 2, RuleType.REMAINDER),
+        SplitRule(FOOD, 3, RuleType.FIXED, {"amount_cents": 200_00}),
+    ]
+    res = apply_split(1000_00, rules, {})
+
+    got = {a.category_id: a.amount_cents for a in res.allocations}
+    assert got == {RENT: 100_00, NEWCAR: 900_00}
+    assert res.unfunded == [(FOOD, 200_00)]
+    assert res.remaining_cents == 0
+
+
+def test_a_remainder_reached_with_nothing_left_takes_nothing() -> None:
+    rules = [
+        SplitRule(RENT, 1, RuleType.FIXED, {"amount_cents": 1000_00}),
+        SplitRule(NEWCAR, 2, RuleType.REMAINDER),
+        SplitRule(FOOD, 3, RuleType.FIXED, {"amount_cents": 200_00}),
+    ]
+    res = apply_split(1000_00, rules, {})
+
+    got = {a.category_id: a.amount_cents for a in res.allocations}
+    assert got == {RENT: 1000_00}, "no zero-cent allocation"
+    assert res.remaining_cents == 0
 
 
 def test_two_remainder_rules_rejected() -> None:

@@ -85,7 +85,18 @@ case("overspent category refills from negative", 200000, [FOOD, REM],
 # arithmetic, because a preview that shows an impossible plan is a lie.
 case("no remainder", 200000, [RENT], {})
 case("two remainders", 200000, [REM, ("other", "remainder", {})], {})
-case("remainder not last", 200000, [REM, RENT], {})
+
+# The remainder may sit anywhere. It sweeps up what is left AT THAT
+# POINT, so rules below it get nothing -- deliberate, not an error.
+# Both engines must agree on exactly who ends up starved.
+case("remainder first sweeps everything and starves the rest",
+     200000, [REM, RENT], {})
+case("remainder in the middle funds above it, starves below",
+     200000, [PCT, RENT, REM, FOOD, ("vac", "fixed",
+                                       {"amount_cents": 10000})],
+     {"food": 0, "vac": 0})
+case("remainder early but money already gone leaves it nothing",
+     35000, [RENT, REM, FOOD], {"food": 0})
 case("conditional with no threshold", 200000,
      [("ins", "conditional",
        {"when": {"field": "balance", "op": "<"},

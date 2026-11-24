@@ -225,9 +225,11 @@ SplitResult applySplit(
     throw SplitPlanError(
         'a split plan needs exactly one remainder rule, found $remainders');
   }
-  if (active.last.ruleType != SplitRuleType.remainder) {
-    throw const SplitPlanError('the remainder rule must be last');
-  }
+  // The remainder rule may sit ANYWHERE in the order -- see the comment
+  // in backend/app/budget/split.py, which this mirrors. Wherever it
+  // lands it takes what is left at that point, so nothing goes
+  // unallocated; rules below it report themselves in `unfunded` and the
+  // preview already warns "N categories got nothing".
 
   final allocations = <SplitAllocation>[];
   final unfunded = <(String, int)>[];

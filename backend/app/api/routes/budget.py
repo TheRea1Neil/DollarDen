@@ -400,7 +400,8 @@ def _validate_plan(rules: list[SplitRuleIn]) -> None:
     ]
     try:
         # A dry run with a nominal amount surfaces structural problems:
-        # no remainder rule, remainder not last, bad percentages.
+        # no remainder rule, more than one, bad percentages. Position is
+        # no longer one of them -- the remainder may sit anywhere.
         apply_split(1000_00, engine, {r.category_id: 0 for r in rules})
     except SplitPlanError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
@@ -1963,9 +1964,14 @@ def reorder_plan(
     """Reorder FUNDING priority by dragging categories.
 
     This changes who gets paid first out of a paycheck, so it saves a new
-    plan version exactly like any other edit, and it is validated -- a drag
-    that puts the remainder rule somewhere other than last is rejected
-    rather than silently repaired.
+    plan version exactly like any other edit, and it is validated.
+
+    The remainder rule may be dragged anywhere, including above other
+    rules: it then sweeps up what is left at THAT point and the rules
+    below it get nothing, which is a deliberate move (one paycheck
+    straight into savings) and not an error. The preview names the
+    categories that end up with nothing, so the consequence is visible
+    before anything is applied.
     """
     plan = _own(db, SplitPlan, plan_id, user)
     rows = db.scalars(

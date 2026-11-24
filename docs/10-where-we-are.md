@@ -189,8 +189,13 @@ single translation point. Do not add a second.
 ## Operating it
 
 - Deploy: rsync to the Pi, then compose build + up. Exact commands in
-  `docs/09-pi-operations.md` — read them rather than guessing, the
-  service is `dollarden-api` and compose needs `--env-file ../.env`.
+  `docs/09-pi-operations.md` — read them rather than guessing. Compose
+  needs `--env-file ../.env`, and the service is **`nnf-api`**: the
+  rename did not touch the server, because the Postgres volume is named
+  from the compose project (`nnf_nnf_pgdata`), so renaming the project
+  or the volume key starts the database on a new empty volume. Rsync
+  `backend` only — the `.env` on the Pi carries settings the local one
+  does not, and syncing it over reverts them.
 - Run migrations **after** rebuilding the image. Running before uses the
   old image, logs what looks like success, and does nothing.
 - Tests: `./scripts/test.sh`, which builds from `pyproject.toml` alone

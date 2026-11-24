@@ -146,3 +146,88 @@ class TestAutoCategorise:
                 {"transaction_id": str(txn.id)})
             assert out["outcome"] == "not_budgeted"
             assert out["applied"] is False
+
+
+@requires_db
+class TestNewChargesActuallyReachTheQueue:
+    """The queueing guard, which is a separate failure from the job.
+
+    Every test above runs `run_auto_categorise` directly, so they all
+    passed while nothing on the instance was queueing it. A rename
+    folded the provider `deck` into `managed` at the settings edge and
+    this guard still allow-listed `deck`, so it returned 0 before
+    reading a transaction -- for three weeks, suite green, every charge
+    arriving as "not looked at automatically".
+
+    So: parametrise over the provider values, and assert on the count
+    the sync reports rather than on the guard's internals.
+    """
+
+    @pytest.mark.parametrize("provider", ["managed", "custom", "openai"])
+    def test_a_configured_provider_queues_one_job_per_open_review(
+            self, provider, monkeypatch) -> None:
+        from app.core import config as cfg
+        from app.db.models import AIJob
+        from app.plaid.sync import _queue_ai_categorisation
+
+        with SessionLocal() as db:
+            u, txn, cat, rv = _seed(db)
+            db.commit()
+
+            monkeypatch.setattr(cfg.get_settings(), "ai_provider", provider,
+                                raising=False)
+            queued = _queue_ai_categorisation(db, u.id, [txn])
+            db.commit()
+
+            assert queued == 1, f"{provider} is a model; it must queue"
+            jobs = db.scalars(select(AIJob).where(
+                AIJob.user_id == u.id,
+                AIJob.kind == "auto_categorise")).all()
+            assert len(jobs) == 1
+            assert jobs[0].request["transaction_id"] == str(txn.id)
+
+    def test_no_provider_queues_nothing(self, monkeypatch) -> None:
+        """ADR 0003: with the model off, queueing would only pile up errors."""
+        from app.core import config as cfg
+        from app.plaid.sync import _queue_ai_categorisation
+
+        with SessionLocal() as db:
+            u, txn, cat, rv = _seed(db)
+            db.commit()
+
+            monkeypatch.setattr(cfg.get_settings(), "ai_provider", "none",
+                                raising=False)
+            assert _queue_ai_categorisation(db, u.id, [txn]) == 0
+
+    def test_a_users_own_host_queues_even_with_the_instance_off(
+            self, monkeypatch) -> None:
+        from app.core import config as cfg
+        from app.plaid.sync import _queue_ai_categorisation
+
+        with SessionLocal() as db:
+            u, txn, cat, rv = _seed(db)
+            u.ai_base_url = "http://my-own-box:11434"
+            db.commit()
+
+            monkeypatch.setattr(cfg.get_settings(), "ai_provider", "none",
+                                raising=False)
+            assert _queue_ai_categorisation(db, u.id, [txn]) == 1
+
+    def test_every_provider_the_config_allows_is_covered_here(self) -> None:
+        """Fails when a provider is added, which is the point.
+
+        The regression was a value the guard had never heard of. A new
+        one must either be listed above or deliberately excluded.
+        """
+        import typing
+
+        from app.core.config import Settings
+
+        allowed = set(typing.get_args(
+            Settings.model_fields["ai_provider"].annotation))
+        covered = {"managed", "custom", "openai", "none"}
+        # `deck` is the pre-rename spelling; the edge folds it, so it can
+        # never reach this guard and needs no case of its own.
+        assert allowed - {"deck"} == covered, (
+            f"provider(s) {allowed - {'deck'} - covered} added with no "
+            "queueing test -- add a case above")

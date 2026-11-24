@@ -271,7 +271,14 @@ def _queue_ai_categorisation(db: Session, user_id: uuid.UUID,
 
     settings = get_settings()
     user = db.get(User, user_id)
-    configured = (user and user.ai_base_url) or settings.ai_provider in {"deck", "custom"}
+    # Ask what is NOT configured, never what is. An allow-list here listed
+    # "deck", which `_normalise_provider` had already folded to "managed" --
+    # so this returned 0 before reading a single transaction, every sync,
+    # for three weeks, with the whole suite green. "none" is the only value
+    # that means no model, and a provider added later cannot be forgotten.
+    configured = bool(
+        (user and user.ai_base_url) or settings.ai_provider != "none"
+    )
     if not configured:
         return 0
 

@@ -17,8 +17,8 @@
 # is ever run with replicas, that needs an advisory lock first.
 set -e
 
-if [ "${NNF_SKIP_MIGRATIONS:-0}" = "1" ]; then
-    echo "entrypoint: NNF_SKIP_MIGRATIONS=1, leaving the schema alone"
+if [ "${DOLLARDEN_SKIP_MIGRATIONS:-0}" = "1" ]; then
+    echo "entrypoint: DOLLARDEN_SKIP_MIGRATIONS=1, leaving the schema alone"
 else
     echo "entrypoint: applying database migrations"
     alembic upgrade head

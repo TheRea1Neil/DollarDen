@@ -24,7 +24,7 @@ from app.core.config import Settings, get_settings
 from app.db.models import AIJob, User
 from app.db.session import SessionLocal
 
-log = logging.getLogger("nnf.ai.jobs")
+log = logging.getLogger("dollarden.ai.jobs")
 
 # Only kinds with a `run_<kind>` handler in app.ai.tasks belong here.
 # "categorise" and "receipt_parse" lived here with no handler: enqueuing

@@ -27,7 +27,7 @@ from app.core.security import hash_password
 from app.db.models import AIJob, PlaidItem, User
 from app.db.session import get_db
 
-log = logging.getLogger("nnf.admin")
+log = logging.getLogger("dollarden.admin")
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 

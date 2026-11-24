@@ -15,7 +15,7 @@ import httpx
 
 from app.core.config import Settings
 
-log = logging.getLogger("nnf.plaid")
+log = logging.getLogger("dollarden.plaid")
 
 
 class PlaidError(RuntimeError):
@@ -133,7 +133,7 @@ class PlaidClient:
         right rather than sending both and hoping.
         """
         body: dict[str, Any] = {
-            "client_name": "no-nonsense-finance",
+            "client_name": "dollarden",
             "language": "en",
             "country_codes": [c.strip() for c in self.s.plaid_country_codes.split(",")],
             "user": {"client_user_id": user_id},

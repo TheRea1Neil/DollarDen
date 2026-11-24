@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     )
 
     # ---- app ----
-    app_name: str = "no-nonsense-finance"
+    app_name: str = "dollarden"
     debug: bool = False
 
     # ---- plaid ----
@@ -68,10 +68,10 @@ class Settings(BaseSettings):
     plaid_sync_interval_minutes: int = 60
 
     # ---- database ----
-    postgres_host: str = "nnf-postgres"
+    postgres_host: str = "db"
     postgres_port: int = 5432
-    postgres_db: str = "nnf"
-    postgres_user: str = "nnf"
+    postgres_db: str = "dollarden"
+    postgres_user: str = "dollarden"
     postgres_password: str = ""
 
     # Reverse proxies whose X-Forwarded-For we trust. Caddy's IP on the wg
@@ -273,7 +273,7 @@ class Settings(BaseSettings):
         return self
 
 
-log = logging.getLogger("nnf.config")
+log = logging.getLogger("dollarden.config")
 
 
 

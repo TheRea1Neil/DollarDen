@@ -15,17 +15,17 @@ TOKEN="${1:-}"
 [ -n "$TOKEN" ] || { echo "usage: install.sh <shared-token>" >&2; exit 2; }
 
 mkdir -p ~/.local/bin ~/.config/systemd/user
-install -m 0755 /tmp/nnf-gpu-probe.py ~/.local/bin/nnf-gpu-probe.py
-printf '%s' "$TOKEN" > ~/.config/nnf-gpu-probe.token
-chmod 0600 ~/.config/nnf-gpu-probe.token
+install -m 0755 /tmp/dollarden-gpu-probe.py ~/.local/bin/dollarden-gpu-probe.py
+printf '%s' "$TOKEN" > ~/.config/dollarden-gpu-probe.token
+chmod 0600 ~/.config/dollarden-gpu-probe.token
 
-cat > ~/.config/systemd/user/nnf-gpu-probe.service <<UNIT
+cat > ~/.config/systemd/user/dollarden-gpu-probe.service <<UNIT
 [Unit]
-Description=no-nonsense-finance GPU headroom probe
+Description=dollarden GPU headroom probe
 After=network-online.target
 
 [Service]
-ExecStart=/usr/bin/python3 %h/.local/bin/nnf-gpu-probe.py
+ExecStart=/usr/bin/python3 %h/.local/bin/dollarden-gpu-probe.py
 Restart=always
 RestartSec=5
 
@@ -34,6 +34,6 @@ WantedBy=default.target
 UNIT
 
 systemctl --user daemon-reload
-systemctl --user enable --now nnf-gpu-probe
+systemctl --user enable --now dollarden-gpu-probe
 sleep 1
-systemctl --user is-active nnf-gpu-probe
+systemctl --user is-active dollarden-gpu-probe

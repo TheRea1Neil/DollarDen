@@ -2,7 +2,7 @@
 #
 # This is what somebody installing this runs. `docker compose up -d`
 # in a directory with an .env next to it, and the API answers on
-# ${NNF_PORT}. No reverse proxy required, no pre-existing Docker
+# ${DOLLARDEN_PORT}. No reverse proxy required, no pre-existing Docker
 # network, no assumptions about the host.
 #
 # That last part is the whole point of a separate file. The original
@@ -18,24 +18,24 @@
 # your own network, or put Caddy, nginx or a tunnel in front. See
 # docs/17.
 #
-#   docker compose -f docker-compose.selfhost.yml -p nnf up -d
-#   docker compose -f docker-compose.selfhost.yml -p nnf exec api \
+#   docker compose -f docker-compose.selfhost.yml -p dollarden up -d
+#   docker compose -f docker-compose.selfhost.yml -p dollarden exec api \
 #       alembic upgrade head
 
-name: ${NNF_PROJECT:-nnf}
+name: ${DOLLARDEN_PROJECT:-dollarden}
 
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-nnf}
+      POSTGRES_USER: ${POSTGRES_USER:-dollarden}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-nnf}
+      POSTGRES_DB: ${POSTGRES_DB:-dollarden}
     volumes:
       - db:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nnf} -d ${POSTGRES_DB:-nnf}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dollarden} -d ${POSTGRES_DB:-dollarden}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -60,7 +60,7 @@ services:
     volumes:
       - receipts:/data/receipts
     ports:
-      - "${NNF_PORT:-21821}:8081"
+      - "${DOLLARDEN_PORT:-21821}:8081"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8081/api/health')\""]
       interval: 30s

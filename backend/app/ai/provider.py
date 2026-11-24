@@ -18,7 +18,7 @@ import httpx
 
 from app.core.config import Settings
 
-log = logging.getLogger("nnf.ai")
+log = logging.getLogger("dollarden.ai")
 
 
 class AIUnavailable(RuntimeError):

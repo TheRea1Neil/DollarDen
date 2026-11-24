@@ -297,7 +297,7 @@ asserts the port matches all of them to the cent.
 Regenerate the goldens after any change to the Python engine:
 
 ```bash
-cd no-nonsense-finance
+cd dollarden
 backend/.venv/bin/python experiments/gen_split_golden.py > app/test/split_golden.json
 cd app && flutter test test/split_engine_test.dart
 ```

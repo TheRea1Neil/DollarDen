@@ -20,9 +20,9 @@ and already speaks HTTP-with-a-bearer-token to both Ollama and the WoL
 API. One more of those needs no key material mounted into the image.
 
 Install: deploy/deck/install.sh
-Remove:  systemctl --user disable --now nnf-gpu-probe
-         rm ~/.config/systemd/user/nnf-gpu-probe.service \
-            ~/.local/bin/nnf-gpu-probe.py ~/.config/nnf-gpu-probe.token
+Remove:  systemctl --user disable --now dollarden-gpu-probe
+         rm ~/.config/systemd/user/dollarden-gpu-probe.service \
+            ~/.local/bin/dollarden-gpu-probe.py ~/.config/dollarden-gpu-probe.token
 """
 from __future__ import annotations
 
@@ -31,14 +31,14 @@ import os
 import pathlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-PORT = int(os.environ.get("NNF_GPU_PROBE_PORT", "11435"))
+PORT = int(os.environ.get("DOLLARDEN_GPU_PROBE_PORT", "11435"))
 # Under ~/.config, not /etc: SteamOS keeps / read-only and sudo needs a
 # password, so this installs entirely as a user service. `loginctl
 # Linger=yes` is already set on the deck, so it runs with nobody logged
 # in — which matters, because the machine is usually woken remotely.
 TOKEN_FILE = pathlib.Path(os.environ.get(
-    "NNF_GPU_PROBE_TOKEN_FILE",
-    os.path.expanduser("~/.config/nnf-gpu-probe.token")))
+    "DOLLARDEN_GPU_PROBE_TOKEN_FILE",
+    os.path.expanduser("~/.config/dollarden-gpu-probe.token")))
 DRM = pathlib.Path("/sys/class/drm")
 
 
@@ -80,7 +80,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path.rstrip("/") == "/health":
-            self._send(200, {"ok": True, "service": "nnf-gpu-probe"})
+            self._send(200, {"ok": True, "service": "dollarden-gpu-probe"})
             return
         if self.path.rstrip("/") != "/gpu":
             self._send(404, {"error": "not found"})

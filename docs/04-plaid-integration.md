@@ -70,7 +70,7 @@ development against `ins_127989`.
 
 To support OAuth in production:
 
-- [x] register the Android package name `org.nonsensefinance.nnf`
+- [x] register the Android package name `org.dollarden.app`
       (Build → API → Allowed Android package names). A redirect URI is
       still needed for iOS only
 - [ ] iOS Universal Link / Android App Link — an
@@ -302,7 +302,7 @@ Do not start until every box is ticked.
 - [ ] Update-mode re-auth tested via `/sandbox/item/reset_login`
 - [ ] Tokens encrypted at rest; `TOKEN_ENCRYPTION_KEY` backed up off-box
 - [x] `pg_dump` backup runs nightly **and a restore has been performed** —
-      `deploy/backup.sh` + `nnf-backup.timer`; it restores into a scratch
+      `deploy/backup.sh` + `dollarden-backup.timer`; it restores into a scratch
       database and compares row counts on every run (docs/09)
 - [ ] Token export script written and its output stored safely
 - [ ] Production secret obtained and set; `PLAID_ENV=production`,

@@ -6,8 +6,8 @@ server that was already running before roles existed, where there is
 no safe way to work out automatically which of the accounts belongs to
 the person who built it.
 
-    docker compose exec nnf-api python -m app.ownership you@example.com
-    docker compose exec nnf-api python -m app.ownership --list
+    docker compose exec api python -m app.ownership you@example.com
+    docker compose exec api python -m app.ownership --list
 
 Deliberately a command rather than an endpoint. Granting ownership is
 the one action that cannot be authorised by someone who is already an

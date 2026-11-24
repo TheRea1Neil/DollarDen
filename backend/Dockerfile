@@ -20,12 +20,12 @@ COPY migrations ./migrations
 COPY alembic.ini ./
 
 # Copied with its mode already set, and BEFORE dropping privileges:
-# a `RUN chmod` here would run as nnf, which cannot write to
+# a `RUN chmod` here would run as dollarden, which cannot write to
 # /usr/local/bin, and the build fails.
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
 
-RUN useradd -m -u 1000 nnf && mkdir -p /data/receipts && chown -R nnf /data /app
-USER nnf
+RUN useradd -m -u 1000 dollarden && mkdir -p /data/receipts && chown -R dollarden /data /app
+USER dollarden
 
 EXPOSE 8081
 

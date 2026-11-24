@@ -21,7 +21,7 @@ from app.budget.split import apply_split
 from app.budget.treatment import Treatment
 from app.db.models import Allocation, Category, Paycheck, SplitPlan, SplitRule, Transaction
 
-log = logging.getLogger("nnf.budget.paycheck")
+log = logging.getLogger("dollarden.budget.paycheck")
 
 # A deposit smaller than this is not worth proposing as a paycheck.
 MIN_PAYCHECK_CENTS = 100_00

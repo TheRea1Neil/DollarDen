@@ -40,7 +40,7 @@ import httpx
 
 from app.core.config import Settings
 
-log = logging.getLogger("nnf.ai.gpu")
+log = logging.getLogger("dollarden.ai.gpu")
 
 
 @dataclass(frozen=True)

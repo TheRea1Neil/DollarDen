@@ -38,11 +38,11 @@ budget.example.org {
 
     handle /plaid/webhook* {
         rewrite * /api{uri}
-        reverse_proxy nnf-api:8081 { header_up X-Forwarded-Proto https }
+        reverse_proxy dollarden-api:8081 { header_up X-Forwarded-Proto https }
     }
 
     handle /api/* {
-        reverse_proxy nnf-api:8081 { header_up X-Forwarded-Proto https }
+        reverse_proxy dollarden-api:8081 { header_up X-Forwarded-Proto https }
     }
 
     handle { respond "Not Found" 404 }

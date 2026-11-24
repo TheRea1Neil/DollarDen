@@ -1,4 +1,4 @@
-# no-nonsense-finance
+# dollarden
 
 An envelope budget you run yourself. Your bank data stays on your
 hardware, in your house, in a database you own.
@@ -42,7 +42,7 @@ a review queue for you instead of being filed automatically.
 ## Install
 
 ```bash
-git clone <this repo> && cd no-nonsense-finance/deploy
+git clone <this repo> && cd dollarden/deploy
 cp ../.env.example .env
 ```
 

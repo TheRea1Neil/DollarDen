@@ -48,14 +48,14 @@ budget.example.org {
 		# transactions simply never arrive in real time. Caddy's access
 		# log was the only place it showed, as a run of 404s.
 		rewrite * /api/plaid/webhook
-		reverse_proxy nnf-api:8081 {
+		reverse_proxy dollarden-api:8081 {
 			header_up X-Forwarded-Proto https
 		}
 	}
 
 	# The app API, under an explicit prefix.
 	handle /api/* {
-		reverse_proxy nnf-api:8081 {
+		reverse_proxy dollarden-api:8081 {
 			header_up X-Forwarded-Proto https
 		}
 	}

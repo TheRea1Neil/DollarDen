@@ -62,11 +62,11 @@ app/plaid/client.py
 app/plaid/scheduled.py
 app/plaid/sync.py
 app/plaid/webhook.py
-nnf_backend.egg-info/PKG-INFO
-nnf_backend.egg-info/SOURCES.txt
-nnf_backend.egg-info/dependency_links.txt
-nnf_backend.egg-info/requires.txt
-nnf_backend.egg-info/top_level.txt
+dollarden_backend.egg-info/PKG-INFO
+dollarden_backend.egg-info/SOURCES.txt
+dollarden_backend.egg-info/dependency_links.txt
+dollarden_backend.egg-info/requires.txt
+dollarden_backend.egg-info/top_level.txt
 tests/test_account_environments.py
 tests/test_admin_api.py
 tests/test_admin_portal.py

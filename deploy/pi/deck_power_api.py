@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Expose the power relay to the nnf container, over HTTP.
+"""Expose the power relay to the dollarden container, over HTTP.
 
 The API runs in Docker and has no access to the Pi's GPIO. Rather than
 mounting /dev/gpiochip0 into the container -- which hands a web service

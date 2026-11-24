@@ -18,7 +18,7 @@ from typing import Any
 import jwt
 from jwt.algorithms import ECAlgorithm
 
-log = logging.getLogger("nnf.plaid.webhook")
+log = logging.getLogger("dollarden.plaid.webhook")
 
 # (environment, key_id) -> JWK. Plaid rotates keys, so this is a cache,
 # not a fixture.

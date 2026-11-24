@@ -1,4 +1,4 @@
-package org.nonsensefinance.nnf
+package org.dollarden.app
 
 import io.flutter.embedding.android.FlutterActivity
 

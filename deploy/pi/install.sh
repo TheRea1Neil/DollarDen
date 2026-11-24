@@ -5,7 +5,7 @@
 #
 # Leaves behind:
 #   /usr/local/bin/deck-power        the CLI, for a person at a terminal
-#   deck-power-api.service           the HTTP shim the nnf container uses
+#   deck-power-api.service           the HTTP shim the dollarden container uses
 #   /var/lib/deck-power/actions.log  every press, refusal and reason
 set -euo pipefail
 
@@ -34,7 +34,7 @@ fi
 
 cat > /etc/systemd/system/deck-power-api.service <<UNIT
 [Unit]
-Description=Power relay shim for the deck (nnf)
+Description=Power relay shim for the deck (dollarden)
 After=network.target
 
 [Service]
@@ -56,5 +56,5 @@ systemctl enable --now deck-power-api.service
 systemctl --no-pager -l status deck-power-api.service | head -5
 
 echo
-echo "token for the API (put in ~/nnf/.env as DECK_POWER_TOKEN):"
+echo "token for the API (put in ~/dollarden/.env as DECK_POWER_TOKEN):"
 grep DECK_POWER_TOKEN "$TOKEN_FILE"

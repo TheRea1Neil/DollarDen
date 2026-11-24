@@ -12,7 +12,7 @@ live database. Regenerate with `scripts/dump-schema.sh`.
 
 | Where | What | Always on? |
 |---|---|---|
-| **Phone** (Pixel 9 Pro, Galaxy S21) | Flutter app, `org.nonsensefinance.nnf` | with you |
+| **Phone** (Pixel 9 Pro, Galaxy S21) | Flutter app, `org.dollarden.app` | with you |
 | **the server** — Raspberry Pi, Europe/London | FastAPI + Postgres in Docker, behind Caddy | yes |
 | **The AI host** — a spare PC, asleep by default | Ollama (`gemma4:12b`) + a GPU probe | **no — sleeps** |
 | **Plaid** | bank connections, OAuth, transaction feed | external |
@@ -37,12 +37,12 @@ graph TB
 
     subgraph PI["🥧 server — Raspberry Pi (always on)"]
         CADDY["wg-caddy :443<br/>TLS, routes by Host"]
-        subgraph NNF["docker compose project 'nnf'"]
-            API["nnf-api :8081<br/>FastAPI + AI job worker"]
-            PG[("nnf-postgres :5433<br/>18 tables")]
+        subgraph DOLLARDEN["docker compose project 'dollarden'"]
+            API["dollarden-api :8081<br/>FastAPI + AI job worker"]
+            PG[("dollarden-db :5433<br/>18 tables")]
         end
-        VOL[("volumes<br/>nnf_pgdata · nnf_receipts")]
-        BK["nnf-backup.timer<br/>02:30 nightly"]
+        VOL[("volumes<br/>dollarden_pgdata · dollarden_receipts")]
+        BK["dollarden-backup.timer<br/>02:30 nightly"]
         DUMPS[("deploy/backups/<br/>*.dump, 14 days")]
     end
 
@@ -78,16 +78,16 @@ graph TB
 
 ## On the Pi
 
-Two containers in the compose project `nnf`, plus one shared container
+Two containers in the compose project `dollarden`, plus one shared container
 that predates this project.
 
 | Container | Image | Exposed |
 |---|---|---|
-| `nnf-api` | built from `backend/Dockerfile` | `8081` — **not published to the host**, reachable only on the Docker network |
-| `nnf-postgres` | `postgres:16-alpine` | `127.0.0.1:5433` — localhost only, so the VPN reaches it but the LAN does not |
+| `dollarden-api` | built from `backend/Dockerfile` | `8081` — **not published to the host**, reachable only on the Docker network |
+| `dollarden-db` | `postgres:16-alpine` | `127.0.0.1:5433` — localhost only, so the VPN reaches it but the LAN does not |
 | `wg-caddy` | shared with the WireGuard stack | `443` — the only port open to the world |
 
-`nnf-api` joins two Docker networks: `nnf` (to reach Postgres) and the
+`dollarden-api` joins two Docker networks: `dollarden` (to reach Postgres) and the
 external `wg` network (so Caddy can reach it). Caddy routes by `Host`
 header, which is why this project got its own subdomain rather than a
 path on the apex — `wg-easy` already owns `/api/*` there.
@@ -99,24 +99,24 @@ Also on the Pi, unrelated to this project but sharing the box:
 
 | What | Where | Note |
 |---|---|---|
-| Database | docker volume `nnf_nnf_pgdata` | the only copy of your Plaid `access_token`s |
-| Receipt images | docker volume `nnf_nnf_receipts` → `/data/receipts` | **provisioned but empty** — receipts are processed in memory today |
-| Backups | bind mount `~/nnf/deploy/backups` → `/backups` | 5 dumps, 16 MB, 14-day retention |
-| Secrets | `~/nnf/.env`, mode 600 | Plaid production secret, `TOKEN_ENCRYPTION_KEY`, WoL token |
+| Database | docker volume `dollarden_pgdata` | the only copy of your Plaid `access_token`s |
+| Receipt images | docker volume `dollarden_receipts` → `/data/receipts` | **provisioned but empty** — receipts are processed in memory today |
+| Backups | bind mount `~/dollarden/deploy/backups` → `/backups` | 5 dumps, 16 MB, 14-day retention |
+| Secrets | `~/dollarden/.env`, mode 600 | Plaid production secret, `TOKEN_ENCRYPTION_KEY`, WoL token |
 | Caddy TLS | volumes `wireguard_caddy_{data,config}` | certificates |
 
 ### Scheduled work on the Pi
 
 | Unit | When | Does |
 |---|---|---|
-| `nnf-backup.timer` | 02:30 Europe/London, `Persistent=true` | `deploy/backup.sh` — dumps, **restores into a scratch database and compares row counts**, prunes past 14 days |
+| `dollarden-backup.timer` | 02:30 Europe/London, `Persistent=true` | `deploy/backup.sh` — dumps, **restores into a scratch database and compares row counts**, prunes past 14 days |
 
 There is **no cron** for this project — `crontab -l` is empty for both
 `neil` and root. The nightly backup is the only scheduled job.
 
 ### Scripts on the Pi outside the containers
 
-Two loose files in `~/nnf/` that are **not** in the repo and **not**
+Two loose files in `~/dollarden/` that are **not** in the repo and **not**
 scheduled — one-offs kept after use:
 
 - `gemma4_pull.sh` (+ `gemma4_pull.log`) — pulled `gemma4:12b` onto the
@@ -152,7 +152,7 @@ the public Wake-on-LAN endpoint `wake.example.org/wol`.
 ```mermaid
 sequenceDiagram
     participant App as 📱 App
-    participant API as nnf-api
+    participant API as dollarden-api
     participant DB as Postgres
     participant W as job worker
     participant Deck as 🎮 deck
@@ -200,7 +200,7 @@ the APK loses nothing.
 ```mermaid
 graph LR
     W["🌐 public internet"] -->|"only :443"| C["Caddy<br/>TLS terminates"]
-    C --> A["nnf-api<br/>authenticates every request"]
+    C --> A["dollarden-api<br/>authenticates every request"]
     A --> D[("Postgres<br/>localhost-bound")]
     A -.->|"LAN only"| O["Ollama<br/>no auth, no TLS"]
 

@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nnf/core/money.dart';
-import 'package:nnf/domain/models.dart';
+import 'package:dollarden/core/money.dart';
+import 'package:dollarden/domain/models.dart';
 
 Map<String, dynamic> _cat({
   int balance = 0,

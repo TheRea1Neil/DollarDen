@@ -1,7 +1,7 @@
-name: nnf
-description: "no-nonsense-finance — self-hosted budgeting"
+name: dollarden
+description: "dollarden — self-hosted budgeting"
 publish_to: 'none'
-version: 0.2.0+2
+version: 0.3.0+1
 
 environment:
   sdk: ^3.10.0

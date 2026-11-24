@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Restore the nnf database from a dump produced by backup.sh.
+# Restore the DollarDen database from a dump produced by backup.sh.
 #
 # This is the disaster path: it REPLACES the live database. backup.sh
 # already proves restorability nightly against a scratch database, so
 # reach for this only when the real one is gone or wrong.
 #
 #   ./restore.sh                      # newest dump, after confirmation
-#   ./restore.sh backups/nnf-X.dump   # a specific one
-#   NNF_RESTORE_YES=1 ./restore.sh    # no prompt (for a known-good rerun)
+#   ./restore.sh backups/dollarden-X.dump   # a specific one
+#   DOLLARDEN_RESTORE_YES=1 ./restore.sh    # no prompt (for a known-good rerun)
 #
 # Afterwards the API needs restarting so SQLAlchemy drops stale
 # connections to a database that no longer exists underneath it.
 set -euo pipefail
 
-ENV_FILE="${NNF_ENV_FILE:-$HOME/nnf/.env}"
-OUT_DIR="${NNF_BACKUP_DIR:-$HOME/nnf/deploy/backups}"
-CONTAINER="${NNF_PG_CONTAINER:-nnf-postgres}"
-API="${NNF_API_CONTAINER:-nnf-api}"
+ENV_FILE="${DOLLARDEN_ENV_FILE:-$HOME/dollarden/.env}"
+OUT_DIR="${DOLLARDEN_BACKUP_DIR:-$HOME/dollarden/deploy/backups}"
+CONTAINER="${DOLLARDEN_PG_CONTAINER:-dollarden-db-1}"
+API="${DOLLARDEN_API_CONTAINER:-dollarden-api-1}"
 
 now() { date +%Y-%m-%dT%H:%M:%S%z; }
 # systemd runs this as root; a human runs it as neil, who is not in the
@@ -29,7 +29,7 @@ else
   dkr() { sudo docker "$@"; }
 fi
 
-log() { printf '%s nnf-restore: %s\n' "$(now)" "$*"; }
+log() { printf '%s dollarden-restore: %s\n' "$(now)" "$*"; }
 die() { log "FAILED: $*" >&2; exit 1; }
 
 DB="$(grep -E '^POSTGRES_DB=' "$ENV_FILE" | cut -d= -f2-)"
@@ -37,7 +37,7 @@ USR="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" | cut -d= -f2-)"
 
 SRC="${1:-}"
 if [[ -z "$SRC" ]]; then
-  SRC="$(ls -1t "$OUT_DIR"/nnf-*.dump 2>/dev/null | head -1 || true)"
+  SRC="$(ls -1t "$OUT_DIR"/dollarden-*.dump 2>/dev/null | head -1 || true)"
   [[ -n "$SRC" ]] || die "no dumps in $OUT_DIR"
 fi
 [[ -s "$SRC" ]] || die "$SRC is missing or empty"
@@ -53,7 +53,7 @@ grep -qE '^TOKEN_ENCRYPTION_KEY=.+' "$ENV_FILE" \
         key back first (password manager), then rerun."
 
 log "about to REPLACE database '$DB' with $BASE"
-if [[ "${NNF_RESTORE_YES:-}" != "1" ]]; then
+if [[ "${DOLLARDEN_RESTORE_YES:-}" != "1" ]]; then
   read -r -p "Type the database name to confirm: " answer
   [[ "$answer" == "$DB" ]] || die "not confirmed"
 fi

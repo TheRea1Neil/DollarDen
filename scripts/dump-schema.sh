@@ -4,12 +4,12 @@
 # Dumped rather than hand-written: a schema doc that drifts from the
 # database is worse than none, because it is believed.
 set -euo pipefail
-HOST="${NNF_PI:-nando}"
+HOST="${DOLLARDEN_HOST:-nando}"
 OUT="$(cd "$(dirname "$0")/.." && pwd)/docs/schema/schema.sql"
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 
-ssh "$HOST" 'sudo docker exec nnf-postgres pg_dump -U nnf -d nnf \
+ssh "$HOST" 'sudo docker exec dollarden-db pg_dump -U dollarden -d dollarden \
   --schema-only --no-owner --no-privileges' > "$TMP"
 [[ -s "$TMP" ]] || { echo "empty dump -- is the container running?" >&2; exit 1; }
 

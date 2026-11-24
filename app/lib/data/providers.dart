@@ -24,7 +24,7 @@ final baseUrlProvider = StateNotifierProvider<BaseUrlNotifier, String?>(
 );
 
 class BaseUrlNotifier extends StateNotifier<String?> {
-  static const _key = 'nnf.base_url';
+  static const _key = 'dollarden.base_url';
   BaseUrlNotifier() : super(null) {
     _load();
   }
@@ -36,7 +36,7 @@ class BaseUrlNotifier extends StateNotifier<String?> {
       state = (stored != null && stored.isNotEmpty)
           ? stored
           // Empty unless this build was given one with
-          // --dart-define=NNF_SERVER_URL.
+          // --dart-define=DOLLARDEN_SERVER_URL.
           : ApiClient.defaultBaseUrl;
     } catch (_) {
       state = ApiClient.defaultBaseUrl;

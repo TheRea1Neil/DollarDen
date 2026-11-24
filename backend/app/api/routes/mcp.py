@@ -30,7 +30,7 @@ from app.db.session import get_db
 from app.mcp import admin_tools, budget_tools
 from app.mcp.protocol import PARSE_ERROR, handle
 
-log = logging.getLogger("nnf.mcp")
+log = logging.getLogger("dollarden.mcp")
 
 router = APIRouter(prefix="/mcp", tags=["mcp"])
 
@@ -85,7 +85,7 @@ async def budget_mcp(request: Request, user: User = Depends(current_user),
                      db: Session = Depends(get_db)) -> Response:
     """Tools for this account's own budget."""
     return await _serve(request, budget_tools.build(db, user),
-                        "no-nonsense-finance budget")
+                        "dollarden budget")
 
 
 @router.post("/admin", include_in_schema=False)
@@ -93,4 +93,4 @@ async def admin_mcp(request: Request, user: User = Depends(owner),
                     db: Session = Depends(get_db)) -> Response:
     """Tools for running the instance. Owner only."""
     return await _serve(request, admin_tools.build(db, user),
-                        "no-nonsense-finance admin")
+                        "dollarden admin")

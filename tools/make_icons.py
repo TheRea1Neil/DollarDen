@@ -24,7 +24,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SRC = ROOT / 'brand' / 'nnf-personal-logo.jpeg'
+SRC = ROOT / 'brand' / 'dollarden-personal-logo.jpeg'
 OUT = ROOT / 'app' / 'assets' / 'logo'
 SENTINEL = (255, 0, 255)
 FRACTION = 0.82

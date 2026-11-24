@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
-log = logging.getLogger("nnf.ai.receipt_loop")
+log = logging.getLogger("dollarden.ai.receipt_loop")
 
 # Hard ceiling on tool calls. The prompt also asks the model to stop,
 # but a model that cannot converge must be stopped rather than trusted

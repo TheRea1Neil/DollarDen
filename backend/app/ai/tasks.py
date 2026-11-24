@@ -18,7 +18,7 @@ from app.ai import receipt_text
 from app.budget.reconcile import compute as compute_reconciliation
 from app.db.models import Category, User, UserGoal
 
-log = logging.getLogger("nnf.ai.tasks")
+log = logging.getLogger("dollarden.ai.tasks")
 
 VALID_KINDS = {"spending", "savings_bucket", "obligation"}
 VALID_RULE_TYPES = {"percent", "fixed", "refill_to", "conditional", "remainder"}

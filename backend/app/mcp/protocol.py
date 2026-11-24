@@ -22,7 +22,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-log = logging.getLogger("nnf.mcp")
+log = logging.getLogger("dollarden.mcp")
 
 PROTOCOL_VERSION = "2024-11-05"
 

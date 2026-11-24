@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-log = logging.getLogger("nnf.settings")
+log = logging.getLogger("dollarden.settings")
 
 # Settings the admin portal may change, by their Settings field name.
 EDITABLE: dict[str, str] = {

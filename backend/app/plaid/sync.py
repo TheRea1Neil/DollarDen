@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from app.budget.treatment import classify
 from app.db.models import Account, PlaidItem, Transaction
 
-log = logging.getLogger("nnf.plaid.sync")
+log = logging.getLogger("dollarden.plaid.sync")
 
 
 class SyncIncomplete(RuntimeError):

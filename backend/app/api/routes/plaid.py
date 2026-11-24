@@ -21,7 +21,7 @@ from app.plaid.client import PlaidClient, PlaidError
 from app.plaid.sync import refresh_items, SyncIncomplete, refresh_accounts, sync_item
 from app.plaid.webhook import WebhookVerificationError, verify
 
-log = logging.getLogger("nnf.api.plaid")
+log = logging.getLogger("dollarden.api.plaid")
 
 router = APIRouter(prefix="/plaid", tags=["plaid"])
 

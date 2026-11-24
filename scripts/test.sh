@@ -11,7 +11,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-PG_NAME=nnf-pg-test
+PG_NAME=dollarden-pg-test
 PG_PORT=${PG_PORT:-55433}
 
 cleanup() { [[ "${KEEP_PG:-0}" == "1" ]] || docker rm -f "$PG_NAME" >/dev/null 2>&1 || true; }
@@ -20,16 +20,16 @@ trap cleanup EXIT
 if ! docker inspect "$PG_NAME" >/dev/null 2>&1; then
   echo "==> starting Postgres on :$PG_PORT"
   docker run -d --name "$PG_NAME" \
-    -e POSTGRES_PASSWORD=devpw -e POSTGRES_USER=nnf -e POSTGRES_DB=nnf \
+    -e POSTGRES_PASSWORD=devpw -e POSTGRES_USER=dollarden -e POSTGRES_DB=dollarden \
     -p "$PG_PORT":5432 postgres:16-alpine >/dev/null
 fi
-until docker exec "$PG_NAME" pg_isready -U nnf -d nnf >/dev/null 2>&1; do sleep 1; done
+until docker exec "$PG_NAME" pg_isready -U dollarden -d dollarden >/dev/null 2>&1; do sleep 1; done
 echo "==> Postgres ready"
 
 echo "==> installing from pyproject.toml only, then testing"
 docker run --rm --network host -v "$PWD/backend":/src -w /src \
   -e POSTGRES_HOST=127.0.0.1 -e POSTGRES_PORT="$PG_PORT" \
-  -e POSTGRES_USER=nnf -e POSTGRES_PASSWORD=devpw -e POSTGRES_DB=nnf \
+  -e POSTGRES_USER=dollarden -e POSTGRES_PASSWORD=devpw -e POSTGRES_DB=dollarden \
   -e ALLOW_OPEN_REGISTRATION=true \
   python:3.11-slim-bookworm bash -c '
     set -e

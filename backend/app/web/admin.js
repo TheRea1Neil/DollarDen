@@ -13,7 +13,7 @@ const show = (el, on) => el.classList.toggle("hide", !on);
 // Session storage, not local: closing the tab ends the session. This
 // page configures bank credentials, and it is often opened on a
 // machine that is not the owner's own.
-const TOKEN_KEY = "nnf.admin.token";
+const TOKEN_KEY = "dollarden.admin.token";
 let token = sessionStorage.getItem(TOKEN_KEY) || "";
 
 async function api(path, opts = {}) {

@@ -10,8 +10,8 @@ end.
 ## 1. Get the files
 
 ```bash
-git clone <this repo> no-nonsense-finance
-cd no-nonsense-finance/deploy
+git clone <this repo> dollarden
+cd dollarden/deploy
 cp ../.env.example .env
 ```
 
@@ -100,7 +100,7 @@ flutter build apk --release          # Android
 To save typing the address on every device, bake in a default:
 
 ```bash
-flutter build apk --release --dart-define=NNF_SERVER_URL=https://budget.example.org
+flutter build apk --release --dart-define=DOLLARDEN_SERVER_URL=https://budget.example.org
 ```
 
 ## 7. Optional: AI
@@ -162,7 +162,7 @@ you have anything you would miss:
 
 ```bash
 docker compose -f docker-compose.selfhost.yml exec db \
-    pg_dump -U nnf nnf > backup-$(date +%F).sql
+    pg_dump -U dollarden dollarden > backup-$(date +%F).sql
 ```
 
 ## When something is wrong

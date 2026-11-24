@@ -5,9 +5,9 @@ import os
 # Must be set before app.core.config is imported.
 os.environ.setdefault("POSTGRES_HOST", "127.0.0.1")
 os.environ.setdefault("POSTGRES_PORT", "55433")
-os.environ.setdefault("POSTGRES_USER", "nnf")
+os.environ.setdefault("POSTGRES_USER", "dollarden")
 os.environ.setdefault("POSTGRES_PASSWORD", "devpw")
-os.environ.setdefault("POSTGRES_DB", "nnf")
+os.environ.setdefault("POSTGRES_DB", "dollarden")
 os.environ.setdefault("JWT_SIGNING_KEY", "test-signing-key-not-for-production")
 os.environ.setdefault(
     "TOKEN_ENCRYPTION_KEY", "7Nn3dQ0kqYQ8xq3Yw1xS0dG8r2mE4vJ1aP6tK9uB5cY="

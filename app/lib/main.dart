@@ -12,17 +12,17 @@ import 'ui/screens/login_screen.dart';
 import 'ui/screens/server_screen.dart';
 import 'ui/screens/transactions_screen.dart';
 
-void main() => runApp(const ProviderScope(child: NnfApp()));
+void main() => runApp(const ProviderScope(child: DollarDenApp()));
 
-class NnfApp extends ConsumerWidget {
-  const NnfApp({super.key});
+class DollarDenApp extends ConsumerWidget {
+  const DollarDenApp({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final baseUrl = ref.watch(baseUrlProvider);
 
     return MaterialApp(
-      title: 'no-nonsense-finance',
+      title: 'dollarden',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),

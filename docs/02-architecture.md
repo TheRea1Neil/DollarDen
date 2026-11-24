@@ -111,7 +111,7 @@ preserved**):
 Still running: the WireGuard stack (Caddy, wg-easy, duckdns), Jellyfin,
 Portainer, and the `wol-api` service.
 
-Backups live in `/var/backups/nnf/pre-nnf-cleanup-2026-10-21/`. Nothing was
+Backups live in `/var/backups/dollarden/pre-dollarden-cleanup-2026-10-21/`. Nothing was
 deleted — every service can be restarted with `docker compose up -d` against
 its original compose file.
 
@@ -220,7 +220,7 @@ WireGuard VPN.
 ## Repository layout (planned)
 
 ```
-no-nonsense-finance/
+dollarden/
 ├── docs/                  planning (this)
 ├── backend/
 │   ├── app/

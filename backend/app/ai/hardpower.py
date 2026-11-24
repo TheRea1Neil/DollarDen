@@ -32,7 +32,7 @@ import httpx
 
 from app.core.config import Settings
 
-log = logging.getLogger("nnf.ai.hardpower")
+log = logging.getLogger("dollarden.ai.hardpower")
 
 
 class PowerResult:

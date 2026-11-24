@@ -1,5 +1,5 @@
 -- =====================================================================
--- no-nonsense-finance -- full database schema
+-- dollarden -- full database schema
 --
 -- Dumped from the LIVE database on the Pi, not written by hand, so it
 -- is what actually exists rather than what was intended. Regenerate

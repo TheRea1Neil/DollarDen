@@ -65,13 +65,13 @@ class ApiException implements Exception {
 /// A build may supply a default so that someone building the app for
 /// their own household does not have to type it on every device:
 ///
-///     flutter build apk --dart-define=NNF_SERVER_URL=https://budget.example.org
+///     flutter build apk --dart-define=DOLLARDEN_SERVER_URL=https://budget.example.org
 ///
 /// Left unset it is empty, the app asks on first run, and no one
 /// person's server is baked into the source.
 class ApiClient {
   static const defaultBaseUrl =
-      String.fromEnvironment('NNF_SERVER_URL', defaultValue: '');
+      String.fromEnvironment('DOLLARDEN_SERVER_URL', defaultValue: '');
 
   final Dio _dio;
   final TokenStore _tokens;
@@ -96,7 +96,7 @@ class ApiClient {
 
   set baseUrl(String value) => _dio.options.baseUrl = '$value/api';
 
-  /// Is there an nnf backend at this URL?
+  /// Is there a DollarDen backend at this URL?
   ///
   /// Checked before a URL is saved, because the alternative is someone
   /// mistyping their address and then being told their password is

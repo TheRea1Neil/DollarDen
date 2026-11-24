@@ -45,7 +45,7 @@ from app.analytics import recurring as R
 from app.analytics.period import PeriodError, resolve
 from app.db.models import Category, User
 
-log = logging.getLogger("nnf.ai.ask")
+log = logging.getLogger("dollarden.ai.ask")
 
 # Enough for a genuinely multi-step question -- look up the budget,
 # run two queries, compare -- without letting a confused model spin.

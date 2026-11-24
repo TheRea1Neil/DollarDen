@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nnf/core/money.dart';
+import 'package:dollarden/core/money.dart';
 
 void main() {
   _flowTests();

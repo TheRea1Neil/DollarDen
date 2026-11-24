@@ -36,17 +36,17 @@ def test_android_gets_the_package_name_and_never_a_redirect_uri():
     # Both configured: the platform decides, not whichever happens to be set.
     s = _settings(
         plaid_redirect_uri="https://finance.example.org/plaid/oauth",
-        plaid_android_package_name="org.nonsensefinance.nnf",
+        plaid_android_package_name="org.dollarden.app",
     )
     body = _body(s, "android")
-    assert body == {"android_package_name": "org.nonsensefinance.nnf"}
+    assert body == {"android_package_name": "org.dollarden.app"}
     assert "redirect_uri" not in body
 
 
 def test_ios_gets_the_redirect_uri_and_never_a_package_name():
     s = _settings(
         plaid_redirect_uri="https://finance.example.org/plaid/oauth",
-        plaid_android_package_name="org.nonsensefinance.nnf",
+        plaid_android_package_name="org.dollarden.app",
     )
     body = _body(s, "ios")
     assert body == {"redirect_uri": "https://finance.example.org/plaid/oauth"}

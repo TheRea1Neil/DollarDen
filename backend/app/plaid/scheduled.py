@@ -33,7 +33,7 @@ from app.db.session import SessionLocal
 from app.plaid.client import PlaidClient
 from app.plaid.sync import refresh_items
 
-log = logging.getLogger("nnf.plaid.scheduled")
+log = logging.getLogger("dollarden.plaid.scheduled")
 
 # The floor, whatever the configuration says.
 #

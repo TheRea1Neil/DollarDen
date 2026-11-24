@@ -18,7 +18,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SHOTS="$HERE/shots"
-PKG="${NNF_ANDROID_PKG:-org.nonsensefinance.nnf}"
+PKG="${DOLLARDEN_ANDROID_PKG:-org.dollarden.app}"
 
 # The Android SDK is a homebrew cask here, not the Android Studio default,
 # so platform-tools is not on PATH for a non-interactive shell.
@@ -32,8 +32,8 @@ dump() {
   # uiautomator writes to the device then we pull it back. Printing to
   # stdout directly is unreliable across builds -- some prepend a status
   # line, some truncate -- so round-trip through a file.
-  adb shell uiautomator dump /sdcard/.nnf-ui.xml >/dev/null 2>&1 || true
-  adb shell cat /sdcard/.nnf-ui.xml 2>/dev/null
+  adb shell uiautomator dump /sdcard/.dollarden-ui.xml >/dev/null 2>&1 || true
+  adb shell cat /sdcard/.dollarden-ui.xml 2>/dev/null
 }
 
 cmd="${1:-tree}"; shift || true

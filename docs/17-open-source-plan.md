@@ -234,7 +234,7 @@ the Item stays healthy and transactions just never arrive in real time
 
 ## Getting to it, and HTTPS
 
-The API is published on **port 21821** (`NNF_PORT`), so a new install is
+The API is published on **port 21821** (`DOLLARDEN_PORT`), so a new install is
 reachable at `http://your-server:21821` with nothing in front of it.
 
 **The app does not terminate TLS, and should not.** Certificates are
@@ -348,7 +348,7 @@ not by listing them in JavaScript.
 
 ### Proven on a genuinely empty instance
 
-`nnf-test` on port 21822: its own database, volumes and project,
+`dollarden-test` on port 21822: its own database, volumes and project,
 sandbox Plaid, AI off, scheduled pull off. It exists because the one
 question that matters — *does a fresh install work?* — cannot be asked
 of a server with a hand-built database, a hand-edited `.env` and a
@@ -401,7 +401,7 @@ source of configuration rather than two that drift.
 ### Phase 0 — make it safe to publish
 
 - Rotate the test-account password; delete `docs/13-test-account.md`.
-- Move to a private `nnf-homelab` repo: `deploy/pi/`, `deploy/deck/`,
+- Move to a private `dollarden-homelab` repo: `deploy/pi/`, `deploy/deck/`,
   `docs/09-pi-operations.md`, `docs/16-deck-power.md`, the Caddyfile
   fragment. Referenced from the public repo as a worked example.
 - Add `LICENSE` (MIT).
@@ -415,7 +415,7 @@ source of configuration rather than two that drift.
 
 - ~~**Server picker in the app.**~~ **Done, 2026-11-17.** Choose the
   backend, then log in. `ApiClient.defaultBaseUrl` no longer names
-  anyone's server: it reads `NNF_SERVER_URL` from the build and is
+  anyone's server: it reads `DOLLARDEN_SERVER_URL` from the build and is
   empty unless given, so a household can prefill their own address with
   `--dart-define` without it being in the source. `baseUrlProvider` is
   now tri-state (null = still reading the preference, '' = none chosen,

@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Allocation, Category, Transaction
 
-log = logging.getLogger("nnf.budget.ledger")
+log = logging.getLogger("dollarden.budget.ledger")
 
 
 class LedgerError(ValueError):

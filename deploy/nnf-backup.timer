@@ -1,5 +1,5 @@
 [Unit]
-Description=Nightly nnf database backup
+Description=Nightly dollarden database backup
 
 [Timer]
 # 02:30 Europe/London. The AI quiet window is 01:00-08:00 Denver time,

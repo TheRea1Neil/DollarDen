@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nnf/core/theme.dart';
+import 'package:dollarden/core/theme.dart';
 
 /// The bar must change gradually. A threshold switch is what it replaced:
 /// green until some invisible line, then red, which tells you nothing

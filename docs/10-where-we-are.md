@@ -8,7 +8,7 @@ and the things that would be expensive to rediscover. Written
 
 | | |
 |---|---|
-| Phone app | Flutter, iOS + Android. Installed on Neil's iPhone 11 as `org.nonsensefinance.nnf` |
+| Phone app | Flutter, iOS + Android. Installed on Neil's iPhone 11 as `org.dollarden.app` |
 | Backend | FastAPI + Postgres, in Docker on the Pi (the server) |
 | Public API | `https://budget.example.org` — real cert, works on cellular, no VPN needed |
 | AI | Ollama on the gaming PC (`deck`), woken on demand over Wake-on-LAN |
@@ -190,7 +190,7 @@ single translation point. Do not add a second.
 
 - Deploy: rsync to the Pi, then compose build + up. Exact commands in
   `docs/09-pi-operations.md` — read them rather than guessing, the
-  service is `nnf-api` and compose needs `--env-file ../.env`.
+  service is `dollarden-api` and compose needs `--env-file ../.env`.
 - Run migrations **after** rebuilding the image. Running before uses the
   old image, logs what looks like success, and does nothing.
 - Tests: `./scripts/test.sh`, which builds from `pyproject.toml` alone

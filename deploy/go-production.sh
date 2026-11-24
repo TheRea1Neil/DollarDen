@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Switch nnf from the Plaid sandbox to production.
+# Switch dollarden from the Plaid sandbox to production.
 #
-# Run this ON THE PI:  ~/nnf/deploy/go-production.sh
+# Run this ON THE PI:  ~/dollarden/deploy/go-production.sh
 #
 # The production secret is typed into a hidden prompt and goes straight
 # into .env. It never appears in this transcript, in your shell history,
@@ -13,9 +13,9 @@
 # Plaid, so a typo costs nothing and leaves the box on sandbox.
 set -euo pipefail
 
-ENV_FILE="${NNF_ENV_FILE:-$HOME/nnf/.env}"
+ENV_FILE="${DOLLARDEN_ENV_FILE:-$HOME/dollarden/.env}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-API="${NNF_API_CONTAINER:-nnf-api}"
+API="${DOLLARDEN_API_CONTAINER:-dollarden-api-1}"
 
 if docker ps >/dev/null 2>&1; then dkr() { docker "$@"; }; else dkr() { sudo docker "$@"; }; fi
 
@@ -137,7 +137,7 @@ if [[ -n "$PKG" ]]; then
   LT="$(plaid_post /link/token/create "$(python3 -c '
 import json,sys
 print(json.dumps({
-  "client_name": "no-nonsense-finance", "language": "en",
+  "client_name": "dollarden", "language": "en",
   "country_codes": ["US"], "user": {"client_user_id": "preflight"},
   "products": ["transactions"], "android_package_name": sys.argv[1],
 }))' "$PKG")")"

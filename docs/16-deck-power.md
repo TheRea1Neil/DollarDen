@@ -120,7 +120,7 @@ if you are sure.
 read it (`systemctl status deck-power-api`).
 
 **The app says the switch could not be used.** Check
-`DECK_POWER_URL` and `DECK_POWER_TOKEN` in `~/nnf/.env` match
+`DECK_POWER_URL` and `DECK_POWER_TOKEN` in `~/dollarden/.env` match
 `/etc/deck-power.env`, and that the container can reach port 11436 on
 the host.
 

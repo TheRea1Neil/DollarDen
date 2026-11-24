@@ -44,7 +44,7 @@ from app.db.session import get_db
 from app.plaid.client import PlaidClient, PlaidError
 from app.plaid.sync import refresh_accounts
 
-log = logging.getLogger("nnf.api.backup")
+log = logging.getLogger("dollarden.api.backup")
 
 router = APIRouter(prefix="/backup", tags=["backup"])
 

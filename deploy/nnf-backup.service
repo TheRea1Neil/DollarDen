@@ -1,10 +1,10 @@
 [Unit]
-Description=Back up the nnf database and verify it by restoring it
+Description=Back up the DollarDen database and verify it by restoring it
 After=docker.service
 Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=$HOME/nnf/deploy/backup.sh
+ExecStart=$HOME/dollarden/deploy/backup.sh
 # The dump holds financial history; keep it readable only by its owner.
 UMask=0077

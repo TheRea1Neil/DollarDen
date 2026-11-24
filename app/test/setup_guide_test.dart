@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nnf/domain/models.dart';
-import 'package:nnf/ui/widgets/setup_guide.dart';
+import 'package:dollarden/domain/models.dart';
+import 'package:dollarden/ui/widgets/setup_guide.dart';
 
 /// The order is the point: you cannot divide money before you know how
 /// much there is, and you cannot divide it into envelopes that do not

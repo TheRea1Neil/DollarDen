@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nightly backup of the nnf database.
+# Nightly backup of the DollarDen database.
 #
 # This exists because of a Plaid rule, not general tidiness. The Trial
 # plan caps the account at 10 Items for its LIFETIME, and /item/remove
@@ -18,10 +18,10 @@
 # Install: see docs/09-pi-operations.md.
 set -euo pipefail
 
-ENV_FILE="${NNF_ENV_FILE:-$HOME/nnf/.env}"
-OUT_DIR="${NNF_BACKUP_DIR:-$HOME/nnf/deploy/backups}"
-CONTAINER="${NNF_PG_CONTAINER:-nnf-postgres}"
-KEEP_DAYS="${NNF_BACKUP_KEEP:-14}"
+ENV_FILE="${DOLLARDEN_ENV_FILE:-$HOME/dollarden/.env}"
+OUT_DIR="${DOLLARDEN_BACKUP_DIR:-$HOME/dollarden/deploy/backups}"
+CONTAINER="${DOLLARDEN_PG_CONTAINER:-dollarden-db-1}"
+KEEP_DAYS="${DOLLARDEN_BACKUP_KEEP:-14}"
 
 # Tables whose emptiness means the backup is worthless. plaid_items is
 # the irreplaceable one; the others would merely be painful.
@@ -40,7 +40,7 @@ else
   dkr() { sudo docker "$@"; }
 fi
 
-log() { printf '%s nnf-backup: %s\n' "$(now)" "$*"; }
+log() { printf '%s dollarden-backup: %s\n' "$(now)" "$*"; }
 die() { log "FAILED: $*" >&2; exit 1; }
 
 [[ -r "$ENV_FILE" ]] || die "cannot read $ENV_FILE"
@@ -52,7 +52,7 @@ dkr inspect "$CONTAINER" >/dev/null 2>&1 || die "container $CONTAINER not found"
 
 mkdir -p "$OUT_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-NAME="nnf-${STAMP}.dump"
+NAME="dollarden-${STAMP}.dump"
 
 # -Fc (custom format) rather than plain SQL: pg_restore can then be
 # selective, and it compresses. The container writes it to the bind
@@ -65,7 +65,7 @@ dkr exec "$CONTAINER" pg_dump -U "$USR" -d "$DB" -Fc -f "/backups/$NAME" \
 SIZE="$(wc -c < "$OUT_DIR/$NAME" | tr -d " ")"
 
 # ---- verify by actually restoring it ------------------------------- #
-VDB="nnf_verify_$$"
+VDB="dollarden_verify_$$"
 cleanup() {
   dkr exec "$CONTAINER" dropdb -U "$USR" --if-exists "$VDB" >/dev/null 2>&1 || true
 }
@@ -77,7 +77,7 @@ dkr exec "$CONTAINER" createdb -U "$USR" "$VDB" || die "could not create $VDB"
 # only a hard failure matters, so capture output and judge on the
 # comparison below rather than on exit status alone.
 dkr exec "$CONTAINER" pg_restore -U "$USR" -d "$VDB" --no-owner --no-privileges \
-  "/backups/$NAME" 2>/tmp/nnf-restore-warn.$$ || log "pg_restore reported warnings"
+  "/backups/$NAME" 2>/tmp/dollarden-restore-warn.$$ || log "pg_restore reported warnings"
 
 count() {  # count <database> <table>
   dkr exec "$CONTAINER" psql -U "$USR" -d "$1" -tAc \
@@ -123,7 +123,7 @@ else
 fi
 
 # ---- retention ------------------------------------------------------ #
-find "$OUT_DIR" -name 'nnf-*.dump' -type f -mtime "+$KEEP_DAYS" -print -delete \
+find "$OUT_DIR" -name 'dollarden-*.dump' -type f -mtime "+$KEEP_DAYS" -print -delete \
   | while read -r old; do log "pruned $(basename "$old")"; done
 
 log "OK $NAME ($(awk -v b="$SIZE" 'BEGIN{printf "%.1f MiB", b/1048576}')) verified by restore"

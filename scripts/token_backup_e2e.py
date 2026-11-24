@@ -76,7 +76,7 @@ def plaid(path, body):
 def psql(sql: str) -> str:
     return subprocess.run(
         ["ssh", "-o", "BatchMode=yes", "nando",
-         f"sudo docker exec nnf-postgres psql -U nnf -d nnf -At -c \"{sql}\""],
+         f"sudo docker exec dollarden-db psql -U dollarden -d dollarden -At -c \"{sql}\""],
         capture_output=True, text=True, timeout=60).stdout.strip()
 
 

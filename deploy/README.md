@@ -24,7 +24,7 @@ ships.
 | | |
 |---|---|
 | `Caddyfile.fragment` | An example reverse-proxy block, including the two traps: a prefix match on the webhook path, and a catch-all 404 |
-| `backup.sh`, `restore.sh`, `nnf-backup.service` | Nightly `pg_dump` and the restore that goes with it |
+| `backup.sh`, `restore.sh`, `dollarden-backup.service` | Nightly `pg_dump` and the restore that goes with it |
 | `go-production.sh` | Moving an instance from Plaid sandbox to real banking |
 | `pi/` | A reference implementation of the wake contract — a relay across a power switch, driven by a GPIO pin. An example, not a requirement: see `GET /api/docs/wake-contract` |
 | `deck/` | A reference GPU probe, so AI work defers while a game is running |

@@ -32,7 +32,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 IDB="$HERE/.idbvenv/bin/idb"
 export IDB_COMPANION_PATH="${IDB_COMPANION_PATH:-/opt/homebrew/bin/idb_companion}"
-BUNDLE="${NNF_BUNDLE:-org.nonsensefinance.nnf}"
+BUNDLE="${DOLLARDEN_BUNDLE:-org.dollarden.app}"
 SHOTS="$HERE/shots"
 
 # The companion connection drops when the simulator restarts, and the
@@ -45,7 +45,7 @@ ensure_connected() {
 }
 
 udid() {
-  if [[ -n "${NNF_SIM:-}" ]]; then echo "$NNF_SIM"; return; fi
+  if [[ -n "${DOLLARDEN_SIM:-}" ]]; then echo "$DOLLARDEN_SIM"; return; fi
   xcrun simctl list devices booted -j | python3 "$HERE/_udid.py"
 }
 

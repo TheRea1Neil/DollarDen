@@ -32,7 +32,7 @@ from app.budget.paycheck import MIN_PAYCHECK_CENTS
 from app.budget.treatment import Treatment
 from app.db.models import ReviewItem, Transaction
 
-log = logging.getLogger("nnf.budget.categorize")
+log = logging.getLogger("dollarden.budget.categorize")
 
 
 # A card payment is two transactions for one event: money leaving

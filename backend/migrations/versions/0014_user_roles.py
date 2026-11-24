@@ -21,7 +21,7 @@ discovered months later.
 A fresh install has no accounts at all, so the first-run wizard names
 the owner. An existing install promotes one deliberately:
 
-    docker compose exec nnf-api python -m app.ownership you@example.com
+    docker compose exec api python -m app.ownership you@example.com
 
 Revision ID: 0014_user_roles
 Revises: 0013_close_paycheck_reviews

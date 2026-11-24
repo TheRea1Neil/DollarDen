@@ -42,7 +42,7 @@ costs connection credits. Store a copy in a password manager.
 
 The thing that makes a token durable is a tested restore, not a backup job.
 
-- Nightly `pg_dump` to `/var/backups/nnf/` on the Pi.
+- Nightly `pg_dump` to `/var/backups/dollarden/` on the Pi.
 - Weekly copy off-box.
 - `scripts/export-tokens.py` → encrypted file containing `item_id` +
   `access_token` pairs, stored separately. This is the last-resort recovery

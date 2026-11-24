@@ -8,9 +8,9 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 /// holds the key -- so the app never possesses a usable Plaid token, while
 /// still giving a second copy if the Pi is lost (docs/04).
 class TokenStore {
-  static const _access = 'nnf.access_token';
-  static const _refresh = 'nnf.refresh_token';
-  static const _blobs = 'nnf.plaid_token_blobs';
+  static const _access = 'dollarden.access_token';
+  static const _refresh = 'dollarden.refresh_token';
+  static const _blobs = 'dollarden.plaid_token_blobs';
 
   final FlutterSecureStorage _storage;
 

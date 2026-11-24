@@ -117,3 +117,92 @@ class TestPaydayFromDeposits:
             out = predict_next(db, u.id)
             assert out["known"] is False
             assert "two paydays" in out["reason"]
+
+
+@requires_db
+class TestAOneOffDepositDoesNotBecomeACadence:
+    """The live regression, reproduced from real data.
+
+    Three recorded paychecks -- payroll on the 5th and the 20th, plus a
+    $196 mobile cheque split on the 18th -- gave gaps [2, 13], and
+    `median([2, 13])` is 7. The app announced payday a week after the
+    last one while eight perfectly regular payroll credits sat in the
+    same account saying the 5th and the 20th.
+    """
+
+    def test_the_exact_live_case_predicts_from_payroll_not_the_oddity(
+            self) -> None:
+        with SessionLocal() as db:
+            u, acct = _seed(db)
+            for on in [date(2026, 11, 20), date(2026, 11, 18),
+                       date(2026, 11, 5)]:
+                db.add(Paycheck(user_id=u.id, gross_cents=100000,
+                                received_on=on))
+            # The payroll the bank actually paid: the 5th and the 20th.
+            for on in [date(2026, 11, 20), date(2026, 11, 5),
+                       date(2026, 10, 20), date(2026, 10, 5),
+                       date(2026, 9, 18), date(2026, 9, 4),
+                       date(2026, 8, 20), date(2026, 8, 5)]:
+                _deposit(db, u, acct, on)
+            db.flush()
+
+            out = predict_next(db, u.id)
+            assert out["known"] is True
+            assert out["source"] == "deposits", "8 gaps beat 2"
+            assert out["cadence_days"] == 15
+            assert out["expected"] == date(2026, 12, 5).isoformat(), (
+                "the 5th, not 11-27")
+
+    def test_a_two_day_gap_is_never_a_cadence(self) -> None:
+        """Nothing legitimate pays faster than weekly."""
+        with SessionLocal() as db:
+            u, acct = _seed(db)
+            for on in [date(2026, 11, 20), date(2026, 11, 18)]:
+                db.add(Paycheck(user_id=u.id, gross_cents=100000,
+                                received_on=on))
+            db.flush()
+            out = predict_next(db, u.id)
+            assert out["known"] is False, "two days apart is not a schedule"
+
+    def test_more_gaps_wins_even_though_paychecks_are_confirmed(self) -> None:
+        with SessionLocal() as db:
+            u, acct = _seed(db)
+            # Two paychecks -> one gap, and it disagrees with the payroll.
+            for on in [date(2026, 11, 12), date(2026, 11, 5)]:
+                db.add(Paycheck(user_id=u.id, gross_cents=100000,
+                                received_on=on))
+            for on in [date(2026, 11, 5), date(2026, 10, 20),
+                       date(2026, 10, 5), date(2026, 9, 18)]:
+                _deposit(db, u, acct, on)
+            db.flush()
+
+            out = predict_next(db, u.id)
+            assert out["source"] == "deposits"
+            assert 14 <= out["cadence_days"] <= 17
+
+    def test_paychecks_still_win_on_equal_evidence(self) -> None:
+        """So splitting paychecks remains a way to correct a bad guess."""
+        with SessionLocal() as db:
+            u, acct = _seed(db)
+            for on in [date(2026, 11, 13), date(2026, 11, 6),
+                       date(2026, 10, 30)]:
+                db.add(Paycheck(user_id=u.id, gross_cents=100000,
+                                received_on=on))
+            for on in [date(2026, 11, 5), date(2026, 10, 20),
+                       date(2026, 10, 5)]:
+                _deposit(db, u, acct, on)
+            db.flush()
+
+            out = predict_next(db, u.id)
+            assert out["source"] == "paychecks", "2 gaps each; paychecks win"
+            assert out["cadence_days"] == 7
+
+    def test_it_reports_how_much_evidence_is_under_the_median(self) -> None:
+        with SessionLocal() as db:
+            u, acct = _seed(db)
+            for on in [date(2026, 11, 5), date(2026, 10, 20),
+                       date(2026, 10, 5), date(2026, 9, 18)]:
+                _deposit(db, u, acct, on)
+            db.flush()
+            out = predict_next(db, u.id)
+            assert out["gaps_used"] == 3, "four paydays, three intervals"

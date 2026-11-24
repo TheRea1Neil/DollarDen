@@ -228,6 +228,43 @@ a *tested restore*.
 - [ ] Item-health dashboard
 - [ ] 2FA on wg-easy (outstanding from the infra work)
 
+## Payday prediction — known improvements
+
+Items 1 and 2 shipped (gap floor, and measuring both evidence sources);
+these two did not. Context: three recorded paychecks -- payroll on the
+5th and the 20th plus a $196 mobile cheque split on the 18th -- gave
+gaps `[2, 13]`, and `median([2, 13])` is 7, so the app announced payday
+a week after the last one. See `backend/app/budget/paycheck.py` and
+`TestAOneOffDepositDoesNotBecomeACadence`.
+
+- [ ] **Semi-monthly detection.** A 15-day median is right by luck, not
+      by model. Pay on the 5th and 20th is not an interval: 12-20 + 15
+      = 01-04 but payday is 01-05, and the error compounds every cycle.
+      Detect from >= 4 paydays by clustering DAY-OF-MONTH with a +/-3
+      tolerance (weekend shifts), classify semi-monthly / monthly /
+      biweekly / weekly, then predict the next anchor day rolled BACK to
+      the preceding business day -- which is what the data shows
+      (the 20th fell on 09-18, the 5th on 09-04). Return
+      `cadence: "semimonthly"` and `anchor_days: [5, 20]` so the UI can
+      say "the 5th" instead of "about 15 days". Keep the median path as
+      the fallback, and keep the range: the weekend rule is a good
+      guess, not a holiday calendar.
+
+- [ ] **Exclude one payday from cadence.** Migration: `paychecks
+      .counts_toward_cadence boolean not null default true` (the
+      default backfills every existing row correctly). `predict_next`
+      adds one filter clause; no other caller changes. App: a toggle on
+      the split screen and paycheck detail -- "One-off, don't use for
+      payday predictions". Preferred over a global schedule override
+      because it is local and explainable: the user marks a deposit as
+      unusual at the moment they already know it is, and it cannot go
+      stale. A global override is for genuinely irregular income
+      (freelance, variable contracts) where no inference will work --
+      defer until someone has that problem. Note this is not needed for
+      an account where deposits win on evidence; it matters when the
+      bank does not tag payroll as `INCOME`, so recorded paychecks are
+      the only signal.
+
 ---
 
 ## Sequencing rationale

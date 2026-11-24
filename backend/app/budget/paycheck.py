@@ -27,6 +27,15 @@ log = logging.getLogger("dollarden.budget.paycheck")
 MIN_PAYCHECK_CENTS = 100_00
 DEFAULT_CADENCE_DAYS = 14
 
+# A gap has to be plausible as a PAY interval before it can be evidence
+# of one. Nothing legitimate pays faster than weekly, so a gap under
+# this is an artifact -- a one-off deposit split as a paycheck, a
+# correction, a second job's stub -- not a cadence. The old floor was
+# `> 0`, which let a 2-day artifact sit in a 2-element median and move
+# the answer by half.
+MIN_CADENCE_GAP_DAYS = 5
+MAX_CADENCE_GAP_DAYS = 45
+
 
 @dataclass
 class ApplyResult:
@@ -224,15 +233,22 @@ def _income_deposit_dates(db: Session, user_id: uuid.UUID,
     return seen
 
 
-def _cadence(dates: list[date]) -> tuple[int, int] | None:
-    """Median gap and spread, in days, or None if there is no pattern."""
+def _cadence(dates: list[date]) -> tuple[int, int, int] | None:
+    """Median gap, spread, and the NUMBER OF GAPS behind them.
+
+    The gap count is returned because a median is only as resistant as
+    the sample under it: with two gaps the median is their midpoint and
+    one bad entry drags it halfway. Callers need to know that before
+    preferring one source of dates over another.
+    """
     gaps = [(dates[i] - dates[i + 1]).days for i in range(len(dates) - 1)]
-    gaps = [g for g in gaps if 0 < g <= 45]
+    gaps = [g for g in gaps
+            if MIN_CADENCE_GAP_DAYS <= g <= MAX_CADENCE_GAP_DAYS]
     if not gaps:
         return None
     median = int(statistics.median(gaps))
     spread = int(statistics.pstdev(gaps)) if len(gaps) > 1 else 1
-    return median, max(1, min(spread, 7))
+    return median, max(1, min(spread, 7)), len(gaps)
 
 
 def predict_next(db: Session, user_id: uuid.UUID) -> dict[str, object]:
@@ -242,11 +258,20 @@ def predict_next(db: Session, user_id: uuid.UUID) -> dict[str, object]:
     and the alert it feeds ("Food is low and payday is ~6 days out") is only
     useful if the uncertainty is honest.
 
-    Prefers recorded paychecks, because those are confirmed income the
-    user has acted on. Falls back to income DEPOSITS when there are
-    fewer than two: waiting for someone to split two paychecks meant no
-    prediction for the first month of use, while the bank had already
-    handed over six perfectly regular payroll credits.
+    Measures BOTH recorded paychecks and income deposits, then uses
+    whichever rests on more gaps -- not whichever is more "confirmed".
+
+    Preferring recorded paychecks on a count of two was wrong. Splitting
+    a single one-off deposit as a paycheck is a normal thing to do, and
+    it would land in a 2-element median as a 2-day gap: three paychecks
+    (two real, one mobile cheque) read as a 7-day cadence while eight
+    textbook-regular payroll credits sat unread in the same account. The
+    deposits are the stronger signal for CADENCE anyway -- they are what
+    the bank actually did -- which is why `_income_deposit_dates` says
+    so. This acts on it.
+
+    Paychecks still win a tie, so a user whose pay the bank mislabels
+    can correct the prediction by splitting paychecks.
     """
     recorded = db.scalars(
         select(Paycheck)
@@ -255,21 +280,27 @@ def predict_next(db: Session, user_id: uuid.UUID) -> dict[str, object]:
         .limit(8)
     ).all()
 
-    dates = [p.received_on for p in recorded]
-    source = "paychecks"
-    if len(dates) < 2:
-        dates = _income_deposit_dates(db, user_id)
-        source = "deposits"
+    # (dates, source-name, tie-break rank) -- paychecks outrank deposits.
+    sources = [
+        ([p.received_on for p in recorded], "paychecks", 1),
+        (_income_deposit_dates(db, user_id), "deposits", 0),
+    ]
 
-    if len(dates) < 2:
-        return {"known": False,
-                "reason": "need at least two paydays to see a pattern"}
+    measured = [
+        (cad, dates, name, rank)
+        for dates, name, rank in sources
+        if len(dates) >= 2 and (cad := _cadence(dates)) is not None
+    ]
 
-    measured = _cadence(dates)
-    if measured is None:
+    if not measured:
+        if all(len(dates) < 2 for dates, _, _ in sources):
+            return {"known": False,
+                    "reason": "need at least two paydays to see a pattern"}
         return {"known": False, "reason": "no usable cadence in recent paydays"}
 
-    median, spread = measured
+    # Most gaps wins; paychecks break the tie.
+    cad, dates, source, _ = max(measured, key=lambda m: (m[0][2], m[3]))
+    median, spread, gaps_used = cad
     expected = dates[0] + timedelta(days=median)
 
     return {
@@ -279,6 +310,10 @@ def predict_next(db: Session, user_id: uuid.UUID) -> dict[str, object]:
         "expected": expected.isoformat(),
         "latest": (expected + timedelta(days=spread)).isoformat(),
         "based_on": len(dates),
+        # How many intervals the median rests on. Two paydays give one
+        # gap and no outlier resistance at all; the app can soften its
+        # wording when this is small.
+        "gaps_used": gaps_used,
         # Which evidence this came from, so the app can say "from your
         # deposits" rather than implying these were paychecks the user
         # confirmed and split.

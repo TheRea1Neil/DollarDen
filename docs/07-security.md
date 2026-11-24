@@ -26,9 +26,15 @@ worst case is disclosure of transaction history, not theft.
 
 ## Token encryption
 
-Plaid `access_token`s are encrypted at rest with AES-GCM (via `cryptography`
-Fernet or equivalent) using `TOKEN_ENCRYPTION_KEY`, which is **separate from
-the database password**. A stolen database dump alone does not yield tokens.
+Plaid `access_token`s are encrypted at rest with `cryptography`'s **Fernet**
+using `TOKEN_ENCRYPTION_KEY`, which is **separate from the database
+password**. A stolen database dump alone does not yield tokens.
+
+Fernet is AES-128-CBC with PKCS7 padding, authenticated with HMAC-SHA256
+in encrypt-then-MAC order. It is authenticated encryption, so the
+property we want holds — but it is **not** AES-GCM, which this document
+claimed until 2026-11-24. Naming the wrong primitive in a security
+document is the kind of thing a reviewer rightly flags, so: Fernet.
 
 ```
 plaintext token ──encrypt──► plaid_items.access_token_encrypted (bytea)

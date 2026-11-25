@@ -90,7 +90,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           padding: const EdgeInsets.all(6),
                           child: Image.asset(
                             'assets/logo/logo.png',
-                            semanticLabel: 'no-nonsense finance',
+                            semanticLabel: 'DollarDen',
                           ),
                         ),
                         const SizedBox(width: 16),
@@ -100,13 +100,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               Text(
-                                'no-nonsense',
+                                'Dollar',
                                 style: theme.textTheme.headlineSmall?.copyWith(
                                   fontWeight: FontWeight.w300,
                                 ),
                               ),
                               Text(
-                                'finance',
+                                'Den',
                                 style: theme.textTheme.headlineSmall?.copyWith(
                                   fontWeight: FontWeight.w700,
                                   color: theme.colorScheme.primary,

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/money.dart';
 import '../../domain/models.dart';
+import '../../core/theme.dart';
 
 /// Where a budget is in getting started, and the one thing to do next.
 ///
@@ -209,7 +210,8 @@ class SetupGuide extends StatelessWidget {
             const SizedBox(height: 14),
             Row(
               children: [
-                FilledButton(onPressed: onTap, child: Text(action)),
+                FilledButton(
+                    style: inlineFilled(), onPressed: onTap, child: Text(action)),
                 // Describing the budget is offered first because naming
                 // envelopes from a blank page is the step people stall
                 // on. Building one by hand stays one tap away for anyone

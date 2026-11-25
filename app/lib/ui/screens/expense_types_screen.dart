@@ -5,6 +5,7 @@ import '../../core/money.dart';
 import '../../data/api_client.dart';
 import '../../data/providers.dart';
 import '../../domain/insights.dart';
+import '../../core/theme.dart';
 
 /// Kinds of spending, and the queue of charges that still need one.
 ///
@@ -406,6 +407,7 @@ class _EditTypeSheetState extends State<_EditTypeSheet> {
           Row(
             children: [
               FilledButton(
+                style: inlineFilled(),
                 onPressed: () => Navigator.of(context)
                     .pop(_Save(_name.text.trim(), _desc.text.trim())),
                 child: const Text('Save'),
@@ -613,6 +615,7 @@ class _UntypedRowState extends ConsumerState<_UntypedRow> {
               Row(
                 children: [
                   FilledButton.tonalIcon(
+                    style: inlineFilled(),
                     onPressed: _suggest,
                     icon: const Icon(Icons.auto_awesome, size: 16),
                     label: const Text('Suggest'),
@@ -676,6 +679,7 @@ class _UntypedRowState extends ConsumerState<_UntypedRow> {
                   Row(
                     children: [
                       FilledButton(
+                        style: inlineFilled(),
                         onPressed: () => _apply(s.name!,
                             description: s.description, fromAi: true),
                         child: const Text('Use it'),

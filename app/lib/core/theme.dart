@@ -49,6 +49,9 @@ class AppTheme {
           borderSide: BorderSide.none,
         ),
       ),
+      // Size.fromHeight(50) is Size(double.infinity, 50): every filled
+      // button fills its parent's width. Right in a Column, fatal in a
+      // Row -- see [inlineFilled] at the bottom of this file.
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
           minimumSize: const Size.fromHeight(50),
@@ -111,3 +114,18 @@ class AppTheme {
     return _fullnessStops.last.$2;
   }
 }
+
+/// The style a FilledButton needs when it sits inside a Row.
+///
+/// The theme gives every filled button an infinite minimum WIDTH so it fills
+/// a Column. A Row hands its children unbounded width, so that same style
+/// trips `BoxConstraints forces an infinite width` during layout.
+///
+/// That failure is worse than it sounds: the assertion aborts layout for the
+/// whole subtree, so the screen renders BLANK -- no error, no partial UI,
+/// nothing in release logs. It shipped. Any user whose setup was unfinished
+/// got an empty Budget tab, because SetupGuide puts a FilledButton in a Row
+/// and only appears before setup is complete.
+///
+/// Keeps the 50px height; drops only the infinite width.
+ButtonStyle inlineFilled() => FilledButton.styleFrom(minimumSize: const Size(0, 50));
